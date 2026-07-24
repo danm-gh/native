@@ -262,7 +262,12 @@ fn expectSnapshotParity(comptime facade: type, comptime shim: type) !void {
     const arena = arena_state.allocator();
 
     facade.rt.resetAll();
-    const models = [_]*const facade.Model{ facade.initialModel(), facade.nsc_core_sample_model() };
+    // The facade's boot stub carries the contract's declared shape: a
+    // cmd-returning init compiles to the InitResult pair, a bare one to
+    // the model pointer — unwrap either to the boot model.
+    const boot = facade.initialModel();
+    const boot_model = if (@TypeOf(boot) == *const facade.Model) boot else boot.model;
+    const models = [_]*const facade.Model{ boot_model, facade.nsc_core_sample_model() };
     for (models) |model| {
         const facade_bytes = facade.nsc_core_model_snapshot(1, model);
         const converted = try convertValue(shim.Model, model, arena);

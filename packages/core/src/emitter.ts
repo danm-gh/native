@@ -1174,8 +1174,11 @@ export class Emitter {
       const name = this.moduleNameOf(decl) ?? decl.name.text;
       // The dead-state opt-out list is transpiler config, not module data:
       // already validated and routed into the Model/Msg `view_unbound`
-      // declarations (viewUnboundNames), nothing to emit here.
-      if (name === "viewUnbound") continue;
+      // declarations (viewUnboundNames), nothing to emit here. The split
+      // modelUnbound/msgUnbound pair spells the same facts for contract
+      // consumers that read declarations per side; this lane reads
+      // viewUnbound only, so the pair passes through unemitted.
+      if (name === "viewUnbound" || name === "modelUnbound" || name === "msgUnbound") continue;
       // The env override channel: a declarative table the generated wiring
       // walks at comptime (read the named variables once at launch,
       // dispatch each present value through its bytes arm).

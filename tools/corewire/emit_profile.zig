@@ -34,8 +34,10 @@ pub const Error = error{ Refused, OutOfMemory };
 pub const default_entry = "core_facade.ts";
 
 /// One export-map row: the marshalled signature of a facade export, by
-/// ABI suffix. Symbol and export name are both `prefix + suffix` — the
-/// facade's exports are the symbol family under the contract's prefix.
+/// ABI suffix. The export name is the facade's FIXED projection
+/// spelling (`nsc_core_` + suffix — the facade declares under those
+/// names whatever the contract's prefix is, exactly as it fixes the
+/// Model/Msg spellings); the symbol takes the contract's own prefix.
 const ExportSignature = struct {
     suffix: []const u8,
     params: []const []const u8,
@@ -93,6 +95,8 @@ const Fence = struct {
 const randomness_teaching = "randomness is an effect: the core requests it through a command and the value arrives as a Msg, so a recorded session replays it exactly.";
 const network_teaching = "network is an effect: declare requests as commands (Cmd.fetch, Cmd.request) and responses arrive as Msgs.";
 
+const clock_teaching = "the wall clock is an effect: read it through the host's journaled clock — Cmd.now, Cmd.delay, and Sub.timer deliver fire times as Msgs, so a recorded session replays them exactly.";
+
 /// The SDK determinism fences, keyed by the pinned compiler release's
 /// surface-manifest ids. RELEASE-PINNED DATA: a fence id or prefix must
 /// resolve against the pinned release's surface manifest, covering at
@@ -101,9 +105,8 @@ const network_teaching = "network is an effect: declare requests as commands (Cm
 /// inert — so this table lists exactly what the pinned release can
 /// fence, and it is the one place to grow when a release lands new
 /// ids. Not fenceable at the pinned release, verified against its
-/// loader: the wall clock and the process/performance-counter families
-/// (no manifest ids); http/https/dgram/dns (module-level entries only,
-/// no per-call trace to deny); worker_threads/cluster (their members
+/// loader: http/https/dgram/dns (module-level entries only, no
+/// per-call trace to deny) and worker_threads/cluster (their members
 /// fold to compile-time constants). Member prefixes carry the folded-
 /// constant exemption, so a folded read (os.EOL) stays compilable
 /// under its family's fence.
@@ -111,6 +114,8 @@ const determinism_fences = [_]Fence{
     .{ .id = "stdlib.math.random", .teaching = randomness_teaching },
     .{ .id = "node-builtin.crypto.randomBytes", .teaching = randomness_teaching },
     .{ .id = "node-builtin.crypto.randomUUID", .teaching = randomness_teaching },
+    .{ .prefix = "stdlib.date.", .teaching = clock_teaching },
+    .{ .prefix = "node-builtin.perf_hooks.", .teaching = clock_teaching },
     .{ .prefix = "node-builtin.fs.", .teaching = "files are effects: declare reads and writes as commands (Cmd.readFile, Cmd.writeFile) and results arrive as Msgs." },
     .{ .prefix = "node-builtin.net.", .teaching = network_teaching },
     .{ .prefix = "node-builtin.http2.", .teaching = network_teaching },
@@ -118,6 +123,7 @@ const determinism_fences = [_]Fence{
     .{ .prefix = "node-builtin.child_process.", .teaching = "processes are effects: run them through Cmd.spawn and their output arrives as Msgs." },
     .{ .prefix = "node-builtin.timers.", .teaching = "timers are effects: schedule Cmd.delay or Sub.timer and fire times arrive as Msgs through the host's journaled clock." },
     .{ .prefix = "node-builtin.os.", .teaching = "machine and session facts are host inputs: they reach a core as journaled Msgs, never as ambient reads." },
+    .{ .prefix = "node-builtin.process.", .teaching = "process and environment facts are host inputs: environment values arrive as journaled Msgs through the env channel, and every other session fact reaches a core only as a host-delivered Msg." },
 };
 
 /// One rider entry for the teachings/remediations maps.
@@ -189,16 +195,16 @@ const ProfileEmitter = struct {
 
         // The export map, in the sidecar's attested (canonical) order:
         // every suffix the object exports that is neither mode-provided
-        // nor identity-synthesized, bound export-name-to-symbol under
-        // the contract's prefix with its marshalled signature.
+        // nor identity-synthesized. The export name is the facade's
+        // fixed `nsc_core_` spelling; the symbol carries the contract's
+        // prefix.
         var first = true;
         for (self.sidecar.abi.exports) |suffix| {
             if (nameListed(&unmapped_suffixes, suffix)) continue;
             const signature = signatureFor(suffix) orelse continue;
             if (!first) try self.raw(",\n");
             first = false;
-            const name = try self.symbol(prefix, suffix);
-            try self.print("    {{ \"export\": {s}, \"symbol\": {s}, \"params\": [", .{ name, name });
+            try self.print("    {{ \"export\": {s}, \"symbol\": {s}, \"params\": [", .{ try self.symbol("nsc_core_", suffix), try self.symbol(prefix, suffix) });
             for (signature.params, 0..) |class, index| {
                 try self.print("{s}\"{s}\"", .{ if (index == 0) "" else ", ", class });
             }
@@ -373,7 +379,11 @@ test "the profile tracks the contract's prefix and generations" {
     try testing.expect(std.mem.indexOf(u8, generated, "\"entry\": \"my_facade.ts\"") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "\"prefix\": \"app2_\"") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "\"init_symbol\": \"app2_init\"") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "\"export\": \"app2_model_snapshot\"") != null);
+    // Export names keep the facade's fixed projection spellings; only
+    // the symbols take the contract's prefix.
+    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_model_snapshot\", \"symbol\": \"app2_model_snapshot\"") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "\"export\": \"app2_") == null);
+    try testing.expect(std.mem.indexOf(u8, generated, "\"build_id_symbol\": \"app2_build_id\"") != null);
 }
 
 test "the emitted profile parses as JSON with the expected top-level keys" {

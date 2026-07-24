@@ -165,7 +165,11 @@ pub fn main(init: std.process.Init) !void {
         },
         error.OutOfMemory => return err,
     };
-    const facade: ?[]const u8 = if (check_only or facade_path != null)
+    // The profile targets the facade module as its entry, so emitting a
+    // profile runs the facade emitter's own refusal checks even when no
+    // facade file is written — a sidecar must never yield a profile
+    // whose referenced facade then refuses to generate.
+    const facade: ?[]const u8 = if (check_only or facade_path != null or profile_path != null)
         emit_facade_mod.emitFacade(arena, parsed, &diags) catch |err| switch (err) {
             error.Refused => {
                 try diags.write(input, stderr);
@@ -176,13 +180,23 @@ pub fn main(init: std.process.Init) !void {
         }
     else
         null;
-    // The profile names the facade module as its entry: the emitted
-    // spelling follows the --facade file when both are generated in one
-    // invocation, and the conventional name otherwise.
-    const profile: ?[]const u8 = if (check_only or profile_path != null)
-        try emit_profile_mod.emitProfile(arena, parsed, if (facade_path) |path| std.fs.path.basename(path) else emit_profile_mod.default_entry)
-    else
-        null;
+    // The profile names the facade module as its entry, resolved
+    // against the profile file's own directory (the compilation root):
+    // when both are generated in one invocation the emitted spelling is
+    // the --facade path made profile-relative, and the conventional
+    // name otherwise.
+    const profile: ?[]const u8 = if (check_only or profile_path != null) blk: {
+        const entry = if (facade_path != null and profile_path != null)
+            profileRelativeEntry(init, stderr, profile_path.?, facade_path.?) catch |err| switch (err) {
+                error.Unrelatable => std.process.exit(2),
+                else => return err,
+            }
+        else if (facade_path) |path|
+            std.fs.path.basename(path)
+        else
+            emit_profile_mod.default_entry;
+        break :blk try emit_profile_mod.emitProfile(arena, parsed, entry);
+    } else null;
 
     // Warnings (unknown additive fields) surface even on success.
     try diags.write(input, stderr);
@@ -265,6 +279,34 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         };
     }
+}
+
+/// The facade path as the profile's entry spelling: relative to the
+/// profile file's directory (the compilation root a profile consumer
+/// resolves against), POSIX separators. A pair that cannot relate
+/// (distinct roots) refuses with a teaching — a wrong spelling would
+/// point the consumer at a file that does not exist.
+fn profileRelativeEntry(init: std.process.Init, stderr: *std.Io.Writer, profile_path: []const u8, facade_path: []const u8) ![]const u8 {
+    const arena = init.arena.allocator();
+    const profile_dir = std.fs.path.dirname(profile_path) orelse ".";
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_len = std.Io.Dir.cwd().realPath(init.io, &buffer) catch 0;
+    const cwd: []const u8 = if (cwd_len == 0) "." else buffer[0..cwd_len];
+    const related = try std.fs.path.relative(arena, cwd, null, profile_dir, facade_path);
+    // Paths on distinct roots have no relative spelling (the resolver
+    // hands back an absolute path instead): a profile consumer resolves
+    // the entry against the profile's directory, so an unreachable
+    // facade refuses rather than emitting a spelling that names nothing.
+    if (related.len == 0 or std.fs.path.isAbsolute(related)) {
+        try stderr.print("corewire: --facade {s} has no path relative to the --profile directory {s} — the profile's entry must reach the facade from beside the profile; emit them under one root\n", .{ facade_path, profile_dir });
+        try stderr.flush();
+        return error.Unrelatable;
+    }
+    const posix = try arena.dupe(u8, related);
+    for (posix) |*char| {
+        if (char.* == std.fs.path.sep_windows) char.* = std.fs.path.sep_posix;
+    }
+    return posix;
 }
 
 /// A path spelling fit for alias comparison: components canonicalize

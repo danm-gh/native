@@ -388,9 +388,9 @@ test "the emitted profile parses as JSON with the expected top-level keys" {
     }
     const determinism = top.get("determinism").?.object;
     try testing.expect(determinism.get("fences").?.array.items.len == determinism_fences.len);
-    // Teachings and remediations stay within the ratified string
-    // constraints: no control bytes below 0x20 except newline, 512
-    // bytes at most.
+    // Teachings and remediations stay within the profile loader's
+    // string constraints: no control bytes below 0x20 except newline,
+    // 512 bytes at most.
     for (determinism_fences) |fence| {
         try testing.expect(fence.teaching.len <= 512);
         for (fence.teaching) |char| try testing.expect(char >= 0x20 or char == '\n');

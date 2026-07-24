@@ -596,15 +596,20 @@ test "integer fixture: facade channel envelopes carry mixed-class message bytes"
     // The signed and unsigned arms encode per their own attestations,
     // byte-identical to the canonical encoding of the mirror value.
     {
-        const envelope = facade_integer.nsc_core_key_msg(facade_integer.nsc_core_msg_count_set(-42));
+        const envelope = facade_integer.nsc_core_pack_msg(facade_integer.nsc_core_msg_count_set(-42));
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_integer.Msg, .{ .count_set = -42 }, arena), envelope[1..]);
     }
     {
-        const envelope = facade_integer.nsc_core_key_msg(facade_integer.nsc_core_msg_id_set(9007199254740991));
+        const envelope = facade_integer.nsc_core_pack_msg(facade_integer.nsc_core_msg_id_set(9007199254740991));
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_integer.Msg, .{ .id_set = 9007199254740991 }, arena), envelope[1..]);
     }
+
+    // The wire-shaped key entry runs the channel-function gate (null
+    // until compile-mode wiring lands the author's code): the two-byte
+    // nothing-produced envelope.
+    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_integer.nsc_core_key_msg("space", 0, 0, 0, 0));
 }
 
 test "integer fixture: model snapshots decode per-slot classes from raw bytes" {

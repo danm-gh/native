@@ -1,13 +1,16 @@
 //! corewire — the contract-sidecar shim generator.
 //!
 //!   corewire --sidecar core.contract.json --out core_shim.zig
+//!   corewire --sidecar core.contract.json --facade core_facade.ts --profile core_profile.json
 //!   corewire --sidecar core.contract.json --check
 //!
 //! Reads the JSON contract sidecar a core-mode compile emits beside the
 //! compiled object, validates it (schema rules V1-V14, teaching
 //! refusals with exact field paths on stderr), and writes the Zig
 //! mirror module the app wiring imports (see emit.zig for what the
-//! mirror carries). `--check` validates and stops — the checker-tier
+//! mirror carries). `--facade` writes the TypeScript projection,
+//! `--profile` the library-mode compiler profile that builds it
+//! (emit_profile.zig). `--check` validates and stops — the checker-tier
 //! entry point.
 //!
 //! The build stages the output beside tools/corewire/shim_rt.zig and
@@ -18,13 +21,15 @@ const std = @import("std");
 const sidecar_mod = @import("sidecar.zig");
 const emit_mod = @import("emit.zig");
 const emit_facade_mod = @import("emit_facade.zig");
+const emit_profile_mod = @import("emit_profile.zig");
 
 const usage =
-    \\usage: corewire --sidecar <core.contract.json> (--out <core_shim.zig> | --facade <core_facade.ts> | --check)
+    \\usage: corewire --sidecar <core.contract.json> (--out <core_shim.zig> | --facade <core_facade.ts> | --profile <core_profile.json> | --check)
     \\
-    \\Generate the Zig mirror module (core_shim.zig) and/or the TypeScript
-    \\projection (core_facade.ts) for a compiled core from its contract
-    \\sidecar, or validate the sidecar alone (--check). --out and --facade
+    \\Generate the Zig mirror module (core_shim.zig), the TypeScript
+    \\projection (core_facade.ts), and/or the library-mode compiler profile
+    \\(core_profile.json) for a compiled core from its contract sidecar, or
+    \\validate the sidecar alone (--check). --out, --facade, and --profile
     \\combine; --check stands alone.
     \\
 ;
@@ -40,6 +45,7 @@ pub fn main(init: std.process.Init) !void {
     var sidecar_path: ?[]const u8 = null;
     var out_path: ?[]const u8 = null;
     var facade_path: ?[]const u8 = null;
+    var profile_path: ?[]const u8 = null;
     var check_only = false;
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
@@ -53,6 +59,9 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--facade") and index + 1 < args.len) {
             index += 1;
             facade_path = args[index];
+        } else if (std.mem.eql(u8, arg, "--profile") and index + 1 < args.len) {
+            index += 1;
+            profile_path = args[index];
         } else if (std.mem.eql(u8, arg, "--check")) {
             check_only = true;
         } else {
@@ -68,13 +77,13 @@ pub fn main(init: std.process.Init) !void {
     };
     // Either validate-only, or at least one generation target — never
     // both (a checker that writes files is not a checker).
-    const generates = out_path != null or facade_path != null;
+    const generates = out_path != null or facade_path != null or profile_path != null;
     if (generates == check_only) {
         try stderr.print("{s}", .{usage});
         try stderr.flush();
         std.process.exit(2);
     }
-    // Distinct paths only: the two projections must not overwrite each
+    // Distinct paths only: the projections must not overwrite each
     // other, and no output may destroy the input contract. Compared
     // lexically normalized (cwd-resolved, `.`/`..` folded) — filesystem
     // identities beyond spelling (symlinks, hard links) stay the
@@ -87,8 +96,10 @@ pub fn main(init: std.process.Init) !void {
     const paths = [_]?[]const u8{
         out_path,
         facade_path,
+        profile_path,
         if (out_path) |path| try std.fmt.allocPrint(arena, "{s}.corewire-tmp", .{path}) else null,
         if (facade_path) |path| try std.fmt.allocPrint(arena, "{s}.corewire-tmp", .{path}) else null,
+        if (profile_path) |path| try std.fmt.allocPrint(arena, "{s}.corewire-tmp", .{path}) else null,
     };
     var resolved: [paths.len]?[]const u8 = @splat(null);
     for (paths, 0..) |maybe_path, path_index| {
@@ -119,7 +130,7 @@ pub fn main(init: std.process.Init) !void {
         for (resolved[path_index + 1 ..]) |maybe_other| {
             const other = maybe_other orelse continue;
             if (std.ascii.eqlIgnoreCase(path, other) or sameExistingFile(init.io, path, other)) {
-                try stderr.print("corewire: --out and --facade name one file ({s}) — the second projection would overwrite the first\n", .{path});
+                try stderr.print("corewire: two outputs name one file ({s}) — the later projection would overwrite the earlier\n", .{path});
                 try stderr.flush();
                 std.process.exit(2);
             }
@@ -142,7 +153,7 @@ pub fn main(init: std.process.Init) !void {
         error.OutOfMemory => return err,
     };
 
-    // `--check` runs the FULL pipeline (both projections) and discards
+    // `--check` runs the FULL pipeline (every projection) and discards
     // the text: a sidecar must never pass the checker and then refuse at
     // generate time (emitter-level rules — emission-name collisions
     // above all — are part of the contract's validity).
@@ -165,78 +176,90 @@ pub fn main(init: std.process.Init) !void {
         }
     else
         null;
+    // The profile names the facade module as its entry: the emitted
+    // spelling follows the --facade file when both are generated in one
+    // invocation, and the conventional name otherwise.
+    const profile: ?[]const u8 = if (check_only or profile_path != null)
+        try emit_profile_mod.emitProfile(arena, parsed, if (facade_path) |path| std.fs.path.basename(path) else emit_profile_mod.default_entry)
+    else
+        null;
 
     // Warnings (unknown additive fields) surface even on success.
     try diags.write(input, stderr);
     try stderr.flush();
 
-    // Stage-then-commit: BOTH projections write completely into
-    // exclusively-created staging files before either rename, so a
-    // write failure can never leave a fresh shim beside a stale facade.
-    // The two renames remain two filesystem operations — a failure
-    // between them reports both files as a possibly skewed pair and the
-    // nonzero exit makes the caller regenerate; concurrent invocations
-    // aimed at ONE output path are the caller's serialization to
-    // provide (the build graph never shares output directories between
-    // steps).
-    const shim_staged: ?[]const u8 = if (out_path) |out|
-        stageOutput(init, stderr, out, generated) catch |err| switch (err) {
-            error.Staging => std.process.exit(1),
-            else => return err,
-        }
-    else
-        null;
-    const facade_staged: ?[]const u8 = if (facade_path) |out| blk: {
-        // The shim staging file exists now, so a filesystem-level alias
-        // of the two output paths (Unicode case folding, links) gets one
+    // Stage-then-commit: ALL projections write completely into
+    // exclusively-created staging files before any rename, so a write
+    // failure can never leave a fresh shim beside a stale sibling. The
+    // renames remain separate filesystem operations — a failure between
+    // them reports the files as a possibly skewed set and the nonzero
+    // exit makes the caller regenerate; concurrent invocations aimed at
+    // ONE output path are the caller's serialization to provide (the
+    // build graph never shares output directories between steps).
+    const Output = struct {
+        flag: []const u8,
+        path: []const u8,
+        data: []const u8,
+        staged: []const u8 = "",
+    };
+    var outputs_buffer: [3]Output = undefined;
+    var output_count: usize = 0;
+    if (out_path) |path| {
+        outputs_buffer[output_count] = .{ .flag = "--out", .path = path, .data = generated };
+        output_count += 1;
+    }
+    if (facade_path) |path| {
+        outputs_buffer[output_count] = .{ .flag = "--facade", .path = path, .data = facade.? };
+        output_count += 1;
+    }
+    if (profile_path) |path| {
+        outputs_buffer[output_count] = .{ .flag = "--profile", .path = path, .data = profile.? };
+        output_count += 1;
+    }
+    const outputs = outputs_buffer[0..output_count];
+
+    for (outputs, 0..) |*output, output_index| {
+        // Earlier staging files exist now, so a filesystem-level alias
+        // of two output paths (Unicode case folding, links) gets one
         // more net before any rename.
-        if (out_path) |shim_out| {
-            if (sameExistingFile(init.io, out, shim_out)) {
-                if (shim_staged) |staged| std.Io.Dir.cwd().deleteFile(init.io, staged) catch {};
-                try stderr.print("corewire: --facade {s} resolves to the --out file — the second projection would overwrite the first\n", .{out});
+        for (outputs[0..output_index]) |earlier| {
+            if (sameExistingFile(init.io, output.path, earlier.path)) {
+                for (outputs[0..output_index]) |staged| std.Io.Dir.cwd().deleteFile(init.io, staged.staged) catch {};
+                try stderr.print("corewire: {s} {s} resolves to the {s} file — the later projection would overwrite the earlier\n", .{ output.flag, output.path, earlier.flag });
                 try stderr.flush();
                 std.process.exit(2);
             }
         }
-        break :blk stageOutput(init, stderr, out, facade.?) catch |err| {
-            // The sibling projection was already staged; leave no stray
+        output.staged = stageOutput(init, stderr, output.path, output.data) catch |err| {
+            // Sibling projections were already staged; leave no stray
             // staging file behind ANY failure shape.
-            if (shim_staged) |staged| std.Io.Dir.cwd().deleteFile(init.io, staged) catch {};
+            for (outputs[0..output_index]) |staged| std.Io.Dir.cwd().deleteFile(init.io, staged.staged) catch {};
             switch (err) {
                 error.Staging => std.process.exit(1),
                 else => return err,
             }
         };
-    } else null;
-
-    var committed_shim = false;
-    if (out_path) |out| {
-        std.Io.Dir.cwd().rename(shim_staged.?, std.Io.Dir.cwd(), out, init.io) catch |err| {
-            std.Io.Dir.cwd().deleteFile(init.io, shim_staged.?) catch {};
-            if (facade_staged) |staged| std.Io.Dir.cwd().deleteFile(init.io, staged) catch {};
-            try stderr.print("corewire: cannot write {s}: {t}\n", .{ out, err });
-            try stderr.flush();
-            std.process.exit(1);
-        };
-        committed_shim = true;
     }
-    if (facade_path) |out| {
-        // The shim now EXISTS, so aliases no spelling check can see
-        // (filesystem Unicode normalization above all) finally resolve:
-        // a facade target that reaches the just-committed shim refuses
-        // instead of replacing it.
-        if (committed_shim and sameExistingFile(init.io, out, out_path.?)) {
-            std.Io.Dir.cwd().deleteFile(init.io, facade_staged.?) catch {};
-            try stderr.print("corewire: --facade {s} resolves to the file --out just wrote — the second projection would overwrite the first\n", .{out});
-            try stderr.flush();
-            std.process.exit(2);
+
+    for (outputs, 0..) |output, output_index| {
+        // Committed outputs now EXIST, so aliases no spelling check can
+        // see (filesystem Unicode normalization above all) finally
+        // resolve: a target that reaches a just-committed sibling
+        // refuses instead of replacing it.
+        for (outputs[0..output_index]) |earlier| {
+            if (sameExistingFile(init.io, output.path, earlier.path)) {
+                for (outputs[output_index..]) |staged| std.Io.Dir.cwd().deleteFile(init.io, staged.staged) catch {};
+                try stderr.print("corewire: {s} {s} resolves to the file {s} just wrote — the later projection would overwrite the earlier\n", .{ output.flag, output.path, earlier.flag });
+                try stderr.flush();
+                std.process.exit(2);
+            }
         }
-        std.Io.Dir.cwd().rename(facade_staged.?, std.Io.Dir.cwd(), out, init.io) catch |err| {
-            std.Io.Dir.cwd().deleteFile(init.io, facade_staged.?) catch {};
-            if (committed_shim) {
-                try stderr.print("corewire: cannot write {s}: {t} — {s} was already replaced, so the two projections on disk may be from different generations; re-run to restore the pair\n", .{ out, err, out_path.? });
+        std.Io.Dir.cwd().rename(output.staged, std.Io.Dir.cwd(), output.path, init.io) catch |err| {
+            for (outputs[output_index..]) |staged| std.Io.Dir.cwd().deleteFile(init.io, staged.staged) catch {};
+            if (output_index > 0) {
+                try stderr.print("corewire: cannot write {s}: {t} — earlier projections were already replaced, so the outputs on disk may be from different generations; re-run to restore the set\n", .{ output.path, err });
             } else {
-                try stderr.print("corewire: cannot write {s}: {t}\n", .{ out, err });
+                try stderr.print("corewire: cannot write {s}: {t}\n", .{ output.path, err });
             }
             try stderr.flush();
             std.process.exit(1);

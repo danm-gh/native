@@ -205,6 +205,7 @@ pub fn build(b: *std.Build) void {
     const corewire_sidecar_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/sidecar.zig"));
     const corewire_emit_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/emit.zig"));
     const corewire_facade_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/emit_facade.zig"));
+    const corewire_profile_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/emit_profile.zig"));
     const corewire_extract_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/extract.zig"));
     const corewire_shim_rt_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/shim_rt.zig"));
 
@@ -467,6 +468,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(corewire_sidecar_tests).step);
     test_step.dependOn(&b.addRunArtifact(corewire_emit_tests).step);
     test_step.dependOn(&b.addRunArtifact(corewire_facade_tests).step);
+    test_step.dependOn(&b.addRunArtifact(corewire_profile_tests).step);
     test_step.dependOn(&b.addRunArtifact(corewire_extract_tests).step);
     test_step.dependOn(&b.addRunArtifact(corewire_shim_rt_tests).step);
     if (ts_core_e2e_tests) |ts_core_artifacts| {

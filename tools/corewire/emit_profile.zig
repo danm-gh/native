@@ -1,0 +1,402 @@
+//! core_profile.json emission: the compiler profile that configures a
+//! library-mode build of the generated facade. One sidecar, three
+//! projections — the host imports core_shim.zig, a compiler consumes
+//! core_facade.ts, and this profile tells that compiler's library mode
+//! what to build: the entry module, the C symbol family (the ABI's
+//! mode-provided symbols plus the export map binding every facade
+//! export the sidecar attests to its marshalled signature), the
+//! contract-sidecar emission the same invocation must produce, and the
+//! SDK's determinism policy (fences, teachings, remediations).
+//!
+//! The emission is deterministic: a pure function of the contract facts
+//! and the entry-module name, fixed key order, no timestamps or
+//! environment — re-running the identical invocation reproduces a
+//! byte-identical file, the same doctrine the sidecar emitter follows.
+//!
+//! Marshalled signatures use the v1 classes only (params f64/bool/
+//! string/bytes/u8/u32/i32; returns those minus the integer plumbing
+//! classes, plus void). The wire-shaped channel entries are expressible
+//! in exactly these classes — bytes ride buffer parameters, the
+//! modifier booleans u8, the pinch phase u32 — which is the point of
+//! the wire shape: a union-typed parameter has no marshalling class and
+//! never becomes one.
+
+const std = @import("std");
+const sidecar_mod = @import("sidecar.zig");
+
+const Sidecar = sidecar_mod.Sidecar;
+
+pub const Error = error{ Refused, OutOfMemory };
+
+/// The entry-module spelling the profile declares when the caller
+/// names none: the facade projection's conventional file name, beside
+/// the profile.
+pub const default_entry = "core_facade.ts";
+
+/// One export-map row: the marshalled signature of a facade export, by
+/// ABI suffix. Symbol and export name are both `prefix + suffix` — the
+/// facade's exports are the symbol family under the contract's prefix.
+const ExportSignature = struct {
+    suffix: []const u8,
+    params: []const []const u8,
+    returns: []const u8,
+};
+
+/// The marshalled signatures of every profile-mapped ABI entry, keyed
+/// by export suffix. The four mode-provided symbols (init, the sink
+/// registration, the result-arena reset, collect) ride the profile's
+/// abi block instead, and the two identity getters are synthesized
+/// from the profile's sidecar section — neither family appears here.
+const export_signatures = [_]ExportSignature{
+    .{ .suffix = "boot_cmd", .params = &.{}, .returns = "bytes" },
+    .{ .suffix = "dispatch_void", .params = &.{"u8"}, .returns = "bytes" },
+    .{ .suffix = "dispatch_bytes", .params = &.{ "u8", "bytes" }, .returns = "bytes" },
+    .{ .suffix = "dispatch_number", .params = &.{ "u8", "f64" }, .returns = "bytes" },
+    .{ .suffix = "dispatch_number_bytes", .params = &.{ "u8", "f64", "bytes" }, .returns = "bytes" },
+    .{ .suffix = "dispatch_bool", .params = &.{ "u8", "u8" }, .returns = "bytes" },
+    .{ .suffix = "dispatch_enum", .params = &.{ "u8", "u32" }, .returns = "bytes" },
+    .{ .suffix = "dispatch_record", .params = &.{ "u8", "bytes" }, .returns = "bytes" },
+    .{ .suffix = "dispatch_text_input", .params = &.{ "u8", "bytes" }, .returns = "bytes" },
+    // The two-axis scroll record crosses as direct scalars: one
+    // offset/velocity/viewport/content quartet per axis.
+    .{ .suffix = "dispatch_scroll_state", .params = &.{ "u8", "f64", "f64", "f64", "f64", "f64", "f64", "f64", "f64" }, .returns = "bytes" },
+    .{ .suffix = "subscriptions", .params = &.{}, .returns = "bytes" },
+    .{ .suffix = "model_snapshot", .params = &.{}, .returns = "bytes" },
+    .{ .suffix = "helper_call", .params = &.{ "u32", "bytes" }, .returns = "bytes" },
+    // The wire-shaped conditional channel entries (present exactly when
+    // the sidecar wires the channel): host-event params in, the channel
+    // bytes envelope out.
+    .{ .suffix = "command_msg", .params = &.{"bytes"}, .returns = "bytes" },
+    .{ .suffix = "frame_msg", .params = &.{ "f64", "f64", "f64", "f64" }, .returns = "bytes" },
+    .{ .suffix = "key_msg", .params = &.{ "bytes", "u8", "u8", "u8", "u8" }, .returns = "bytes" },
+    .{ .suffix = "pinch_msg", .params = &.{ "f64", "bytes", "u32", "f64", "f64", "f64", "f64" }, .returns = "bytes" },
+};
+
+/// Suffixes that never enter the export map: the mode-provided symbols
+/// the abi block names, and the identity getters the sidecar section
+/// synthesizes from profile constants.
+const unmapped_suffixes = [_][]const u8{
+    "abi_version", "build_id", "set_panic_sink", "init", "collect", "frame_reset",
+};
+
+/// One determinism fence: a surface denied at compile time when the
+/// compiled module graph reaches it, with the SDK's teaching naming the
+/// sanctioned effect route.
+const Fence = struct {
+    /// Exactly one of `id` (one surface-manifest entry) or `prefix`
+    /// (every entry it prefixes) is set.
+    id: ?[]const u8 = null,
+    prefix: ?[]const u8 = null,
+    teaching: []const u8,
+};
+
+const randomness_teaching = "randomness is an effect: the core requests it through a command and the value arrives as a Msg, so a recorded session replays it exactly.";
+const network_teaching = "network is an effect: declare requests as commands (Cmd.fetch, Cmd.request) and responses arrive as Msgs.";
+
+/// The SDK determinism fences, keyed by the pinned compiler release's
+/// surface-manifest ids. RELEASE-PINNED DATA: a fence id or prefix must
+/// resolve against the pinned release's surface manifest, covering at
+/// least one runtime-deniable entry — an unknown or unpoliceable
+/// selector refuses the whole profile at load rather than riding
+/// inert — so this table lists exactly what the pinned release can
+/// fence, and it is the one place to grow when a release lands new
+/// ids. Not fenceable at the pinned release, verified against its
+/// loader: the wall clock and the process/performance-counter families
+/// (no manifest ids); http/https/dgram/dns (module-level entries only,
+/// no per-call trace to deny); worker_threads/cluster (their members
+/// fold to compile-time constants). Member prefixes carry the folded-
+/// constant exemption, so a folded read (os.EOL) stays compilable
+/// under its family's fence.
+const determinism_fences = [_]Fence{
+    .{ .id = "stdlib.math.random", .teaching = randomness_teaching },
+    .{ .id = "node-builtin.crypto.randomBytes", .teaching = randomness_teaching },
+    .{ .id = "node-builtin.crypto.randomUUID", .teaching = randomness_teaching },
+    .{ .prefix = "node-builtin.fs.", .teaching = "files are effects: declare reads and writes as commands (Cmd.readFile, Cmd.writeFile) and results arrive as Msgs." },
+    .{ .prefix = "node-builtin.net.", .teaching = network_teaching },
+    .{ .prefix = "node-builtin.http2.", .teaching = network_teaching },
+    .{ .prefix = "node-builtin.tls.", .teaching = network_teaching },
+    .{ .prefix = "node-builtin.child_process.", .teaching = "processes are effects: run them through Cmd.spawn and their output arrives as Msgs." },
+    .{ .prefix = "node-builtin.timers.", .teaching = "timers are effects: schedule Cmd.delay or Sub.timer and fire times arrive as Msgs through the host's journaled clock." },
+    .{ .prefix = "node-builtin.os.", .teaching = "machine and session facts are host inputs: they reach a core as journaled Msgs, never as ambient reads." },
+};
+
+/// One rider entry for the teachings/remediations maps.
+const Rider = struct {
+    code: []const u8,
+    text: []const u8,
+};
+
+/// Profile teachings on non-fence refusals. "async" is the shared key
+/// both async-surface refusal codes read.
+const determinism_teachings = [_]Rider{
+    .{ .code = "async", .text = "async, promises, and timer callbacks are unavailable in an app core: the host executes effects — declare a command (Cmd.fetch, Cmd.delay) or a subscription (Sub.timer) and results arrive as Msgs." },
+};
+
+/// Remediations threaded into the structured trap encoding, one per
+/// trap code where the SDK has a sanctioned recovery to name. A trapped
+/// core is poisoned by contract, so every recovery goes through the
+/// process, never through the wounded core.
+const determinism_remediations = [_]Rider{
+    .{ .code = "SC4013", .text = "rebuild the app: an exception escaping a core entry is contract skew between the compiled core and its host bindings, and one build regenerates both from one contract." },
+    .{ .code = "SC4017", .text = "restart the app process: a trapped core is poisoned and never resumes in place, and the recorded session replays deterministically." },
+};
+
+pub fn emitProfile(arena: std.mem.Allocator, sidecar: Sidecar, entry: []const u8) Error![]const u8 {
+    var emitter = ProfileEmitter{ .arena = arena, .sidecar = sidecar, .out = .empty };
+    try emitter.run(entry);
+    return emitter.out.items;
+}
+
+const ProfileEmitter = struct {
+    arena: std.mem.Allocator,
+    sidecar: Sidecar,
+    out: std.ArrayListUnmanaged(u8),
+
+    fn print(self: *ProfileEmitter, comptime fmt: []const u8, args: anytype) Error!void {
+        const text = try std.fmt.allocPrint(self.arena, fmt, args);
+        try self.out.appendSlice(self.arena, text);
+    }
+
+    fn raw(self: *ProfileEmitter, text: []const u8) Error!void {
+        try self.out.appendSlice(self.arena, text);
+    }
+
+    fn run(self: *ProfileEmitter, entry: []const u8) Error!void {
+        const prefix = self.sidecar.abi.prefix;
+        try self.print(
+            \\{{
+            \\  "profile_format": 1,
+            \\  "name": "native-sdk-core",
+            \\  "entry": {s},
+            \\  "emission": "llvm",
+            \\  "abi": {{
+            \\    "prefix": {s},
+            \\    "init_symbol": {s},
+            \\    "sink_register_symbol": {s},
+            \\    "collect_symbol": {s},
+            \\    "result_reset_symbol": {s}
+            \\  }},
+            \\  "exports": [
+            \\
+        , .{
+            try self.jsonString(entry),
+            try self.jsonString(prefix),
+            try self.symbol(prefix, "init"),
+            try self.symbol(prefix, "set_panic_sink"),
+            try self.symbol(prefix, "collect"),
+            try self.symbol(prefix, "frame_reset"),
+        });
+
+        // The export map, in the sidecar's attested (canonical) order:
+        // every suffix the object exports that is neither mode-provided
+        // nor identity-synthesized, bound export-name-to-symbol under
+        // the contract's prefix with its marshalled signature.
+        var first = true;
+        for (self.sidecar.abi.exports) |suffix| {
+            if (nameListed(&unmapped_suffixes, suffix)) continue;
+            const signature = signatureFor(suffix) orelse continue;
+            if (!first) try self.raw(",\n");
+            first = false;
+            const name = try self.symbol(prefix, suffix);
+            try self.print("    {{ \"export\": {s}, \"symbol\": {s}, \"params\": [", .{ name, name });
+            for (signature.params, 0..) |class, index| {
+                try self.print("{s}\"{s}\"", .{ if (index == 0) "" else ", ", class });
+            }
+            try self.print("], \"returns\": \"{s}\" }}", .{signature.returns});
+        }
+        try self.raw("\n  ],\n");
+
+        // The contract-sidecar section: the same invocation that builds
+        // the archive emits the sidecar at the declared path and
+        // synthesizes the two identity getters from these constants.
+        // The facade declares its roots and behavioral entry points
+        // under the fixed projection spellings, whatever the contract
+        // calls them, so the designations here are those spellings.
+        try self.print(
+            \\  "sidecar": {{
+            \\    "path": "core.contract.json",
+            \\    "wire_version": {d},
+            \\    "abi_version": {d},
+            \\    "snapshot_format": {d},
+            \\    "build_id_symbol": {s},
+            \\    "abi_version_symbol": {s},
+            \\    "model": "Model",
+            \\    "msg": "Msg",
+            \\    "init_export": "initialModel",
+            \\    "update_export": "update",
+            \\    "subscriptions_export": "subscriptions",
+            \\    "source_hash": "module-graph"
+            \\  }},
+            \\
+        , .{
+            self.sidecar.wire_version,
+            self.sidecar.abi_version,
+            self.sidecar.abi.snapshot_format,
+            try self.symbol(prefix, "build_id"),
+            try self.symbol(prefix, "abi_version"),
+        });
+
+        // The determinism policy: deny-fences over the ambient surfaces
+        // with the SDK's teachings, the shared async teaching, and the
+        // trap remediations.
+        try self.raw("  \"determinism\": {\n    \"teachings\": {\n");
+        for (determinism_teachings, 0..) |rider, index| {
+            try self.print("      {s}: {s}{s}\n", .{ try self.jsonString(rider.code), try self.jsonString(rider.text), if (index + 1 == determinism_teachings.len) "" else "," });
+        }
+        try self.raw("    },\n    \"remediations\": {\n");
+        for (determinism_remediations, 0..) |rider, index| {
+            try self.print("      {s}: {s}{s}\n", .{ try self.jsonString(rider.code), try self.jsonString(rider.text), if (index + 1 == determinism_remediations.len) "" else "," });
+        }
+        try self.raw("    },\n    \"fences\": [\n");
+        for (determinism_fences, 0..) |fence, index| {
+            if (fence.id) |id| {
+                try self.print("      {{ \"id\": {s}, \"teaching\": {s} }}{s}\n", .{ try self.jsonString(id), try self.jsonString(fence.teaching), if (index + 1 == determinism_fences.len) "" else "," });
+            } else {
+                try self.print("      {{ \"prefix\": {s}, \"teaching\": {s} }}{s}\n", .{ try self.jsonString(fence.prefix.?), try self.jsonString(fence.teaching), if (index + 1 == determinism_fences.len) "" else "," });
+            }
+        }
+        try self.raw("    ]\n  }\n}\n");
+    }
+
+    /// A prefixed symbol spelling as a JSON string literal.
+    fn symbol(self: *ProfileEmitter, prefix: []const u8, suffix: []const u8) Error![]const u8 {
+        return self.jsonString(try std.fmt.allocPrint(self.arena, "{s}{s}", .{ prefix, suffix }));
+    }
+
+    /// A JSON double-quoted string literal: quotes and backslashes
+    /// escape, control bytes take \u escapes, everything else rides as
+    /// UTF-8.
+    fn jsonString(self: *ProfileEmitter, text: []const u8) Error![]const u8 {
+        var out: std.ArrayListUnmanaged(u8) = .empty;
+        try out.append(self.arena, '"');
+        for (text) |char| {
+            switch (char) {
+                '"' => try out.appendSlice(self.arena, "\\\""),
+                '\\' => try out.appendSlice(self.arena, "\\\\"),
+                '\n' => try out.appendSlice(self.arena, "\\n"),
+                '\r' => try out.appendSlice(self.arena, "\\r"),
+                '\t' => try out.appendSlice(self.arena, "\\t"),
+                else => {
+                    if (char < 0x20) {
+                        try out.appendSlice(self.arena, try std.fmt.allocPrint(self.arena, "\\u{x:0>4}", .{char}));
+                    } else {
+                        try out.append(self.arena, char);
+                    }
+                },
+            }
+        }
+        try out.append(self.arena, '"');
+        return out.items;
+    }
+};
+
+fn signatureFor(suffix: []const u8) ?*const ExportSignature {
+    for (&export_signatures) |*signature| {
+        if (std.mem.eql(u8, signature.suffix, suffix)) return signature;
+    }
+    return null;
+}
+
+fn nameListed(names: []const []const u8, name: []const u8) bool {
+    for (names) |candidate| {
+        if (std.mem.eql(u8, candidate, name)) return true;
+    }
+    return false;
+}
+
+// --------------------------------------------------------------- tests
+
+const testing = std.testing;
+
+fn profileFromJson(arena: std.mem.Allocator, json: []const u8, entry: []const u8) ![]const u8 {
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, json, &diags);
+    return emitProfile(arena, parsed, entry);
+}
+
+test "profile emission is deterministic and carries the library-mode surface" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const first = try profileFromJson(arena, sidecar_mod.minimal_valid_json, default_entry);
+    const second = try profileFromJson(arena, sidecar_mod.minimal_valid_json, default_entry);
+    try testing.expectEqualStrings(first, second);
+    try testing.expect(std.mem.indexOf(u8, first, "\"profile_format\": 1") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"entry\": \"core_facade.ts\"") != null);
+    // Mode symbols ride the abi block under the contract's prefix.
+    try testing.expect(std.mem.indexOf(u8, first, "\"init_symbol\": \"nsc_core_init\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"sink_register_symbol\": \"nsc_core_set_panic_sink\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"collect_symbol\": \"nsc_core_collect\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"result_reset_symbol\": \"nsc_core_frame_reset\"") != null);
+    // The export map binds export name to symbol with the marshalled
+    // signature; mode symbols and identity getters stay out of it.
+    try testing.expect(std.mem.indexOf(u8, first, "{ \"export\": \"nsc_core_dispatch_number\", \"symbol\": \"nsc_core_dispatch_number\", \"params\": [\"u8\", \"f64\"], \"returns\": \"bytes\" }") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"nsc_core_init\"") == null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"nsc_core_build_id\"") == null);
+    // The sidecar section echoes the contract's generations and
+    // declares the SDK's emission path and identity-getter symbols.
+    try testing.expect(std.mem.indexOf(u8, first, "\"path\": \"core.contract.json\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"wire_version\": 3") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"build_id_symbol\": \"nsc_core_build_id\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"abi_version_symbol\": \"nsc_core_abi_version\"") != null);
+    // The determinism policy rides whole: fences with SDK teachings,
+    // the shared async teaching, the trap remediations.
+    try testing.expect(std.mem.indexOf(u8, first, "{ \"id\": \"stdlib.math.random\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "{ \"prefix\": \"node-builtin.fs.\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"async\":") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"SC4013\":") != null);
+}
+
+test "wired channels join the export map with their wire shapes" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"key_msg\": false", "\"key_msg\": true");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"pinch_msg\": false", "\"pinch_msg\": true");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"helper_call\"]", "\"helper_call\", \"key_msg\", \"pinch_msg\"]");
+    const generated = try profileFromJson(arena, source, default_entry);
+    // The wire-shaped signatures: bytes as buffers, u8 modifier
+    // booleans, the pinch phase a u32 member index.
+    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_key_msg\", \"symbol\": \"nsc_core_key_msg\", \"params\": [\"bytes\", \"u8\", \"u8\", \"u8\", \"u8\"], \"returns\": \"bytes\" }") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_pinch_msg\", \"symbol\": \"nsc_core_pinch_msg\", \"params\": [\"f64\", \"bytes\", \"u32\", \"f64\", \"f64\", \"f64\", \"f64\"], \"returns\": \"bytes\" }") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_command_msg") == null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_frame_msg") == null);
+}
+
+test "the profile tracks the contract's prefix and generations" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"prefix\": \"nsc_core_\"", "\"prefix\": \"app2_\"");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"wire_version\": 3", "\"wire_version\": 3");
+    const generated = try profileFromJson(arena, source, "my_facade.ts");
+    try testing.expect(std.mem.indexOf(u8, generated, "\"entry\": \"my_facade.ts\"") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "\"prefix\": \"app2_\"") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "\"init_symbol\": \"app2_init\"") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "\"export\": \"app2_model_snapshot\"") != null);
+}
+
+test "the emitted profile parses as JSON with the expected top-level keys" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const generated = try profileFromJson(arena, sidecar_mod.minimal_valid_json, default_entry);
+    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, generated, .{});
+    const top = parsed.object;
+    for ([_][]const u8{ "profile_format", "name", "entry", "emission", "abi", "exports", "sidecar", "determinism" }) |key| {
+        try testing.expect(top.contains(key));
+    }
+    const determinism = top.get("determinism").?.object;
+    try testing.expect(determinism.get("fences").?.array.items.len == determinism_fences.len);
+    // Teachings and remediations stay within the ratified string
+    // constraints: no control bytes below 0x20 except newline, 512
+    // bytes at most.
+    for (determinism_fences) |fence| {
+        try testing.expect(fence.teaching.len <= 512);
+        for (fence.teaching) |char| try testing.expect(char >= 0x20 or char == '\n');
+    }
+    for (determinism_teachings ++ determinism_remediations) |rider| {
+        try testing.expect(rider.text.len <= 512);
+        for (rider.text) |char| try testing.expect(char >= 0x20 or char == '\n');
+    }
+}

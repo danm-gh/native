@@ -254,6 +254,10 @@ export class TypedAst {
         if (!tsImpl.isPropertySignature(prop) || !prop.name || !tsImpl.isIdentifier(prop.name)) return null;
         const name = prop.name.text;
         if (name === tagName) {
+          // An optional tag is no discriminant: the source permits the
+          // untagged value while the projected union would demand the
+          // arm, so the shape is not this one.
+          if (prop.questionToken) return null;
           if (!prop.type) return null;
           const t = this.checker.getTypeFromTypeNode(prop.type);
           const value = this.literalValue(t);
@@ -315,14 +319,19 @@ export class TypedAst {
   }
 
   /// Properties of an object-literal type alias body, in declaration
-  /// order — the same walk as an interface's members.
-  propsOfTypeLiteral(node: tsImpl.TypeLiteralNode): PropInfo[] {
+  /// order — null unless every member is a plain record property (an
+  /// identifier-named, annotated, non-optional property signature), so
+  /// a shape this walk cannot carry whole refuses as an unsupported
+  /// alias instead of registering a struct with silently missing
+  /// fields.
+  propsOfTypeLiteral(node: tsImpl.TypeLiteralNode): PropInfo[] | null {
     const out: PropInfo[] = [];
     for (const member of node.members) {
-      if (!tsImpl.isPropertySignature(member) || !member.name || !tsImpl.isIdentifier(member.name)) continue;
+      if (!tsImpl.isPropertySignature(member) || !member.name || !tsImpl.isIdentifier(member.name)) return null;
+      if (member.questionToken || !member.type) return null;
       out.push({
         name: member.name.text,
-        optional: member.questionToken !== undefined,
+        optional: false,
         readonly: hasReadonlyModifier(member),
         typeNode: member.type,
         declaration: member,

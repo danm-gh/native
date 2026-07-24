@@ -265,11 +265,14 @@ export class TypeTable {
           this.declOrder.push(name);
           continue;
         }
-        if (ts.isTypeLiteralNode(stmt.type)) {
-          // An object-literal alias is a struct exactly like an interface;
-          // the alias FORM is how a contract projection spells a
-          // value-stored record (interfaces spell node storage), and the
-          // storage itself still comes from the promotion walk.
+        if (ts.isTypeLiteralNode(stmt.type) && this.tast.propsOfTypeLiteral(stmt.type) !== null) {
+          // A plain-record object-literal alias is a struct exactly like
+          // an interface; the alias FORM is how a contract projection
+          // spells a value-stored record (interfaces spell node
+          // storage), and the storage itself still comes from the
+          // promotion walk. Shapes the plain-record walk cannot carry
+          // whole (quoted or optional properties) stay unclassified and
+          // refuse at emission instead of losing fields silently.
           this.structs.set(name, {
             name,
             decl: stmt,
@@ -316,7 +319,8 @@ export class TypeTable {
         }
         const structInfo = this.structs.get(stmt.name.text);
         if (structInfo && structInfo.decl === stmt && ts.isTypeLiteralNode(stmt.type)) {
-          structInfo.fields = this.tast.propsOfTypeLiteral(stmt.type).map((p) => this.fieldOf(p));
+          const props = this.tast.propsOfTypeLiteral(stmt.type);
+          if (props) structInfo.fields = props.map((p) => this.fieldOf(p));
         }
       }
     }

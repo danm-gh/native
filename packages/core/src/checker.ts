@@ -703,29 +703,42 @@ export class SubsetChecker {
   /// identifier.
   private checkReservedContractConsts(): void {
     const reserved = new Set(["viewUnbound", "modelUnbound", "msgUnbound"]);
-    const declaresReserved = (decl: ts.Declaration): boolean =>
+    const declaresReserved = (decl: ts.Declaration | undefined): decl is ts.VariableDeclaration =>
+      decl !== undefined &&
       ts.isVariableDeclaration(decl) &&
       ts.isIdentifier(decl.name) &&
       reserved.has(decl.name.text) &&
       ts.isVariableDeclarationList(decl.parent) &&
       ts.isVariableStatement(decl.parent.parent) &&
       ts.isSourceFile(decl.parent.parent.parent);
+    const reportReserved = (decl: ts.VariableDeclaration, at: ts.Node): void => {
+      this.report(
+        "NS1032",
+        `\`${(decl.name as ts.Identifier).text}\` is the contract's unbound-list vocabulary the build reads without emitting — it cannot be referenced as module data; rename the constant to use it as data.`,
+        at,
+      );
+    };
     for (const file of this.files) {
       const visit = (node: ts.Node): void => {
-        if (
+        // The value side of a shorthand (`{ modelUnbound }`) reads the
+        // binding through the property symbol; resolve it explicitly.
+        if (ts.isShorthandPropertyAssignment(node)) {
+          const decl = this.tast.shorthandValueDeclaration(node);
+          if (declaresReserved(decl)) reportReserved(decl, node);
+        } else if (
           ts.isIdentifier(node) &&
-          reserved.has(node.text) &&
           !(ts.isVariableDeclaration(node.parent) && node.parent.name === node) &&
-          !(ts.isExportSpecifier(node.parent) || ts.isImportSpecifier(node.parent))
+          !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) &&
+          !(ts.isPropertyAssignment(node.parent) && node.parent.name === node) &&
+          !ts.isPropertySignature(node.parent) &&
+          !(ts.isExportSpecifier(node.parent) || ts.isImportSpecifier(node.parent)) &&
+          !ts.isShorthandPropertyAssignment(node.parent)
         ) {
-          const sym = this.tast.symbolOf(node);
-          if (sym?.declarations?.some(declaresReserved)) {
-            this.report(
-              "NS1032",
-              `\`${node.text}\` is the contract's unbound-list vocabulary the build reads without emitting — it cannot be referenced as module data; rename the constant to use it as data.`,
-              node,
-            );
-          }
+          // Resolve through import aliases so a renamed binding
+          // (`import { modelUnbound as names }`) is caught by what it
+          // DECLARES, never by its spelling.
+          const decl = this.tast.declarationOf(node);
+          if (declaresReserved(decl)) reportReserved(decl, node);
         }
         ts.forEachChild(node, visit);
       };
@@ -819,7 +832,7 @@ export class SubsetChecker {
         continue;
       }
       const targetName = ts.isFunctionDeclaration(target) || ts.isVariableDeclaration(target) ? target.name?.getText() : undefined;
-      if (b.renamed && (targetName === "viewUnbound" || targetName === "envMsgs")) {
+      if (b.renamed && (targetName === "viewUnbound" || targetName === "envMsgs" || targetName === "modelUnbound" || targetName === "msgUnbound")) {
         this.report(
           "NS1047",
           `\`${b.exportedName}\` renames \`${targetName}\`, which is wiring config the build reads by its own name, not an emitted value.`,
@@ -835,7 +848,7 @@ export class SubsetChecker {
   private static readonly entryOnlyExports = new Set([
     "update", "initialModel", "subscriptions",
     "commandMsg", "keyMsg", "frameMsg", "pinchMsg", "appearanceMsg", "chromeMsg", "envMsgs",
-    "viewUnbound",
+    "viewUnbound", "modelUnbound", "msgUnbound",
   ]);
 
   private checkEntryContract(): void {

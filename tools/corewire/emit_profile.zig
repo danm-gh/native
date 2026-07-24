@@ -241,6 +241,20 @@ const ProfileEmitter = struct {
             try self.symbol(prefix, "build_id"),
             try self.symbol(prefix, "abi_version"),
         });
+        // Integer-slot declarations are RELEASE-PINNED DATA this profile
+        // deliberately leaves absent. The pinned release accepts a
+        // sidecar.integer_slots list, but its prover demands an inline
+        // wholeness proof at EVERY construction of a slot-declared
+        // record shape and does not trust reads of already-classed
+        // slots — verified live: a spread update (`{ ...model, x }`)
+        // refuses on every untouched integer field, a structurally
+        // identical draft type unifies with the declared shape and
+        // refuses the same way, and even this facade's own message
+        // constructors (`nsc_core_msg_<arm>(value: number)`) refuse on
+        // an integer-classed arm. Until slot reads carry their own
+        // class, the compiled pairing rides the co-emitted contract's
+        // f64 posture: the archive pairs with the sidecar the same
+        // invocation emitted, and integer values stay exact below 2^53.
 
         // The determinism policy: deny-fences over the ambient surfaces
         // with the SDK's teachings, the shared async teaching, and the
@@ -344,11 +358,16 @@ test "profile emission is deterministic and carries the library-mode surface" {
     try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"nsc_core_init\"") == null);
     try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"nsc_core_build_id\"") == null);
     // The sidecar section echoes the contract's generations and
-    // declares the SDK's emission path and identity-getter symbols.
+    // declares the SDK's emission path, identity-getter symbols, and
+    // integer-class obligations.
     try testing.expect(std.mem.indexOf(u8, first, "\"path\": \"core.contract.json\"") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"wire_version\": 3") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"build_id_symbol\": \"nsc_core_build_id\"") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"abi_version_symbol\": \"nsc_core_abi_version\"") != null);
+    // Integer-slot declarations stay absent at this pin (see the
+    // emitter's release-pinned note): the archive pairs with its own
+    // co-emitted contract's f64 posture.
+    try testing.expect(std.mem.indexOf(u8, first, "integer_slots") == null);
     // The determinism policy rides whole: fences with SDK teachings,
     // the shared async teaching, the trap remediations.
     try testing.expect(std.mem.indexOf(u8, first, "{ \"id\": \"stdlib.math.random\"") != null);

@@ -1608,7 +1608,7 @@ export class Emitter {
 
   // ------------------------------------------------------------------ types
 
-  private emitStruct(decl: ts.InterfaceDeclaration | ts.ClassDeclaration): void {
+  private emitStruct(decl: ts.InterfaceDeclaration | ts.ClassDeclaration | ts.TypeAliasDeclaration): void {
     if (!decl.name) return;
     const info = this.table.structs.get(decl.name.text);
     if (!info) return;
@@ -1934,6 +1934,13 @@ export class Emitter {
         this.out.push(`    pub const view_unbound = .{ ${this.unbound.msg.map((n) => `"${n}"`).join(", ")} };`);
       }
       this.out.push(`};`);
+      return;
+    }
+    const st = this.table.structs.get(name);
+    if (st && st.decl === decl) {
+      // An object-literal alias is a struct like an interface (the alias
+      // form is a contract projection's value-storage spelling).
+      this.emitStruct(decl);
       return;
     }
     const target = this.table.plainAliases.get(name);

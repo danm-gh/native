@@ -98,6 +98,7 @@ const FacadeEmitter = struct {
     out: std.ArrayListUnmanaged(u8),
     inlined: []const []const u8 = &.{},
     flattened: []const []const u8 = &.{},
+    node_stored: []const []const u8 = &.{},
     sample_ordinal: usize = 0,
     sample_slice_depth: usize = 0,
 
@@ -126,6 +127,7 @@ const FacadeEmitter = struct {
     fn run(self: *FacadeEmitter) Error!void {
         self.inlined = try emit_mod.inlinedTableNames(self.arena, self.sidecar);
         self.flattened = try self.flattenedTableNames();
+        self.node_stored = try self.nodeStoredTableNames();
         try self.validateNames();
         self.validateOptionalDepth();
         if (self.diags.hasErrors()) return;
@@ -453,11 +455,20 @@ const FacadeEmitter = struct {
     }
 
     fn structInterface(self: *FacadeEmitter, entry: *const sidecar_mod.Struct) Error!void {
-        try self.print("\nexport interface {s} {{", .{self.spellName(entry.name)});
+        // Declaration form spells storage for a contract emitter that
+        // re-derives it: node-stored records (and the model root, whose
+        // designation must be an interface) declare as interfaces;
+        // value-stored records take the object-literal alias form.
+        const as_interface = nameListed(self.node_stored, entry.name) or std.mem.eql(u8, entry.name, self.sidecar.model);
+        if (as_interface) {
+            try self.print("\nexport interface {s} {{", .{self.spellName(entry.name)});
+        } else {
+            try self.print("\nexport type {s} = {{", .{self.spellName(entry.name)});
+        }
         for (entry.fields) |field| {
             try self.print("\n  readonly {s}: {s};", .{ try tsProp(self.arena, field.name), try self.spellRef(field.type, entry.name, field.name) });
         }
-        try self.raw("\n}\n");
+        try self.raw(if (as_interface) "\n}\n" else "\n};\n");
     }
 
     /// One arm of a kind-tagged union type: bare, single `value`
@@ -507,6 +518,37 @@ const FacadeEmitter = struct {
                 if (self.synthesizedRecordOf(arm.payload, entry.name, arm.name)) |record| {
                     try names.append(self.arena, record.name);
                 }
+            }
+        }
+        return names.items;
+    }
+
+    /// The record names the contract stores BY REFERENCE anywhere: they
+    /// declare as interfaces (the projection's node-storage spelling);
+    /// every other record declares as an object-literal type alias (the
+    /// value-storage spelling), so a contract emitter re-deriving
+    /// storage from declaration form lands on the contract's own
+    /// classes.
+    fn nodeStoredTableNames(self: *FacadeEmitter) Error![]const []const u8 {
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (self.sidecar.types.structs) |entry| {
+            for (entry.fields) |field| {
+                try noteNodeRefs(&names, self.arena, field.type);
+            }
+        }
+        for (self.sidecar.types.unions) |entry| {
+            for (entry.arms) |arm| {
+                try noteNodeRefs(&names, self.arena, arm.payload);
+            }
+        }
+        for (self.sidecar.model_helpers) |helper| {
+            try noteNodeRefs(&names, self.arena, helper.returns);
+            for (helper.params) |param| try noteNodeRefs(&names, self.arena, param);
+        }
+        for (self.sidecar.msg.arms) |arm| {
+            switch (arm.payload) {
+                .scalar => |ref| try noteNodeRefs(&names, self.arena, ref),
+                else => {},
             }
         }
         return names.items;
@@ -1560,6 +1602,20 @@ const FacadeEmitter = struct {
     }
 };
 
+/// Collect the record names `ref` reaches through NODE references,
+/// walking the optional/slice wrappers (a node behind an optional or a
+/// sequence is node storage all the same).
+fn noteNodeRefs(names: *std.ArrayListUnmanaged([]const u8), arena: std.mem.Allocator, ref: TypeRef) error{OutOfMemory}!void {
+    switch (ref) {
+        .node => |name| {
+            if (!nameListed(names.items, name)) try names.append(arena, name);
+        },
+        .optional => |inner| try noteNodeRefs(names, arena, inner.*),
+        .slice => |elem| try noteNodeRefs(names, arena, elem.*),
+        else => {},
+    }
+}
+
 /// A msg record payload as the TypeRef shape synthesizedRecordOf reads.
 fn recordPayloadRef(payload: sidecar_mod.Payload) TypeRef {
     return switch (payload) {
@@ -1935,6 +1991,27 @@ test "u64-attested slots pick the unsigned encoder; the twin emits only when att
     // Without a u64 attestation, the twin never emits.
     const signed_only = try facadeFromJson(arena, sidecar_mod.minimal_valid_json);
     try testing.expect(std.mem.indexOf(u8, signed_only, "nscfU64") == null);
+}
+
+test "declaration forms spell the contract's record storage" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // A node-stored list element and a value-stored record field: the
+    // former declares as an interface, the latter as an object alias;
+    // the model root stays an interface (its designation requires one).
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"Task\", \"fields\": [{\"name\": \"id\", \"type\": {\"kind\": \"f64\"}}]},\n      {\"name\": \"Pos\", \"fields\": [{\"name\": \"x\", \"type\": {\"kind\": \"f64\"}}]},");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"items\", \"type\": {\"kind\": \"slice\", \"elem\": {\"kind\": \"node\", \"name\": \"Task\"}}}, {\"name\": \"pos\", \"type\": {\"kind\": \"value\", \"name\": \"Pos\"}}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "export interface Task {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "export type Pos = {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "export interface Model {") != null);
 }
 
 test "composite slice elements parenthesize in the projection" {

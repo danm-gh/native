@@ -314,6 +314,9 @@ fn profileRelativeEntry(init: std.process.Init, stderr: *std.Io.Writer, profile_
         try stderr.flush();
         return error.Unrelatable;
     }
+    // Separator conversion is a WINDOWS translation only: on POSIX a
+    // backslash is an ordinary filename byte and must ride verbatim.
+    if (std.fs.path.sep != std.fs.path.sep_windows) return related;
     const posix = try arena.dupe(u8, related);
     for (posix) |*char| {
         if (char.* == std.fs.path.sep_windows) char.* = std.fs.path.sep_posix;

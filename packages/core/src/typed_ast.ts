@@ -306,6 +306,23 @@ export class TypedAst {
     return out;
   }
 
+  /// Properties of an object-literal type alias body, in declaration
+  /// order — the same walk as an interface's members.
+  propsOfTypeLiteral(node: tsImpl.TypeLiteralNode): PropInfo[] {
+    const out: PropInfo[] = [];
+    for (const member of node.members) {
+      if (!tsImpl.isPropertySignature(member) || !member.name || !tsImpl.isIdentifier(member.name)) continue;
+      out.push({
+        name: member.name.text,
+        optional: member.questionToken !== undefined,
+        readonly: hasReadonlyModifier(member),
+        typeNode: member.type,
+        declaration: member,
+      });
+    }
+    return out;
+  }
+
   /// tsc's own assignability relation — thrown values checked against the
   /// core's declared error shape (the catch assertion's type node).
   isAssignableToNode(expr: tsImpl.Expression, typeNode: tsImpl.TypeNode): boolean {

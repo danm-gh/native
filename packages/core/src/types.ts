@@ -39,7 +39,7 @@ export interface ZField {
 
 export interface StructInfo {
   readonly name: string;
-  readonly decl: ts.InterfaceDeclaration | ts.ClassDeclaration;
+  readonly decl: ts.InterfaceDeclaration | ts.ClassDeclaration | ts.TypeAliasDeclaration;
   /// Filled in the second collection pass (field types may reference types
   /// declared in any of the core's files, in any order).
   fields: readonly ZField[];
@@ -265,6 +265,21 @@ export class TypeTable {
           this.declOrder.push(name);
           continue;
         }
+        if (ts.isTypeLiteralNode(stmt.type)) {
+          // An object-literal alias is a struct exactly like an interface;
+          // the alias FORM is how a contract projection spells a
+          // value-stored record (interfaces spell node storage), and the
+          // storage itself still comes from the promotion walk.
+          this.structs.set(name, {
+            name,
+            decl: stmt,
+            fields: [],
+            exported,
+            promoted: true, // refined by markPromotions
+          });
+          this.declOrder.push(name);
+          continue;
+        }
         if (ts.isTypeReferenceNode(stmt.type) && ts.isIdentifier(stmt.type.typeName)) {
           const target = stmt.type.typeName.text;
           if (target === "Uint8Array") {
@@ -298,6 +313,10 @@ export class TypeTable {
           if (disc) {
             info.arms = disc.map((m) => ({ tag: m.tag, fields: m.fields.map((p) => this.fieldOf(p)) }));
           }
+        }
+        const structInfo = this.structs.get(stmt.name.text);
+        if (structInfo && structInfo.decl === stmt && ts.isTypeLiteralNode(stmt.type)) {
+          structInfo.fields = this.tast.propsOfTypeLiteral(stmt.type).map((p) => this.fieldOf(p));
         }
       }
     }

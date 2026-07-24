@@ -719,6 +719,21 @@ export class SubsetChecker {
         at,
       );
     };
+    // The lists are entry-module configuration: a declaration in an
+    // imported module is inert whether exported or not (the build reads
+    // the entry's declarations only), so it refuses like the exported
+    // form instead of silently configuring nothing.
+    for (const file of this.files) {
+      if (file === this.entry) continue;
+      for (const stmt of file.statements) {
+        if (!ts.isVariableStatement(stmt)) continue;
+        for (const decl of stmt.declarationList.declarations) {
+          if (ts.isIdentifier(decl.name) && reserved.has(decl.name.text)) {
+            this.report("NS1014", `\`${decl.name.text}\` is declared in an imported module.`, decl.name);
+          }
+        }
+      }
+    }
     for (const file of this.files) {
       const visit = (node: ts.Node): void => {
         // The value side of a shorthand (`{ modelUnbound }`) reads the
@@ -932,16 +947,25 @@ export class SubsetChecker {
           // Identity is only in question when BOTH sides can be
           // records at once: a presence check against null (or any
           // never-a-record operand) compares the option, not the
-          // record, and stays exact. The record test on the OTHER side
-          // is structural, so an assertion-erased spelling (`x as
-          // { ... }`) cannot slip a record past the guard by shedding
-          // its name.
+          // record, and stays exact. Operands are typed with their
+          // assertions PEELED — an `as` erases at emission, so the
+          // compared value is the underlying expression's, and a
+          // structural respelling cannot shed the record's name. The
+          // record test on the OTHER side is structural for the same
+          // reason.
+          const peel = (e: ts.Expression): ts.Expression => {
+            let cur = e;
+            while (ts.isParenthesizedExpression(cur) || ts.isAsExpression(cur) || ts.isSatisfiesExpression(cur) || ts.isNonNullExpression(cur)) {
+              cur = cur.expression;
+            }
+            return cur;
+          };
           const canBeRecord = (t: ts.Type): boolean => {
             if (t.isUnion()) return t.types.some(canBeRecord);
             return (t.flags & ts.TypeFlags.Object) !== 0;
           };
-          const leftType = this.tast.typeOf(node.left);
-          const rightType = this.tast.typeOf(node.right);
+          const leftType = this.tast.typeOf(peel(node.left));
+          const rightType = this.tast.typeOf(peel(node.right));
           const left = aliasStructOfType(leftType);
           const right = aliasStructOfType(rightType);
           const named = left ?? right;
@@ -2105,6 +2129,13 @@ export class SubsetChecker {
           const propDecl = this.tast.declarationOf(fieldWrite.name);
           if (propDecl && ts.isPropertyDeclaration(propDecl)) {
             this.checkInstanceMutation(fieldWrite.expression, node, what);
+          }
+          // Record fields (interface or object-alias members) have no
+          // in-place write in the emitted layout — records update by
+          // reconstruction. tsc already fences `readonly` spellings;
+          // this closes the mutable-declared ones the same way.
+          if (propDecl && ts.isPropertySignature(propDecl)) {
+            this.report("NS1001", `${what} mutates a record in place — records update by reconstruction (\`{ ...value, ${fieldWrite.name.text}: v }\`).`, node);
           }
         }
         if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {

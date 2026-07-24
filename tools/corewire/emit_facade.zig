@@ -346,6 +346,14 @@ const FacadeEmitter = struct {
             }
         }
 
+        // Value records the MODEL keeps carry scalar fields only, and
+        // model sequences carry reference-stored records: the facade's
+        // consumers commit by-value records shallowly, so heap-backed
+        // fields would dangle across frames and by-value arrays have no
+        // commit walk. Refuse here, where the teaching can name the
+        // record, instead of emitting a facade its compilers refuse.
+        try self.validateModelValueRecords();
+
         // The host-constructed channels build their event record's
         // fields DIRECTLY on the named arm, so the arm's record must
         // flatten into the arm literal (the single-use synthesized
@@ -358,6 +366,62 @@ const FacadeEmitter = struct {
             try self.requireFlattenedChannelArm("channels.chrome_msg", arm_name);
         }
         if (!std.mem.eql(u8, self.sidecar.model, "Model")) try self.fenceDecl("", &.{}); // placeholder keeps shape symmetric
+    }
+
+    /// Walk the model tree and refuse the value-record shapes the
+    /// facade's compilers cannot carry: a model-kept value record with
+    /// a non-scalar field, and a model sequence of value records.
+    fn validateModelValueRecords(self: *FacadeEmitter) Error!void {
+        var visited: std.ArrayListUnmanaged([]const u8) = .empty;
+        const model = sidecar_mod.findStruct(self.sidecar.types, self.sidecar.model) orelse return;
+        for (model.fields) |field| {
+            try self.visitModelRef(&visited, field.type);
+        }
+    }
+
+    fn visitModelRef(self: *FacadeEmitter, visited: *std.ArrayListUnmanaged([]const u8), ref: TypeRef) Error!void {
+        switch (ref) {
+            .value => |name| {
+                if (nameListed(visited.items, name)) return;
+                try visited.append(self.arena, name);
+                const entry = sidecar_mod.findStruct(self.sidecar.types, name) orelse return;
+                for (entry.fields) |field| {
+                    const scalar = switch (field.type) {
+                        .f64, .i64, .bool, .enum_ref => true,
+                        else => false,
+                    };
+                    if (!scalar) {
+                        self.diags.flag("types", "\"{s}\" is a value-stored record the model keeps, but field \"{s}\" is not a scalar — the compiled projection commits value records shallowly, so heap-backed fields would dangle across frames; store \"{s}\" by reference in the core source", .{ name, field.name, name });
+                        break;
+                    }
+                }
+            },
+            .node => |name| {
+                if (nameListed(visited.items, name)) return;
+                try visited.append(self.arena, name);
+                const entry = sidecar_mod.findStruct(self.sidecar.types, name) orelse return;
+                for (entry.fields) |field| {
+                    try self.visitModelRef(visited, field.type);
+                }
+            },
+            .union_ref => |name| {
+                if (nameListed(visited.items, name)) return;
+                try visited.append(self.arena, name);
+                const entry = sidecar_mod.findUnion(self.sidecar.types, name) orelse return;
+                for (entry.arms) |arm| {
+                    try self.visitModelRef(visited, arm.payload);
+                }
+            },
+            .slice => |elem| {
+                const element = if (elem.* == .optional) elem.optional.* else elem.*;
+                if (element == .value) {
+                    self.diags.flag("types", "a model sequence holds \"{s}\" by value — sequences the model keeps carry reference-stored records (the compiled projection has no by-value sequence commit); store \"{s}\" by reference in the core source", .{ element.value, element.value });
+                }
+                try self.visitModelRef(visited, elem.*);
+            },
+            .optional => |inner| try self.visitModelRef(visited, inner.*),
+            else => {},
+        }
     }
 
     /// Refuse a host-constructed channel arm whose record does not

@@ -2,7 +2,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkOnly, ruleIds, transpile } from "./helpers.ts";
+import { checkOnly, ruleIds, transpile, transpileFiles } from "./helpers.ts";
 
 const core = `
 export interface Model { readonly count: number; }
@@ -974,4 +974,76 @@ export function update(model: Model, msg: Msg): Model {
 }
 `);
   assert.ok(ruleIds(asserted).includes("NS1061"), `got ${ruleIds(asserted)}`);
+});
+
+test("NS1061/NS1001/NS1014/NS1032: round-trip edges of the value-record and unbound surfaces", () => {
+  // Both operands asserted: assertions erase at emission, so the guard
+  // types the peeled expressions.
+  const bothAsserted = checkOnly(`
+export type Pos = { readonly x: number };
+export interface Model { readonly pos: Pos; readonly n: number; }
+export type Msg = { readonly kind: "moved"; readonly pos: Pos } | { readonly kind: "b" };
+export function initialModel(): Model { return { pos: { x: 0 }, n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  if (msg.kind === "moved") {
+    return { pos: msg.pos, n: (model.pos as { readonly x: number }) === (msg.pos as { readonly x: number }) ? 1 : 0 };
+  }
+  return model;
+}
+`);
+  assert.ok(ruleIds(bothAsserted).includes("NS1061"), `got ${ruleIds(bothAsserted)}`);
+
+  // Record fields have no in-place write: mutation through a mutable
+  // property refuses with the reconstruction teaching.
+  const paramWrite = checkOnly(`
+export type Pos = { x: number };
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "a"; readonly pos: Pos } | { readonly kind: "b" };
+function bump(p: Pos): number { p.x++; return p.x; }
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  if (msg.kind === "a") { return { n: bump({ x: 1 }) }; }
+  return model;
+}
+`);
+  assert.ok(ruleIds(paramWrite).includes("NS1001"), `got ${ruleIds(paramWrite)}`);
+
+  // An unexported reserved const in an imported module is inert
+  // configuration and refuses like the exported form.
+  const imported = transpileFiles({
+    "core.ts": `
+import { other } from "./lists.ts";
+export interface Model { readonly n: number; readonly hidden: number; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return { n: other, hidden: 1 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`,
+    "lists.ts": `const modelUnbound = ["hidden"] as const;\nexport const other = modelUnbound.length;\n`,
+  });
+  assert.equal(imported.ok, false);
+  assert.ok(imported.diagnostics.some((d) => d.id === "NS1014"), JSON.stringify(imported.diagnostics));
+
+  // The split pair restates viewUnbound's facts: an unresolvable entry
+  // and a missing one both refuse.
+  const unresolvable = transpile(`
+export interface Model { readonly n: number; readonly hidden: number; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export const viewUnbound = ["hidden"] as const;
+export const modelUnbound = ["nope"] as const;
+export function initialModel(): Model { return { n: 0, hidden: 1 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.equal(unresolvable.ok, false);
+  assert.ok(unresolvable.diagnostics.some((d) => d.id === "NS1032"), JSON.stringify(unresolvable.diagnostics));
+
+  const missing = transpile(`
+export interface Model { readonly n: number; readonly hidden: number; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "probe"; readonly value: number };
+export const viewUnbound = ["hidden", "probe"] as const;
+export const msgUnbound = [] as const;
+export function initialModel(): Model { return { n: 0, hidden: 1 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.equal(missing.ok, false);
+  assert.ok(missing.diagnostics.some((d) => d.id === "NS1032"), JSON.stringify(missing.diagnostics));
 });

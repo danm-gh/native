@@ -1188,6 +1188,31 @@ export class Emitter {
         if (!ts.isArrayLiteralExpression(init) || init.elements.some((el) => !ts.isStringLiteral(el))) {
           this.fail(decl, `\`${name}\` is the contract's unbound-list vocabulary and must be a const array of string literals; rename the constant to keep it as module data`, "NS1032");
         }
+        // The split pair RESTATES viewUnbound's facts for consumers
+        // that read declarations per side, so its entries must resolve
+        // and the resolved sets must be one set — two spellings of one
+        // fact can never disagree.
+        const entries = init.elements.map((el) => (el as ts.StringLiteral).text);
+        const resolved = name === "modelUnbound" ? this.unbound.model : this.unbound.msg;
+        const side = name === "modelUnbound" ? "Model field or exported model helper" : "Msg kind";
+        for (const entry of entries) {
+          if (!resolved.includes(entry)) {
+            this.fail(
+              decl,
+              `\`${name}\` names \`"${entry}"\`, which \`viewUnbound\` does not resolve as a ${side} — the split pair restates viewUnbound's facts, so declare the name there (and as a real ${side}) first`,
+              "NS1032",
+            );
+          }
+        }
+        for (const entry of resolved) {
+          if (!entries.includes(entry)) {
+            this.fail(
+              decl,
+              `\`${name}\` is missing \`"${entry}"\`, which \`viewUnbound\` declares on this side — the split pair restates viewUnbound's facts, never a subset of them`,
+              "NS1032",
+            );
+          }
+        }
         continue;
       }
       // The env override channel: a declarative table the generated wiring

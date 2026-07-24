@@ -2586,3 +2586,110 @@ export function update(model: Model, msg: Msg): Model {
   assert.equal(renamed.ok, false);
   assert.ok(renamed.diagnostics.some((d) => d.id === "NS1014"), JSON.stringify(renamed.diagnostics));
 });
+
+test("an object-literal alias is a value-storage struct even inside the Model tree", () => {
+  // Declaration form pins storage: the alias spelling is the
+  // value-storage form (a contract projection spells value records that
+  // way), while an interface in the same position rides the
+  // reachability walk to pointer storage.
+  const zig = emit(`
+export type Pos = {
+  readonly x: number;
+  readonly y: number;
+};
+export interface Anchor { readonly x: number; readonly y: number; }
+export interface Model { readonly pos: Pos; readonly anchor: Anchor; readonly n: number; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return { pos: { x: 1, y: 2 }, anchor: { x: 3, y: 4 }, n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) { case "a": return model; case "b": return model; }
+}
+`);
+  assert.match(zig, /pos: Pos,/);
+  assert.match(zig, /anchor: \*const Anchor,/);
+});
+
+test("a singleton kind-tagged object alias is a one-arm union, never a struct", () => {
+  const zig = emit(`
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "inc" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  if (msg.kind === "inc") { return { n: model.n + 1 }; }
+  return model;
+}
+`);
+  assert.match(zig, /pub const Msg = union\(enum\)/);
+});
+
+test("quoted or optional properties keep an object alias out of the struct table", () => {
+  const quoted = transpile(`
+export type Model = { readonly "enabled": boolean };
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return { enabled: true }; }
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) { case "a": return model; case "b": return model; }
+}
+`);
+  assert.equal(quoted.ok, false);
+  const optional = transpile(`
+export type Model = { readonly count?: number };
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return {}; }
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) { case "a": return model; case "b": return model; }
+}
+`);
+  assert.equal(optional.ok, false);
+});
+
+test("an optional kind is no discriminant: the singleton shape refuses", () => {
+  const result = transpile(`
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind?: "noop" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.equal(result.ok, false);
+});
+
+test("the split unbound consts pass through unemitted; references and misuse refuse", () => {
+  const clean = transpile(`
+export interface Model { readonly n: number; readonly hidden: number; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "probe"; readonly value: number };
+export const viewUnbound = ["hidden", "probe"] as const;
+export const modelUnbound = ["hidden"] as const;
+export const msgUnbound = ["probe"] as const;
+export function initialModel(): Model { return { n: 0, hidden: 1 }; }
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) { case "a": return model; case "probe": return model; }
+}
+`);
+  assert.equal(clean.ok, true, JSON.stringify(clean.diagnostics));
+  assert.ok(!clean.zig!.includes("modelUnbound"), "the split consts never emit");
+  assert.ok(!clean.zig!.includes("msgUnbound"), "the split consts never emit");
+
+  const referenced = transpile(`
+export interface Model { readonly n: number; readonly hidden: number; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export const modelUnbound = ["hidden"] as const;
+export function initialModel(): Model { return { n: modelUnbound.length, hidden: 1 }; }
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) { case "a": return model; case "b": return model; }
+}
+`);
+  assert.equal(referenced.ok, false);
+  assert.ok(referenced.diagnostics.some((d) => d.id === "NS1032"), JSON.stringify(referenced.diagnostics));
+
+  const data = transpile(`
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export const msgUnbound = 1;
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) { case "a": return model; case "b": return model; }
+}
+`);
+  assert.equal(data.ok, false);
+  assert.ok(data.diagnostics.some((d) => d.id === "NS1032"), JSON.stringify(data.diagnostics));
+});

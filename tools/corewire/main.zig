@@ -204,7 +204,14 @@ pub fn main(init: std.process.Init) !void {
             try stderr.flush();
             std.process.exit(2);
         }
-        break :blk try emit_profile_mod.emitProfile(arena, parsed, entry);
+        break :blk emit_profile_mod.emitProfile(arena, parsed, entry, &diags) catch |err| switch (err) {
+            error.Refused => {
+                try diags.write(input, stderr);
+                try stderr.flush();
+                std.process.exit(1);
+            },
+            error.OutOfMemory => return err,
+        };
     } else null;
 
     // Warnings (unknown additive fields) surface even on success.

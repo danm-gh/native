@@ -147,7 +147,21 @@ const determinism_remediations = [_]Rider{
     .{ .code = "SC4017", .text = "restart the app process: a trapped core is poisoned and never resumes in place, and the recorded session replays deterministically." },
 };
 
-pub fn emitProfile(arena: std.mem.Allocator, sidecar: Sidecar, entry: []const u8) Error![]const u8 {
+pub fn emitProfile(arena: std.mem.Allocator, sidecar: Sidecar, entry: []const u8, diags: *sidecar_mod.Diagnostics) Error![]const u8 {
+    // The profile is ENFORCEMENT data: a compile that succeeds under its
+    // determinism fences attests deterministic, and the compilation mode
+    // is structurally async-free — so a contract attesting false for
+    // either cannot round-trip through this profile. Emitting one would
+    // move the contradiction downstream (the core refuses at compile, or
+    // its co-emitted contract silently flips the attestation); refuse
+    // here instead, where the teaching can name the attestation.
+    if (!sidecar.deterministic) {
+        diags.flag("deterministic", "the contract attests deterministic: false, but this profile enforces the determinism fences and a core that compiles under them attests true by construction — build the core under this profile and regenerate from the contract it co-emits", .{});
+    }
+    if (!sidecar.async_free) {
+        diags.flag("async_free", "the contract attests async_free: false, but this profile's compilation mode is structurally async-free — a core reaching async surface refuses under it, so this contract cannot have come from the profile it asks for; remove the async surface and regenerate the contract", .{});
+    }
+    if (diags.hasErrors()) return error.Refused;
     var emitter = ProfileEmitter{ .arena = arena, .sidecar = sidecar, .out = .empty };
     try emitter.run(entry);
     return emitter.out.items;
@@ -335,7 +349,7 @@ const testing = std.testing;
 fn profileFromJson(arena: std.mem.Allocator, json: []const u8, entry: []const u8) ![]const u8 {
     var diags = sidecar_mod.Diagnostics{ .arena = arena };
     const parsed = try sidecar_mod.read(arena, json, &diags);
-    return emitProfile(arena, parsed, entry);
+    return emitProfile(arena, parsed, entry, &diags);
 }
 
 test "profile emission is deterministic and carries the library-mode surface" {
@@ -415,7 +429,27 @@ test "a non-UTF-8 entry spelling refuses instead of corrupting the JSON" {
     const arena = arena_state.allocator();
     var diags = sidecar_mod.Diagnostics{ .arena = arena };
     const parsed = try sidecar_mod.read(arena, sidecar_mod.minimal_valid_json, &diags);
-    try testing.expectError(error.Refused, emitProfile(arena, parsed, "core_\xfffacade.ts"));
+    try testing.expectError(error.Refused, emitProfile(arena, parsed, "core_\xfffacade.ts", &diags));
+}
+
+test "a contract attesting false for an enforced posture refuses" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    for ([_]struct { needle: []const u8, replacement: []const u8, fragment: []const u8 }{
+        .{ .needle = "\"deterministic\": true", .replacement = "\"deterministic\": false", .fragment = "attests deterministic: false" },
+        .{ .needle = "\"async_free\": true", .replacement = "\"async_free\": false", .fragment = "attests async_free: false" },
+    }) |case| {
+        const source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, case.needle, case.replacement);
+        var diags = sidecar_mod.Diagnostics{ .arena = arena };
+        const parsed = try sidecar_mod.read(arena, source, &diags);
+        try testing.expectError(error.Refused, emitProfile(arena, parsed, default_entry, &diags));
+        var found = false;
+        for (diags.list.items) |item| {
+            if (item.severity == .@"error" and std.mem.indexOf(u8, item.message, case.fragment) != null) found = true;
+        }
+        try testing.expect(found);
+    }
 }
 
 test "the emitted profile parses as JSON with the expected top-level keys" {

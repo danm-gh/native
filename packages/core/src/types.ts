@@ -387,6 +387,16 @@ export class TypeTable {
         }
       }
     }
+    // Declaration form pins storage for object-literal aliases: the
+    // alias spelling IS the value-storage form (a contract projection
+    // spells value records that way; interfaces stay with the
+    // reachability walk above), so an alias-declared record keeps its
+    // by-value layout however the Model reaches it. The walk still
+    // traversed its fields, so interface records nested inside it
+    // promote normally.
+    for (const info of this.structs.values()) {
+      if (ts.isTypeAliasDeclaration(info.decl)) pointerKind.delete(info.name);
+    }
     for (const name of pointerKind) {
       const info = this.structs.get(name);
       if (info) info.promoted = false;

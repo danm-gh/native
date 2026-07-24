@@ -384,43 +384,55 @@ test "markup fixture: facade channel envelopes carry the canonical message bytes
     defer facade_markup.rt.resetAll();
 
     // Nothing produced: exactly the two header bytes.
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_key_msg(null));
+    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_pack_msg(null));
 
     // Produced arms across the payload families the fixture carries: a
     // bare arm, an integer-classed number, bytes, a flattened record,
     // and a flattened record with an enum member.
     {
-        const envelope = facade_markup.nsc_core_key_msg(facade_markup.nsc_core_msg_add());
+        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_add());
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .add, arena), envelope[1..]);
     }
     {
-        const envelope = facade_markup.nsc_core_key_msg(facade_markup.nsc_core_msg_toggle(2));
+        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_toggle(2));
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .{ .toggle = 2 }, arena), envelope[1..]);
     }
     {
-        const envelope = facade_markup.nsc_core_key_msg(facade_markup.nsc_core_msg_banner_set("parity"));
+        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_banner_set("parity"));
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .{ .banner_set = "parity" }, arena), envelope[1..]);
     }
     {
-        const envelope = facade_markup.nsc_core_pinch_msg(facade_markup.nsc_core_msg_zoomed(1.25, 7, true));
+        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_zoomed(1.25, 7, true));
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .{ .zoomed = .{ .factor = 1.25, .windowId = 7, .fromBoard = true } }, arena), envelope[1..]);
     }
     {
-        const envelope = facade_markup.nsc_core_frame_msg(facade_markup.nsc_core_msg_appearance_changed(.dark, false, true));
+        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_appearance_changed(.dark, false, true));
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .{ .appearance_changed = .{ .colorScheme = .dark, .reduceMotion = false, .highContrast = true } }, arena), envelope[1..]);
     }
+}
 
-    // Every wired entry routes through one packer: identical bytes for
-    // one message, and the unwired command channel stays out of the
-    // facade surface entirely.
-    const msg = facade_markup.nsc_core_msg_toggle(2);
-    try testing.expectEqualSlices(u8, facade_markup.nsc_core_key_msg(msg), facade_markup.nsc_core_frame_msg(msg));
-    try testing.expectEqualSlices(u8, facade_markup.nsc_core_frame_msg(msg), facade_markup.nsc_core_pinch_msg(msg));
+test "markup fixture: wire-shaped channel entries take host-event params and pack" {
+    facade_markup.rt.resetAll();
+    defer facade_markup.rt.resetAll();
+
+    // The wire-shaped entries mirror the C declarations: bytes ride
+    // buffer params, the modifier booleans u8 0-or-1, the pinch phase
+    // its declaration-order member index. Each runs the facade's
+    // channel-function gate (null until compile-mode wiring lands the
+    // author's code) and hands the result to the packer, so the null
+    // route returns exactly the two-byte nothing-produced envelope.
+    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_key_msg("space", 0, 0, 0, 0));
+    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_key_msg("c", 1, 0, 1, 0));
+    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_frame_msg(800, 600, 16, 16));
+    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_pinch_msg(7, "board", 1, 0.25, 1, 2));
+
+    // The unwired command channel stays out of the facade surface
+    // entirely.
     try testing.expect(!@hasDecl(facade_markup, "nsc_core_command_msg"));
 }
 
@@ -431,14 +443,15 @@ test "soundboard: facade channel envelopes carry the canonical message bytes" {
     facade_soundboard.rt.resetAll();
     defer facade_soundboard.rt.resetAll();
 
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_soundboard.nsc_core_frame_msg(null));
+    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_soundboard.nsc_core_pack_msg(null));
+    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_soundboard.nsc_core_frame_msg(640, 480, 16, 16));
     {
-        const envelope = facade_soundboard.nsc_core_key_msg(facade_soundboard.nsc_core_msg_toggle_play());
+        const envelope = facade_soundboard.nsc_core_pack_msg(facade_soundboard.nsc_core_msg_toggle_play());
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_soundboard.Msg, .toggle_play, arena), envelope[1..]);
     }
     {
-        const envelope = facade_soundboard.nsc_core_frame_msg(facade_soundboard.nsc_core_msg_canvas_resized(640));
+        const envelope = facade_soundboard.nsc_core_pack_msg(facade_soundboard.nsc_core_msg_canvas_resized(640));
         try testing.expectEqual(@as(u8, 1), envelope[0]);
         try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_soundboard.Msg, .{ .canvas_resized = 640 }, arena), envelope[1..]);
     }

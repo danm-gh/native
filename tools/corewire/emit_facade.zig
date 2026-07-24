@@ -28,11 +28,15 @@
 //!   extractor (exact for every finite double, the infinities, and the
 //!   canonical quiet NaN), exported as `nsc_core_model_snapshot` plus
 //!   the two scalar probes the parity suite drives;
-//! - the channel bytes envelope, one export per wired channel entry
-//!   (`nsc_core_<channel>`): the entry's whole multi-value result rides
-//!   ONE bytes return — [produced u8][tag u8][payload…] — packed here
-//!   from a produced message or null, so the compile mode's channel
-//!   exports run the author's channel function and forward the result;
+//! - the channel bytes envelope: the wire-shaped channel entries, one
+//!   per wired channel (`nsc_core_<channel>_msg`), whose parameters
+//!   mirror the compiled core's C declarations and whose whole
+//!   multi-value result rides ONE bytes return — [produced u8][tag u8]
+//!   [payload…]. Each builds its event record, runs the channel
+//!   function (a null gate here, the compile mode's author seam, like
+//!   `update` below), and packs the result through the exported packer
+//!   (`nsc_core_pack_msg`), the produced-message-or-null surface hosts
+//!   holding a mirror value use directly;
 //! - the identity constants, the sidecar's unbound-list declarations
 //!   (authors declare nothing; the generator carries them), and
 //!   deterministic zero/sample model builders so a compiled facade can
@@ -246,7 +250,15 @@ const FacadeEmitter = struct {
                 self.diags.flag("types", "enum \"{s}\" has one member — a single string literal is not a union in the projected subset, so no source can author it; give the state a second member or fold it away in the core source", .{entry.name});
             }
         }
-        const facade_decls = [_][]const u8{ "initialModel", "update", "viewUnbound", "asciiBytes", "NscfContractError", "NSCF_POW" };
+        var facade_decls: std.ArrayListUnmanaged([]const u8) = .empty;
+        try facade_decls.appendSlice(self.arena, &.{ "initialModel", "update", "viewUnbound", "asciiBytes", "NscfContractError", "NSCF_POW" });
+        // Wired channels add their event records, the channel-function
+        // null gates, and (pinch) the phase vocabulary to the facade's
+        // own declarations.
+        if (self.sidecar.channels.command_msg) try facade_decls.append(self.arena, "commandMsg");
+        if (self.sidecar.channels.frame_msg) try facade_decls.appendSlice(self.arena, &.{ "FrameEvent", "frameMsg" });
+        if (self.sidecar.channels.key_msg) try facade_decls.appendSlice(self.arena, &.{ "KeyEvent", "keyMsg" });
+        if (self.sidecar.channels.pinch_msg) try facade_decls.appendSlice(self.arena, &.{ "PinchPhase", "PinchEvent", "pinchMsg" });
         // Field names join the fence only for the reserved nsc name
         // space (they may otherwise be anything, quoted if exotic):
         // constructor parameter fallbacks and the runtime prelude own
@@ -272,10 +284,10 @@ const FacadeEmitter = struct {
                 else => {},
             }
         }
-        for (self.sidecar.types.structs) |entry| try self.fenceDecl(entry.name, &facade_decls);
-        for (self.sidecar.types.enums) |entry| try self.fenceDecl(entry.name, &facade_decls);
-        for (self.sidecar.types.unions) |entry| try self.fenceDecl(entry.name, &facade_decls);
-        try self.fenceDecl(self.sidecar.msg.name, &facade_decls);
+        for (self.sidecar.types.structs) |entry| try self.fenceDecl(entry.name, facade_decls.items);
+        for (self.sidecar.types.enums) |entry| try self.fenceDecl(entry.name, facade_decls.items);
+        for (self.sidecar.types.unions) |entry| try self.fenceDecl(entry.name, facade_decls.items);
+        try self.fenceDecl(self.sidecar.msg.name, facade_decls.items);
         if (!std.mem.eql(u8, self.sidecar.model, "Model")) try self.fenceDecl("", &.{}); // placeholder keeps shape symmetric
     }
 
@@ -1101,24 +1113,25 @@ const FacadeEmitter = struct {
     /// marshalling shape of its own. Byte 0 is 0 (nothing produced; the
     /// envelope is exactly two bytes) or 1; byte 1 is the produced arm's
     /// declaration-order wire tag (meaningless when nothing was
-    /// produced; this packer emits 0); the payload is the arm's
+    /// produced; the packer emits 0); the payload is the arm's
     /// canonical value encoding — the envelope's tail is byte-identical
-    /// to the canonical union encoding of the produced message. The
-    /// compile mode's channel exports run the author's channel function
-    /// and hand its `Msg | null` result to the wired entry here.
+    /// to the canonical union encoding of the produced message.
+    ///
+    /// Two surfaces ride the envelope here. `nsc_core_pack_msg` is the
+    /// packer: a produced message or null in, envelope bytes out. The
+    /// `nsc_core_<channel>_msg` exports are the WIRE-shaped channel
+    /// entries whose parameters mirror the compiled core's C
+    /// declarations (bytes ride buffer parameters, boolean modifiers
+    /// u8 0-or-1, the pinch phase its declaration-order member index):
+    /// each builds the channel's event record, runs the channel
+    /// function, and hands the produced message to the packer. The
+    /// channel functions are declared as null gates beside them, the
+    /// way `update` above returns its model unchanged — the compile
+    /// mode that owns the behavioral entry points wires the author's
+    /// code in.
     fn channelEntries(self: *FacadeEmitter) Error!void {
         const chan = self.sidecar.channels;
-        const entries = [_]struct { wired: bool, suffix: []const u8 }{
-            .{ .wired = chan.command_msg, .suffix = "command_msg" },
-            .{ .wired = chan.frame_msg, .suffix = "frame_msg" },
-            .{ .wired = chan.key_msg, .suffix = "key_msg" },
-            .{ .wired = chan.pinch_msg, .suffix = "pinch_msg" },
-        };
-        var any_wired = false;
-        for (entries) |entry| {
-            if (entry.wired) any_wired = true;
-        }
-        if (!any_wired) return;
+        if (!(chan.command_msg or chan.frame_msg or chan.key_msg or chan.pinch_msg)) return;
 
         try self.raw(
             \\
@@ -1139,21 +1152,154 @@ const FacadeEmitter = struct {
         }
         try self.raw("  throw { kind: \"nscf_contract\", teaching: asciiBytes(\"a channel produced a message outside the declared union — the value and the contract disagree\") } as NscfContractError;\n}\n");
 
-        for (entries) |entry| {
-            if (!entry.wired) continue;
-            try self.print(
+        try self.raw(
+            \\
+            \\/// The envelope packer: a produced message or null in, envelope
+            \\/// bytes out. The wire-shaped channel entries below hand their
+            \\/// channel function's result here; a host that already holds a
+            \\/// mirror message value packs through this export directly.
+            \\export function nsc_core_pack_msg(msg: Msg | null): Uint8Array {
+            \\  const nscfMsg = msg;
+            \\  if (nscfMsg === null) {
+            \\    const parts: Uint8Array[] = [nscfByte(0), nscfByte(0)];
+            \\    return nscfCat(parts);
+            \\  } else {
+            \\    return nscfMsgEnvelope(nscfMsg);
+            \\  }
+            \\}
+            \\
+        );
+
+        try self.raw(
+            \\
+            \\// The wire-shaped channel entries, one per wired channel. Their
+            \\// parameters mirror the compiled core's C declarations — bytes ride
+            \\// buffer parameters, the boolean modifiers u8 0-or-1, the pinch
+            \\// phase its declaration-order member index — and the whole result
+            \\// returns as the bytes envelope. Each entry builds its channel's
+            \\// event record, runs the channel function, and hands the produced
+            \\// message to the packer. The channel functions beside them are
+            \\// null gates, exactly as update above returns its model unchanged:
+            \\// the compile mode that owns the behavioral entry points wires the
+            \\// author's code in.
+            \\
+        );
+        if (chan.key_msg) {
+            // A modifier byte past 1 is host/core skew, the wire-tag
+            // teaching's sibling — never silently truthy.
+            try self.raw(
                 \\
-                \\export function nsc_core_{s}(msg: Msg | null): Uint8Array {{
-                \\  const nscfMsg = msg;
-                \\  if (nscfMsg === null) {{
-                \\    const parts: Uint8Array[] = [nscfByte(0), nscfByte(0)];
-                \\    return nscfCat(parts);
-                \\  }} else {{
-                \\    return nscfMsgEnvelope(nscfMsg);
-                \\  }}
-                \\}}
+                \\function nscfWireBool(value: number): boolean {
+                \\  if (value === 0) {
+                \\    return false;
+                \\  }
+                \\  if (value === 1) {
+                \\    return true;
+                \\  }
+                \\  throw { kind: "nscf_contract", teaching: asciiBytes("a channel entry's boolean parameter carries a byte past 1 — the host and this core disagree about the contract") } as NscfContractError;
+                \\}
                 \\
-            , .{entry.suffix});
+            );
+        }
+        if (chan.command_msg) {
+            try self.raw(
+                \\
+                \\function commandMsg(name: Uint8Array): Msg | null {
+                \\  return null;
+                \\}
+                \\
+                \\export function nsc_core_command_msg(name: Uint8Array): Uint8Array {
+                \\  return nsc_core_pack_msg(commandMsg(name));
+                \\}
+                \\
+            );
+        }
+        if (chan.frame_msg) {
+            try self.raw(
+                \\
+                \\/// The presented-frame channel's record: canvas points plus the
+                \\/// frame clock in fractional milliseconds.
+                \\export interface FrameEvent {
+                \\  readonly width: number;
+                \\  readonly height: number;
+                \\  readonly timestampMs: number;
+                \\  readonly intervalMs: number;
+                \\}
+                \\
+                \\function frameMsg(model: Model, frame: FrameEvent): Msg | null {
+                \\  return null;
+                \\}
+                \\
+                \\export function nsc_core_frame_msg(width: number, height: number, timestampMs: number, intervalMs: number): Uint8Array {
+                \\  // The committed model is compile-mode state; until that wiring
+                \\  // lands, the gate receives the deterministic boot model (and
+                \\  // produces nothing regardless).
+                \\  return nsc_core_pack_msg(frameMsg(initialModel(), { width: width, height: height, timestampMs: timestampMs, intervalMs: intervalMs }));
+                \\}
+                \\
+            );
+        }
+        if (chan.key_msg) {
+            try self.raw(
+                \\
+                \\/// The key-fallback channel's record: the lowercased key name
+                \\/// plus the four modifier booleans.
+                \\export interface KeyEvent {
+                \\  readonly key: Uint8Array;
+                \\  readonly shift: boolean;
+                \\  readonly control: boolean;
+                \\  readonly alt: boolean;
+                \\  readonly super: boolean;
+                \\}
+                \\
+                \\function keyMsg(key: KeyEvent): Msg | null {
+                \\  return null;
+                \\}
+                \\
+                \\export function nsc_core_key_msg(key: Uint8Array, shift: number, control: number, alt: number, superMod: number): Uint8Array {
+                \\  return nsc_core_pack_msg(keyMsg({ key: key, shift: nscfWireBool(shift), control: nscfWireBool(control), alt: nscfWireBool(alt), super: nscfWireBool(superMod) }));
+                \\}
+                \\
+            );
+        }
+        if (chan.pinch_msg) {
+            try self.raw(
+                \\
+                \\export type PinchPhase = "begin" | "change" | "end";
+                \\
+                \\/// The pinch channel's record: window/view source identity, the
+                \\/// multiplicative magnification delta, and the view-local anchor.
+                \\export interface PinchEvent {
+                \\  readonly windowId: number;
+                \\  readonly label: Uint8Array;
+                \\  readonly phase: PinchPhase;
+                \\  readonly scale: number;
+                \\  readonly x: number;
+                \\  readonly y: number;
+                \\}
+                \\
+                \\function nscfPinchPhase(phase: number): PinchPhase {
+                \\  if (phase === 0) {
+                \\    return "begin";
+                \\  }
+                \\  if (phase === 1) {
+                \\    return "change";
+                \\  }
+                \\  if (phase === 2) {
+                \\    return "end";
+                \\  }
+                \\  throw { kind: "nscf_contract", teaching: asciiBytes("a pinch phase index past the declared members reached this core — the host and this core disagree about the contract") } as NscfContractError;
+                \\}
+                \\
+                \\function pinchMsg(pinch: PinchEvent): Msg | null {
+                \\  return null;
+                \\}
+                \\
+                \\export function nsc_core_pinch_msg(windowId: number, label: Uint8Array, phase: number, scale: number, x: number, y: number): Uint8Array {
+                \\  return nsc_core_pack_msg(pinchMsg({ windowId: windowId, label: label, phase: nscfPinchPhase(phase), scale: scale, x: x, y: y }));
+                \\}
+                \\
+            );
         }
     }
 
@@ -1480,24 +1626,76 @@ test "facade emission is deterministic and carries the projection surface" {
     try testing.expect(std.mem.indexOf(u8, first, "export const viewUnbound = [\n  \"label_set\",\n] as const;") != null);
 }
 
-test "wired channels emit envelope-packing exports" {
+test "wired channels emit wire-shaped exports and the packer" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"key_msg\": false", "\"key_msg\": true");
     source = try std.mem.replaceOwned(u8, arena, source, "\"helper_call\"]", "\"helper_call\", \"key_msg\"]");
     const generated = try facadeFromJson(arena, source);
-    // One export per wired channel, none for the unwired rest.
-    try testing.expect(std.mem.indexOf(u8, generated, "export function nsc_core_key_msg(msg: Msg | null): Uint8Array {") != null);
+    // The wired channel gets the wire-shaped export (host-event params
+    // in, envelope bytes out), none for the unwired rest.
+    try testing.expect(std.mem.indexOf(u8, generated, "export function nsc_core_key_msg(key: Uint8Array, shift: number, control: number, alt: number, superMod: number): Uint8Array {") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_frame_msg") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_command_msg") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_pinch_msg") == null);
+    // The wire entry runs the channel-function gate and hands the
+    // result to the packer; the modifier bytes convert 0-or-1 strictly.
+    try testing.expect(std.mem.indexOf(u8, generated, "return nsc_core_pack_msg(keyMsg({ key: key, shift: nscfWireBool(shift), control: nscfWireBool(control), alt: nscfWireBool(alt), super: nscfWireBool(superMod) }));") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "function keyMsg(key: KeyEvent): Msg | null {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "boolean parameter carries a byte past 1") != null);
+    // The packer owns the produced-or-null surface under its own name.
+    try testing.expect(std.mem.indexOf(u8, generated, "export function nsc_core_pack_msg(msg: Msg | null): Uint8Array {") != null);
     // The nothing-produced envelope is exactly [0, 0]; a produced arm
     // leads with [1, tag] and appends the arm's canonical payload.
     try testing.expect(std.mem.indexOf(u8, generated, "const parts: Uint8Array[] = [nscfByte(0), nscfByte(0)];") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "function nscfMsgEnvelope(value: Msg): Uint8Array {") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "if (value.kind === \"bump\") {\n    const parts: Uint8Array[] = [nscfByte(1), nscfByte(0)];\n    return nscfCat(parts);\n  }") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "if (value.kind === \"label_set\") {\n    const parts: Uint8Array[] = [nscfByte(1), nscfByte(1)];\n    parts[parts.length] = nscfBytes(value.value);\n    return nscfCat(parts);\n  }") != null);
+}
+
+test "the command and pinch wire entries marshal their C parameter shapes" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"command_msg\": false", "\"command_msg\": true");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"pinch_msg\": false", "\"pinch_msg\": true");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"helper_call\"]", "\"helper_call\", \"command_msg\", \"pinch_msg\"]");
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "export function nsc_core_command_msg(name: Uint8Array): Uint8Array {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "return nsc_core_pack_msg(commandMsg(name));") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "export function nsc_core_pinch_msg(windowId: number, label: Uint8Array, phase: number, scale: number, x: number, y: number): Uint8Array {") != null);
+    // The phase index maps to the declaration-order member and refuses
+    // past the declared members.
+    try testing.expect(std.mem.indexOf(u8, generated, "return nsc_core_pack_msg(pinchMsg({ windowId: windowId, label: label, phase: nscfPinchPhase(phase), scale: scale, x: x, y: y }));") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "export type PinchPhase = \"begin\" | \"change\" | \"end\";") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "pinch phase index past the declared members") != null);
+    // No key channel: the modifier converter stays out.
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfWireBool") == null);
+}
+
+test "a type taking a wired channel's facade declaration refuses" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"key_msg\": false", "\"key_msg\": true");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"helper_call\"]", "\"helper_call\", \"key_msg\"]");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"enums\": []", "\"enums\": [{\"name\": \"KeyEvent\", \"members\": [\"a\", \"b\"]}]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"label\", \"type\": {\"kind\": \"enum\", \"name\": \"KeyEvent\"}}",
+    );
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, source, &diags);
+    try testing.expectError(error.Refused, emitFacade(arena, parsed, &diags));
+    var found = false;
+    for (diags.list.items) |item| {
+        if (item.severity == .@"error" and std.mem.indexOf(u8, item.message, "collides with a declaration the generated facade itself must make") != null) found = true;
+    }
+    try testing.expect(found);
 }
 
 test "unwired channels leave the envelope surface out of the facade" {
@@ -1507,6 +1705,7 @@ test "unwired channels leave the envelope surface out of the facade" {
     const generated = try facadeFromJson(arena, sidecar_mod.minimal_valid_json);
     try testing.expect(std.mem.indexOf(u8, generated, "nscfMsgEnvelope") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_key_msg") == null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_pack_msg") == null);
 }
 
 test "envelope payloads follow the sidecar's classes and flattened orders" {
@@ -1533,7 +1732,7 @@ test "envelope payloads follow the sidecar's classes and flattened orders" {
     // The flattened record encodes its fields off the narrowed arm in
     // declaration order, exactly as the arm's mirror payload decodes.
     try testing.expect(std.mem.indexOf(u8, generated, "if (value.kind === \"loaded\") {\n    const parts: Uint8Array[] = [nscfByte(1), nscfByte(1)];\n    parts[parts.length] = nscfF64(value.status);\n    parts[parts.length] = nscfByte(value.ok ? 1 : 0);\n    return nscfCat(parts);\n  }") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "export function nsc_core_frame_msg(msg: Msg | null): Uint8Array {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "export function nsc_core_frame_msg(width: number, height: number, timestampMs: number, intervalMs: number): Uint8Array {") != null);
 }
 
 test "u64-attested slots pick the unsigned encoder; the twin emits only when attested" {

@@ -138,6 +138,7 @@ pub fn build(b: *std.Build) void {
     desktop_mod.addImport("platform_info", platform_info_mod);
     desktop_mod.addImport("json", json_mod);
     desktop_mod.addImport("canvas", canvas_mod);
+    desktop_mod.addImport("terminal_vt", terminalVtModule(b, target, optimize));
     const desktop_tests = testArtifact(b, desktop_mod);
     const desktop_test_shards = desktopTestShardArtifacts(b, desktop_mod);
 
@@ -373,6 +374,10 @@ pub fn build(b: *std.Build) void {
     wasm_native_mod.addImport("app_manifest", module(b, wasm_target, wasm_optimize, "src/primitives/app_manifest/root.zig"));
     wasm_native_mod.addImport("diagnostics", module(b, wasm_target, wasm_optimize, "src/primitives/diagnostics/root.zig"));
     wasm_native_mod.addImport("platform_info", module(b, wasm_target, wasm_optimize, "src/primitives/platform_info/root.zig"));
+    // The docs preview never runs an emulator: the stub keeps the wasm
+    // module free of the ghostty graph (and of pty transports it could
+    // not use anyway).
+    wasm_native_mod.addImport("terminal_vt", module(b, wasm_target, wasm_optimize, "src/runtime/terminal_vt_stub.zig"));
     const docs_wasm_preview_mod = module(b, wasm_target, wasm_optimize, "tools/docs_wasm_preview.zig");
     docs_wasm_preview_mod.addImport("native_sdk", wasm_native_mod);
     docs_wasm_preview_mod.strip = true;
@@ -430,6 +435,9 @@ pub fn build(b: *std.Build) void {
     pins_native_mod.addImport("platform_info", host_platform_info_mod);
     pins_native_mod.addImport("json", pins_json_mod);
     pins_native_mod.addImport("canvas", pins_canvas_mod);
+    // The pin printer reflects registry tables and layout fingerprints —
+    // type shapes, never emulator state — so the stub keeps it light.
+    pins_native_mod.addImport("terminal_vt", module(b, host_target, optimize, "src/runtime/terminal_vt_stub.zig"));
     const print_pins_mod = module(b, host_target, optimize, "tools/print_pins.zig");
     print_pins_mod.addImport("native_sdk", pins_native_mod);
     const print_pins_exe = b.addExecutable(.{
@@ -2831,6 +2839,39 @@ fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
         .target = target,
         .optimize = optimize,
     });
+}
+
+/// The framework module's `terminal_vt` import for THIS repository's own
+/// builds: the ghostty-vt wrapper when the lazy `ghostty` pin resolves,
+/// the stub otherwise. Gated on being the build ROOT (`b.pkg_hash` is
+/// empty exactly for the root package): a consumer running this build
+/// script through `b.dependency("native_sdk")` must never traverse
+/// ghostty's graph — its configure step walks lazy dependencies (wuffs,
+/// translate_c) whose build scripts fail in consumer package stores, and
+/// its full build pulls harfbuzz. Consumer apps opt in by pinning
+/// ghostty in their OWN build.zig.zon and passing the module through
+/// `addAppArtifacts(.{ .ghostty_vt = ... })` (see build/app.zig).
+fn terminalVtModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    if (b.pkg_hash.len == 0) {
+        if (b.lazyDependency("ghostty", .{
+            .target = target,
+            .optimize = optimize,
+            // Keep the vt module pure Zig: the SIMD paths pull vendored
+            // C++ dependencies the session store does not need.
+            .simd = false,
+            // Only the vt MODULE is consumed: ghostty's macOS app and
+            // xcframework artifacts default ON for Darwin hosts and
+            // their configure step resolves the iOS libc, which aborts
+            // on a machine with only the command-line tools.
+            .@"emit-xcframework" = false,
+            .@"emit-macos-app" = false,
+        })) |ghostty| {
+            const wrapper = module(b, target, optimize, "src/runtime/terminal_vt_ghostty.zig");
+            wrapper.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
+            return wrapper;
+        }
+    }
+    return module(b, target, optimize, "src/runtime/terminal_vt_stub.zig");
 }
 
 /// The short commit hash of the framework checkout the CLI is built

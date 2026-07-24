@@ -40,6 +40,16 @@ pub const AppOptions = struct {
     /// "../.." so `src/`, `app.zon`, and `assets/` keep resolving in the
     /// app directory rather than the cache directory.
     app_root: []const u8 = ".",
+    /// libghostty-vt for live `<terminal>` sessions: pin ghostty in the
+    /// app's OWN build.zig.zon (the examples/terminal pin) and pass
+    /// `ghostty.module("ghostty-vt")` here — the runtime then owns the
+    /// emulator behind every `<terminal pty={key}>` binding. Default
+    /// null wires the stub: `<terminal>` renders the honest empty
+    /// surface, and the build never traverses ghostty's dependency
+    /// graph (whose configure step walks wuffs/translate_c and whose
+    /// full build pulls harfbuzz) — the load-bearing property for
+    /// scaffolded apps.
+    ghostty_vt: ?*std.Build.Module = null,
 };
 
 /// Which core the app tree carries. No flag and no config anywhere: the
@@ -765,7 +775,7 @@ fn exampleOptimizeMode(b: *std.Build, requested: ?std.builtin.OptimizeMode, defa
 }
 
 fn appModule(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, app_options: AppOptions, options_mod: *std.Build.Module, ts_stage: ?TsCoreStage) *std.Build.Module {
-    const native_sdk_mod = nativeSdkModule(b, dep, target, optimize);
+    const native_sdk_mod = nativeSdkModuleWithTerminal(b, dep, target, optimize, app_options.ghostty_vt);
     const runner_mod = b.createModule(.{
         .root_source_file = dep.path("src/app_runner/root.zig"),
         .target = target,
@@ -837,6 +847,10 @@ fn localModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
 }
 
 fn nativeSdkModule(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return nativeSdkModuleWithTerminal(b, dep, target, optimize, null);
+}
+
+fn nativeSdkModuleWithTerminal(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, ghostty_vt: ?*std.Build.Module) *std.Build.Module {
     const geometry_mod = externalModule(b, dep, target, optimize, "src/primitives/geometry/root.zig");
     const assets_mod = externalModule(b, dep, target, optimize, "src/primitives/assets/root.zig");
     const app_dirs_mod = externalModule(b, dep, target, optimize, "src/primitives/app_dirs/root.zig");
@@ -862,6 +876,17 @@ fn nativeSdkModule(b: *std.Build, dep: *std.Build.Dependency, target: std.Build.
     native_sdk_mod.addImport("platform_info", platform_info_mod);
     native_sdk_mod.addImport("json", json_mod);
     native_sdk_mod.addImport("canvas", canvas_mod);
+    // The terminal-session emulator seam: the app-supplied ghostty-vt
+    // module (see `AppOptions.ghostty_vt`) enables the runtime-owned
+    // live `<terminal>` sessions; the default stub keeps the build free
+    // of ghostty's dependency graph.
+    if (ghostty_vt) |vt_mod| {
+        const wrapper = externalModule(b, dep, target, optimize, "src/runtime/terminal_vt_ghostty.zig");
+        wrapper.addImport("ghostty-vt", vt_mod);
+        native_sdk_mod.addImport("terminal_vt", wrapper);
+    } else {
+        native_sdk_mod.addImport("terminal_vt", externalModule(b, dep, target, optimize, "src/runtime/terminal_vt_stub.zig"));
+    }
     return native_sdk_mod;
 }
 

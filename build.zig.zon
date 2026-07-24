@@ -3,7 +3,24 @@
     .fingerprint = 0xc309966142f33087,
     .version = "0.1.0",
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},    .paths = .{
+    .dependencies = .{
+        // libghostty-vt for the runtime's terminal-session store, LAZY
+        // and resolved only when this package is the build ROOT (the
+        // `terminalVtModule` gate in build.zig): consumer builds that
+        // run this build script as a dependency never traverse ghostty's
+        // graph — its configure step walks lazy dependencies (wuffs,
+        // translate_c) whose build scripts fail in consumer package
+        // stores. Apps opt in by pinning ghostty themselves and passing
+        // the module through `addAppArtifacts(.{ .ghostty_vt = ... })`.
+        // Pinned to the same commit as examples/terminal (the first
+        // upstream commit that builds under Zig 0.16.0).
+        .ghostty = .{
+            .url = "https://github.com/ghostty-org/ghostty/archive/7aa9591746ffa4d2eee458960c76554352832595.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBC-edJAVXTdYsgHOzIqgAI7hE8VqpmriEi8zgufw2",
+            .lazy = true,
+        },
+    },
+    .paths = .{
         "README.md",
         "CHANGELOG.md",
         "LICENSE",

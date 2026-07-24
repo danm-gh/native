@@ -959,3 +959,19 @@ export function update(model: Model, msg: Msg): Model { return model; }
 `);
   assert.ok(ruleIds(classMsg).includes("NS1062"), `got ${ruleIds(classMsg)}`);
 });
+
+test("NS1061: an assertion-erased operand cannot slip identity comparison", () => {
+  const asserted = checkOnly(`
+export type Pos = { readonly x: number };
+export interface Model { readonly pos: Pos; readonly n: number; }
+export type Msg = { readonly kind: "moved"; readonly pos: Pos } | { readonly kind: "b" };
+export function initialModel(): Model { return { pos: { x: 0 }, n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  if (msg.kind === "moved") {
+    return { pos: msg.pos, n: model.pos === (msg.pos as { readonly x: number }) ? 1 : 0 };
+  }
+  return model;
+}
+`);
+  assert.ok(ruleIds(asserted).includes("NS1061"), `got ${ruleIds(asserted)}`);
+});

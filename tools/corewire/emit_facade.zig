@@ -585,6 +585,11 @@ const FacadeEmitter = struct {
     /// classes.
     fn nodeStoredTableNames(self: *FacadeEmitter) Error![]const []const u8 {
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        // The model root is reference-stored by contract (no explicit
+        // reference spells it), so it seeds the set: a `value`
+        // reference to the root elsewhere is the mixed-storage case and
+        // refuses like any other.
+        try names.append(self.arena, self.sidecar.model);
         for (self.sidecar.types.structs) |entry| {
             for (entry.fields) |field| {
                 try noteNodeRefs(&names, self.arena, field.type);
@@ -609,10 +614,13 @@ const FacadeEmitter = struct {
     }
 
     /// The struct behind a synthesized, inlined record reference at
-    /// this site — the shape that flattens beside `kind`.
+    /// this site — the shape that flattens beside `kind`. VALUE
+    /// references only: flattening is a by-value layout, so a
+    /// node-stored payload keeps its named declaration however its
+    /// name is spelled.
     fn synthesizedRecordOf(self: *FacadeEmitter, ref: TypeRef, container: []const u8, member: []const u8) ?*const sidecar_mod.Struct {
         const name = switch (ref) {
-            .node, .value => |n| n,
+            .value => |n| n,
             else => return null,
         };
         if (!emit_mod.isSynthesizedRef(container, member, name) or !nameListed(self.inlined, name)) return null;
@@ -2058,6 +2066,55 @@ test "u64-attested slots pick the unsigned encoder; the twin emits only when att
     const signed_only = try facadeFromJson(arena, sidecar_mod.minimal_valid_json);
     try testing.expect(std.mem.indexOf(u8, signed_only, "nscfU64") == null);
 }
+
+test "a synthesized-name node payload keeps its named declaration" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // Single-use and pattern-named, but NODE-stored: flattening would
+    // silently convert reference storage to value storage, so the arm
+    // keeps the named payload behind a `value` member and the interface
+    // declares.
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"Edit_set\", \"fields\": [{\"name\": \"a\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"b\", \"type\": {\"kind\": \"bool\"}}]},");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unions\": []", "\"unions\": [{\"name\": \"Edit\", \"arms\": [{\"name\": \"clear\", \"payload\": {\"kind\": \"void\"}}, {\"name\": \"set\", \"payload\": {\"kind\": \"node\", \"name\": \"Edit_set\"}}]}]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"union\", \"name\": \"Edit\"}}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "export interface Edit_set {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "| { readonly kind: \"set\"; readonly value: Edit_set }") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "readonly kind: \"set\"; readonly a:") == null);
+}
+
+test "a value reference to the model root refuses as mixed storage" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // The root is reference-stored by contract; a record field holding
+    // it by value would make the compiled projection re-derive the
+    // field as node storage.
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"Wrap\", \"fields\": [{\"name\": \"inner\", \"type\": {\"kind\": \"value\", \"name\": \"Model\"}}]},");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"record\", \"name\": \"Wrap\"}}",
+    );
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, source, &diags);
+    try testing.expectError(error.Refused, emitFacade(arena, parsed, &diags));
+    var found = false;
+    for (diags.list.items) |item| {
+        if (item.severity == .@"error" and std.mem.indexOf(u8, item.message, "storage once per declaration") != null) found = true;
+    }
+    try testing.expect(found);
+}
+
 
 test "declaration forms spell the contract's record storage" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);

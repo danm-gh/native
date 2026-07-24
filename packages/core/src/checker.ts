@@ -932,11 +932,21 @@ export class SubsetChecker {
           // Identity is only in question when BOTH sides can be
           // records at once: a presence check against null (or any
           // never-a-record operand) compares the option, not the
-          // record, and stays exact.
-          const left = aliasStructOfType(this.tast.typeOf(node.left));
-          const right = aliasStructOfType(this.tast.typeOf(node.right));
-          if (left !== null && right !== null) {
-            this.report("NS1061", `\`${left}\` values compare by content, not identity — a value-record alias has no reference to compare; compare its fields, or declare \`${left}\` as an interface for identity.`, node);
+          // record, and stays exact. The record test on the OTHER side
+          // is structural, so an assertion-erased spelling (`x as
+          // { ... }`) cannot slip a record past the guard by shedding
+          // its name.
+          const canBeRecord = (t: ts.Type): boolean => {
+            if (t.isUnion()) return t.types.some(canBeRecord);
+            return (t.flags & ts.TypeFlags.Object) !== 0;
+          };
+          const leftType = this.tast.typeOf(node.left);
+          const rightType = this.tast.typeOf(node.right);
+          const left = aliasStructOfType(leftType);
+          const right = aliasStructOfType(rightType);
+          const named = left ?? right;
+          if (named !== null && (left === null ? canBeRecord(leftType) : canBeRecord(rightType))) {
+            this.report("NS1061", `\`${named}\` values compare by content, not identity — a value-record alias has no reference to compare; compare its fields, or declare \`${named}\` as an interface for identity.`, node);
           }
         }
         ts.forEachChild(node, walkEq);

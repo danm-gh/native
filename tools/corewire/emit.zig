@@ -1348,7 +1348,11 @@ fn noteCandidate(names: *std.ArrayListUnmanaged([]const u8), arena: std.mem.Allo
     switch (ref) {
         .optional => |inner| try noteCandidate(names, arena, container, member, inner.*),
         .slice => |elem| try noteCandidate(names, arena, container, member, elem.*),
-        .node, .value => |name| if (isSynthesizedRef(container, member, name)) {
+        // VALUE references only: inlining flattens the record into its
+        // one site, which is a by-value layout — a node-stored payload
+        // keeps its named declaration (and its pointer) however its
+        // name is spelled.
+        .value => |name| if (isSynthesizedRef(container, member, name)) {
             try names.append(arena, name);
         },
         else => {},

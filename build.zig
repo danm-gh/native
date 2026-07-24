@@ -208,6 +208,10 @@ pub fn build(b: *std.Build) void {
     const corewire_profile_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/emit_profile.zig"));
     const corewire_extract_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/extract.zig"));
     const corewire_shim_rt_tests = testArtifact(b, module(b, target, optimize, "tools/corewire/shim_rt.zig"));
+    // The paired-core root generator (tests/compiled-core): its emitted
+    // surface rules are pinned here so the env-gated batteries cannot
+    // drift silently between supplied-archive runs.
+    const gen_paired_tests = testArtifact(b, module(b, target, optimize, "tests/compiled-core/gen_paired.zig"));
 
     // Transpiled-core end-to-end suite: tests/ts-core/fixture.ts is
     // emitted by the repo's own transpiler AT BUILD TIME (never a
@@ -471,6 +475,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(corewire_profile_tests).step);
     test_step.dependOn(&b.addRunArtifact(corewire_extract_tests).step);
     test_step.dependOn(&b.addRunArtifact(corewire_shim_rt_tests).step);
+    test_step.dependOn(&b.addRunArtifact(gen_paired_tests).step);
     if (ts_core_e2e_tests) |ts_core_artifacts| {
         const ts_core_e2e_step = b.step("test-ts-core-e2e", "Run the transpiled-core end-to-end suites (requires node)");
         const host_e2e_run = b.addRunArtifact(ts_core_artifacts.host);
@@ -492,6 +497,25 @@ pub fn build(b: *std.Build) void {
             const parity_run = b.addRunArtifact(parity_tests);
             parity_step.dependOn(&parity_run.step);
             test_step.dependOn(&parity_run.step);
+        }
+        // The full-corpus twin: each fixture app's e2e battery over a
+        // paired core, gated per fixture on its archive/sidecar env
+        // pair; with none supplied the step is a clean no-op and
+        // `zig build test` is untouched.
+        const compiled_parity_step = b.step("test-compiled-core-parity", "Run each fixture app's e2e battery over a paired core — transpiled lane vs a caller-supplied compiled-core archive (requires node and NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_<FIXTURE> + NATIVE_SDK_EXTERNAL_CORE_SIDECAR_<FIXTURE>; fixtures without both are skipped)");
+        for (ts_core_artifacts.compiled_core_parity) |battery| {
+            const battery_run = b.addRunArtifact(battery.tests);
+            compiled_parity_step.dependOn(&battery_run.step);
+            test_step.dependOn(&battery_run.step);
+        }
+        // The corpus contract artifacts an external core toolchain
+        // consumes: per fixture, the extracted contract sidecar and its
+        // TypeScript facade projection under zig-out/core-contracts.
+        const contracts_step = b.step("stage-core-contracts", "Install each ts-core fixture's contract sidecar and TypeScript facade projection under zig-out/core-contracts (requires node)");
+        for (ts_core_artifacts.core_contracts) |contract| {
+            const dir: std.Build.InstallDir = .{ .custom = b.fmt("core-contracts/{s}", .{contract.name}) };
+            contracts_step.dependOn(&b.addInstallFileWithDir(contract.sidecar, dir, "core.contract.json").step);
+            contracts_step.dependOn(&b.addInstallFileWithDir(contract.facade, dir, "core_facade.ts").step);
         }
         ts_core_e2e_step.dependOn(&host_e2e_run.step);
         ts_core_e2e_step.dependOn(&soundboard_e2e_run.step);
@@ -2877,7 +2901,59 @@ const TsCoreE2eArtifacts = struct {
     /// fixture's attested symbol set); null — the suite is skipped —
     /// otherwise.
     external_core_parity: ?*std.Build.Step.Compile,
+    /// The full-corpus compiled-core batteries: each entry is one
+    /// fixture app's OWN e2e suite compiled over a paired core — the
+    /// transpiled lane plus a generated mirror dispatching into a
+    /// caller-supplied compiled-core archive, byte-compared at every
+    /// seam. Built per fixture only when its archive/sidecar env pair
+    /// (NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_<FIXTURE> and
+    /// NATIVE_SDK_EXTERNAL_CORE_SIDECAR_<FIXTURE>) is supplied; empty
+    /// — every battery skipped — otherwise.
+    compiled_core_parity: []const CompiledCoreParity,
+    /// Per-fixture contract artifacts for an external core toolchain:
+    /// the extracted contract sidecar and its TypeScript facade
+    /// projection, installed by the stage-core-contracts step.
+    core_contracts: []const CoreContract,
 };
+
+const CompiledCoreParity = struct {
+    name: []const u8,
+    tests: *std.Build.Step.Compile,
+};
+
+const CoreContract = struct {
+    name: []const u8,
+    sidecar: std.Build.LazyPath,
+    facade: std.Build.LazyPath,
+};
+
+/// One fixture's compiled-core supply: the archive link input(s) and
+/// the archive's own emitted contract sidecar. Both come as a pair —
+/// a real archive's build_id can only match its co-emitted sidecar, so
+/// one without the other is a misconfiguration, refused with a
+/// teaching rather than skipped into silence.
+const CompiledCoreSupply = struct {
+    archives: []const u8,
+    sidecar: std.Build.LazyPath,
+};
+
+fn compiledCoreEnv(b: *std.Build, comptime suffix: []const u8) ?CompiledCoreSupply {
+    const archive_var = "NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_" ++ suffix;
+    const sidecar_var = "NATIVE_SDK_EXTERNAL_CORE_SIDECAR_" ++ suffix;
+    const archives = b.graph.environ_map.get(archive_var);
+    const sidecar = b.graph.environ_map.get(sidecar_var);
+    if (archives == null and sidecar == null) return null;
+    if (archives == null or sidecar == null) {
+        std.debug.panic(
+            "{s} and {s} come as a pair: a compiled-core fixture needs both its archive link input(s) and the archive's own emitted contract sidecar",
+            .{ archive_var, sidecar_var },
+        );
+    }
+    return .{
+        .archives = b.dupe(archives.?),
+        .sidecar = .{ .cwd_relative = b.dupe(sidecar.?) },
+    };
+}
 
 fn tsCoreE2eArtifact(
     b: *std.Build,
@@ -2995,19 +3071,37 @@ fn tsCoreE2eArtifact(
         ts_import: []const u8,
         shim_import: []const u8,
         facade_import: []const u8,
+        contract_name: []const u8,
         core_mod: *std.Build.Module,
         entry: []const u8,
     }{
-        .{ .ts_import = "ts_host_core", .shim_import = "shim_host_core", .facade_import = "facade_host_core", .core_mod = fixture_mod, .entry = "tests/ts-core/fixture.ts" },
-        .{ .ts_import = "ts_soundboard_core", .shim_import = "shim_soundboard_core", .facade_import = "facade_soundboard_core", .core_mod = soundboard_core_mod, .entry = "examples/soundboard-ts/src/core.ts" },
-        .{ .ts_import = "ts_monitor_core", .shim_import = "shim_monitor_core", .facade_import = "facade_monitor_core", .core_mod = monitor_core_mod, .entry = "examples/system-monitor-ts/src/core.ts" },
-        .{ .ts_import = "ts_ai_chat_core", .shim_import = "shim_ai_chat_core", .facade_import = "facade_ai_chat_core", .core_mod = ai_chat_core_mod, .entry = "examples/ai-chat-ts/src/core.ts" },
+        .{ .ts_import = "ts_host_core", .shim_import = "shim_host_core", .facade_import = "facade_host_core", .contract_name = "host-fixture", .core_mod = fixture_mod, .entry = "tests/ts-core/fixture.ts" },
+        .{ .ts_import = "ts_soundboard_core", .shim_import = "shim_soundboard_core", .facade_import = "facade_soundboard_core", .contract_name = "soundboard", .core_mod = soundboard_core_mod, .entry = "examples/soundboard-ts/src/core.ts" },
+        .{ .ts_import = "ts_monitor_core", .shim_import = "shim_monitor_core", .facade_import = "facade_monitor_core", .contract_name = "system-monitor", .core_mod = monitor_core_mod, .entry = "examples/system-monitor-ts/src/core.ts" },
+        .{ .ts_import = "ts_ai_chat_core", .shim_import = "shim_ai_chat_core", .facade_import = "facade_ai_chat_core", .contract_name = "ai-chat", .core_mod = ai_chat_core_mod, .entry = "examples/ai-chat-ts/src/core.ts" },
     };
+    // The corpus contract artifacts an external core toolchain consumes
+    // (stage-core-contracts): the extracted sidecar plus its facade
+    // projection, per fixture.
+    var core_contracts: std.ArrayList(CoreContract) = .empty;
+    {
+        const markup_sidecar = sidecarExtractJson(b, target, optimize, extract_mod, markup_fixture_mod, "tests/ts-core/markup_fixture.ts");
+        core_contracts.append(b.allocator, .{
+            .name = "markup-fixture",
+            .sidecar = markup_sidecar,
+            .facade = facadeTsFile(b, corewire_exe, markup_sidecar),
+        }) catch @panic("OOM");
+    }
     for (conformance_fixtures) |fixture| {
         const sidecar_json = sidecarExtractJson(b, target, optimize, extract_mod, fixture.core_mod, fixture.entry);
         conformance_mod.addImport(fixture.ts_import, fixture.core_mod);
         conformance_mod.addImport(fixture.shim_import, sidecarShimModule(b, target, optimize, corewire_exe, sidecar_json));
         conformance_mod.addImport(fixture.facade_import, facadeCoreModule(b, target, optimize, node, corewire_exe, sidecar_json));
+        core_contracts.append(b.allocator, .{
+            .name = fixture.contract_name,
+            .sidecar = sidecar_json,
+            .facade = facadeTsFile(b, corewire_exe, sidecar_json),
+        }) catch @panic("OOM");
     }
 
     // Compiled-core behavior parity (tests/sidecar/
@@ -3052,6 +3146,55 @@ fn tsCoreE2eArtifact(
         break :blk parity_tests;
     } else null;
 
+    // The full-corpus compiled-core batteries: each supplied fixture's
+    // OWN e2e test root recompiled over a paired core (the transpiled
+    // lane plus a fresh generated mirror linked against the caller's
+    // archive), so every behavioral assertion the fixture app carries
+    // runs through the compiled core with byte parity checked at every
+    // seam (commands, snapshots, subscriptions, channels, helpers).
+    // Env-gated per fixture like the markup parity suite: unset means
+    // the battery is never built and `zig build test` stays green.
+    var compiled_core_parity: std.ArrayList(CompiledCoreParity) = .empty;
+    const compiled_core_fixtures = [_]struct {
+        name: []const u8,
+        supply: ?CompiledCoreSupply,
+        ts_mod: *std.Build.Module,
+        root: std.Build.LazyPath,
+        core_import: []const u8,
+        /// The host suite's second lane (the markup fixture) rides the
+        /// same binary, transpiler-only: one archive per process is the
+        /// compiled-core contract.
+        second_import: ?[]const u8 = null,
+        second_mod: ?*std.Build.Module = null,
+    }{
+        .{ .name = "host", .supply = compiledCoreEnv(b, "HOST"), .ts_mod = fixture_mod, .root = b.path("tests/ts-core/host_e2e_tests.zig"), .core_import = "ts_core_fixture", .second_import = "ts_markup_fixture", .second_mod = markup_fixture_mod },
+        .{ .name = "soundboard", .supply = compiledCoreEnv(b, "SOUNDBOARD"), .ts_mod = soundboard_core_mod, .root = soundboard_root, .core_import = "ts_soundboard_core" },
+        .{ .name = "system-monitor", .supply = compiledCoreEnv(b, "SYSTEM_MONITOR"), .ts_mod = monitor_core_mod, .root = monitor_root, .core_import = "ts_system_monitor_core" },
+        .{ .name = "ai-chat", .supply = compiledCoreEnv(b, "AI_CHAT"), .ts_mod = ai_chat_core_mod, .root = ai_chat_root, .core_import = "ts_ai_chat_core" },
+    };
+    for (compiled_core_fixtures) |entry| {
+        const supply = entry.supply orelse continue;
+        const paired_mod = pairedCoreModule(b, target, optimize, corewire_exe, entry.ts_mod, supply);
+        const battery_mod = b.createModule(.{
+            .root_source_file = entry.root,
+            .target = target,
+            .optimize = optimize,
+        });
+        battery_mod.addImport("native_sdk", desktop_mod);
+        battery_mod.addImport(entry.core_import, paired_mod);
+        if (entry.second_import) |second| battery_mod.addImport(second, entry.second_mod.?);
+        const battery = filteredTestArtifact(b, battery_mod, b.fmt("compiled-core-{s}-tests", .{entry.name}), &.{});
+        // Run the checker tier over the supplied sidecar explicitly —
+        // the same surface an external compile is verified against in
+        // the markup parity suite.
+        const check_sidecar = b.addRunArtifact(corewire_exe);
+        check_sidecar.addArg("--sidecar");
+        check_sidecar.addFileArg(supply.sidecar);
+        check_sidecar.addArg("--check");
+        battery.step.dependOn(&check_sidecar.step);
+        compiled_core_parity.append(b.allocator, .{ .name = b.dupe(entry.name), .tests = battery }) catch @panic("OOM");
+    }
+
     return .{
         .host = filteredTestArtifact(b, e2e_mod, "ts-core-e2e-tests", &.{}),
         .soundboard = filteredTestArtifact(b, soundboard_mod, "ts-soundboard-e2e-tests", &.{}),
@@ -3060,7 +3203,83 @@ fn tsCoreE2eArtifact(
         .ai_chat = filteredTestArtifact(b, ai_chat_mod, "ts-ai-chat-e2e-tests", &.{}),
         .sidecar_conformance = filteredTestArtifact(b, conformance_mod, "sidecar-conformance-tests", &.{}),
         .external_core_parity = external_core_parity,
+        .compiled_core_parity = compiled_core_parity.toOwnedSlice(b.allocator) catch @panic("OOM"),
+        .core_contracts = core_contracts.toOwnedSlice(b.allocator) catch @panic("OOM"),
     };
+}
+
+/// One fixture's paired-core module (tests/compiled-core): generate
+/// the lockstep root from the transpiled module's own export surface,
+/// stage it beside the pairing library and the mirror-value converter,
+/// bind the transpiled lane and a mirror generated from the supplied
+/// contract sidecar, and link the caller's compiled-core archive(s).
+fn pairedCoreModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    corewire_exe: *std.Build.Step.Compile,
+    ts_mod: *std.Build.Module,
+    supply: CompiledCoreSupply,
+) *std.Build.Module {
+    const gen_root = b.addWriteFiles().add("gen_paired_main.zig",
+        \\//! Generated by the build: emit a fixture's paired-core root
+        \\//! from its transpiled module (tests/compiled-core/gen_paired.zig).
+        \\const std = @import("std");
+        \\const gen = @import("gen_paired");
+        \\const core = @import("ts_core");
+        \\pub fn main(init: std.process.Init) !void {
+        \\    try gen.emitMain(core, init);
+        \\}
+        \\
+    );
+    const gen_mod = b.createModule(.{
+        .root_source_file = gen_root,
+        .target = target,
+        .optimize = optimize,
+    });
+    gen_mod.addImport("gen_paired", module(b, target, optimize, "tests/compiled-core/gen_paired.zig"));
+    gen_mod.addImport("ts_core", ts_mod);
+    const gen_exe = b.addExecutable(.{
+        .name = "gen-paired",
+        .root_module = gen_mod,
+        .use_llvm = @import("build/app.zig").useLlvmWorkaround(target),
+    });
+    const gen_run = b.addRunArtifact(gen_exe);
+    const paired_src = gen_run.addOutputFileArg("paired.zig");
+
+    const staged = b.addWriteFiles();
+    const paired_root = staged.addCopyFile(paired_src, "paired.zig");
+    _ = staged.addCopyFile(b.path("tests/compiled-core/paired_core.zig"), "paired_core.zig");
+    _ = staged.addCopyFile(b.path("tests/sidecar/mirror_value.zig"), "mirror_value.zig");
+    const mod = b.createModule(.{
+        .root_source_file = paired_root,
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.link_libc = true;
+    mod.addImport("ts_lane", ts_mod);
+    mod.addImport("shim_lane", sidecarShimModule(b, target, optimize, corewire_exe, supply.sidecar));
+    mod.addImport("corewire_rt", module(b, target, optimize, "tools/corewire/shim_rt.zig"));
+    mod.addImport("core_abi", module(b, target, optimize, "tools/corewire/core_abi.zig"));
+    var inputs = std.mem.tokenizeScalar(u8, supply.archives, std.fs.path.delimiter);
+    while (inputs.next()) |input| {
+        mod.addObjectFile(.{ .cwd_relative = b.dupe(input) });
+    }
+    return mod;
+}
+
+/// A sidecar's TypeScript facade projection alone (core_facade.ts) —
+/// the contract module an external core toolchain compiles.
+fn facadeTsFile(
+    b: *std.Build,
+    corewire_exe: *std.Build.Step.Compile,
+    sidecar_json: std.Build.LazyPath,
+) std.Build.LazyPath {
+    const generate = b.addRunArtifact(corewire_exe);
+    generate.addArg("--sidecar");
+    generate.addFileArg(sidecar_json);
+    generate.addArg("--facade");
+    return generate.addOutputFileArg("core_facade.ts");
 }
 
 /// One fixture's generated-mirror module: run corewire over the

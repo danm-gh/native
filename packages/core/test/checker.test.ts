@@ -785,3 +785,74 @@ export function update(model: Model, msg: Msg): Model {
 `);
   assert.ok(!ruleIds(clean).includes("NS1032"), `got ${ruleIds(clean)}`);
 });
+
+test("NS1061: value-record aliases refuse the shapes value storage cannot carry", () => {
+  // The model root is reference storage by contract.
+  const root = checkOnly(`
+export type Model = { readonly n: number };
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(root).includes("NS1061"), `got ${ruleIds(root)}`);
+
+  // A model-kept alias with a heap-backed field would dangle across
+  // frames — through an optional wrapper all the same.
+  const heap = checkOnly(`
+export type Cache = { readonly data: Uint8Array };
+export interface Model { readonly cache: Cache | null; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return { cache: null }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(heap).includes("NS1061"), `got ${ruleIds(heap)}`);
+
+  // Model arrays carry reference-stored records.
+  const arr = checkOnly(`
+export type Pos = { readonly x: number };
+export interface Model { readonly points: readonly Pos[]; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return { points: [] }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(arr).includes("NS1061"), `got ${ruleIds(arr)}`);
+
+  // Identity comparison over a value record compares nothing the
+  // storage carries.
+  const eq = checkOnly(`
+export type Pos = { readonly x: number };
+export interface Model { readonly pos: Pos; readonly n: number; }
+export type Msg = { readonly kind: "moved"; readonly pos: Pos } | { readonly kind: "b" };
+export function initialModel(): Model { return { pos: { x: 0 }, n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  if (msg.kind === "moved") {
+    return { pos: msg.pos, n: model.pos === msg.pos ? 1 : 0 };
+  }
+  return model;
+}
+`);
+  assert.ok(ruleIds(eq).includes("NS1061"), `got ${ruleIds(eq)}`);
+
+  // A self-reference has no finite by-value layout.
+  const cyclic = checkOnly(`
+export type Link = { readonly next: Link | null };
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "a"; readonly link: Link } | { readonly kind: "b" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(cyclic).includes("NS1061"), `got ${ruleIds(cyclic)}`);
+
+  // The scalar shapes value storage exists for stay clean: a scalar
+  // alias kept by the model directly, and a heap-carrying alias that
+  // never enters the model tree.
+  const clean = checkOnly(`
+export type Pos = { readonly x: number; readonly y: number };
+export type Note = { readonly text: Uint8Array };
+export interface Model { readonly pos: Pos; readonly n: number; }
+export type Msg = { readonly kind: "noted"; readonly note: Note } | { readonly kind: "b" };
+export function initialModel(): Model { return { pos: { x: 1, y: 2 }, n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(!ruleIds(clean).includes("NS1061"), `got ${ruleIds(clean)}`);
+});

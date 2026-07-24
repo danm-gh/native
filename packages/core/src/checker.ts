@@ -466,6 +466,7 @@ export class SubsetChecker {
     this.checkModelBindingSurface();
     this.checkViewUnbound();
     this.checkReservedContractConsts();
+    this.checkValueRecordAliases();
     for (const file of this.files) this.walk(file);
     this.checkExceptions();
     return {
@@ -743,6 +744,138 @@ export class SubsetChecker {
         ts.forEachChild(node, visit);
       };
       visit(file);
+    }
+  }
+
+  /// Object-literal aliases pin VALUE storage (the contract projection's
+  /// value-record spelling), which the model's commit machinery carries
+  /// only for scalar-shallow records — so the shapes value storage
+  /// cannot honor refuse HERE with the teaching, never downstream as an
+  /// internal emit failure or a silent dangling slice:
+  /// the model root itself (the commit walkers need the reference
+  /// root), model-kept aliases with heap-backed fields, model arrays of
+  /// alias records (no by-value slice commit walk), identity comparison
+  /// over value records, and alias self-reference (no finite by-value
+  /// layout).
+  private checkValueRecordAliases(): void {
+    const aliasStruct = (name: string): ts.TypeAliasDeclaration | null => {
+      const info = this.table.structs.get(name);
+      return info && ts.isTypeAliasDeclaration(info.decl) ? info.decl : null;
+    };
+
+    const modelAlias = aliasStruct("Model");
+    if (modelAlias) {
+      this.report("NS1061", "`Model` is declared as an object-literal alias — the model root is reference storage by contract; declare it as an interface.", modelAlias.name);
+    }
+
+    // The model-reachable record set, walked over the type table.
+    const reachable = new Set<string>();
+    const visit = (t: import("./types.ts").ZType, holder: ts.Node): void => {
+      switch (t.k) {
+        case "struct": {
+          if (reachable.has(t.name)) return;
+          reachable.add(t.name);
+          const info = this.table.structs.get(t.name);
+          if (info) for (const f of info.fields) visit(f.type, f.decl);
+          return;
+        }
+        case "union": {
+          const info = this.table.unions.get(t.name);
+          if (info && !reachable.has(t.name)) {
+            reachable.add(t.name);
+            for (const arm of info.arms) for (const f of arm.fields) visit(f.type, f.decl);
+          }
+          return;
+        }
+        case "slice": {
+          const elem = t.elem.k === "optional" ? t.elem.inner : t.elem;
+          if (elem.k === "struct") {
+            const alias = aliasStruct(elem.name);
+            if (alias) {
+              this.report("NS1061", `A model array holds \`${elem.name}\`, a value-record alias — arrays the model keeps carry reference-stored records; declare \`${elem.name}\` as an interface.`, holder);
+            }
+          }
+          return visit(t.elem, holder);
+        }
+        case "optional":
+          return visit(t.inner, holder);
+        default:
+          return;
+      }
+    };
+    if (this.table.structs.has("Model")) visit({ k: "struct", name: "Model" }, this.table.structs.get("Model")!.decl);
+
+    const scalar = (k: string): boolean => k === "number" || k === "i64" || k === "f64" || k === "bool" || k === "enum" || k === "numAlias";
+    for (const name of reachable) {
+      const alias = aliasStruct(name);
+      if (!alias) continue;
+      const info = this.table.structs.get(name)!;
+      for (const f of info.fields) {
+        if (!scalar(f.type.k)) {
+          this.report(
+            "NS1061",
+            `\`${name}\` is a value-record alias the model keeps, but field \`${f.tsName}\` is not a scalar — value records commit shallowly, so heap-backed fields would dangle across frames; declare \`${name}\` as an interface.`,
+            f.decl,
+          );
+          break;
+        }
+      }
+    }
+
+    // Alias self-reference has no finite by-value layout (a slice breaks
+    // the cycle by indirection; struct and optional fields do not).
+    const cycleEdge = (t: import("./types.ts").ZType): string | null => {
+      if (t.k === "struct") return t.name;
+      if (t.k === "optional" && t.inner.k === "struct") return t.inner.name;
+      return null;
+    };
+    for (const [name, info] of this.table.structs) {
+      if (!ts.isTypeAliasDeclaration(info.decl)) continue;
+      const seen = new Set<string>([name]);
+      const stack = info.fields.map((f) => cycleEdge(f.type)).filter((n): n is string => n !== null);
+      while (stack.length > 0) {
+        const next = stack.pop()!;
+        if (next === name) {
+          this.report("NS1061", `\`${name}\` reaches itself by value — a value-record alias has no finite layout when it contains itself; declare the recursive record as an interface.`, info.decl.name);
+          break;
+        }
+        if (seen.has(next)) continue;
+        seen.add(next);
+        const nested = this.table.structs.get(next);
+        if (nested && ts.isTypeAliasDeclaration(nested.decl)) {
+          for (const f of nested.fields) {
+            const edge = cycleEdge(f.type);
+            if (edge !== null) stack.push(edge);
+          }
+        }
+      }
+    }
+
+    // Identity comparison over a value record compares nothing the
+    // storage carries.
+    const aliasStructOfType = (t: ts.Type): string | null => {
+      const named = t.aliasSymbol?.name ?? t.symbol?.name;
+      if (!named) return null;
+      return aliasStruct(named) !== null ? named : null;
+    };
+    for (const file of this.files) {
+      const walkEq = (node: ts.Node): void => {
+        if (
+          ts.isBinaryExpression(node) &&
+          (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+            node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken)
+        ) {
+          for (const side of [node.left, node.right]) {
+            const named = aliasStructOfType(this.tast.typeOf(side));
+            if (named !== null) {
+              this.report("NS1061", `\`${named}\` values compare by content, not identity — a value-record alias has no reference to compare; compare its fields, or declare \`${named}\` as an interface for identity.`, node);
+              break;
+            }
+          }
+        }
+        ts.forEachChild(node, walkEq);
+      };
+      walkEq(file);
     }
   }
 

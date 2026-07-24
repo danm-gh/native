@@ -382,6 +382,12 @@ export const rules = {
     fix: "Use the byte surface: case with `.toUpperCase()`/`.toLowerCase()` (Unicode simple case mapping, locale-free), search with `.includes`/`.indexOf`/`.lastIndexOf`/`.startsWith`/`.endsWith` (bytes needles), measure and pad in bytes (`.length`, `.padStart`), read bytes with `b[i]`/`.at(i)`, and rebuild text with `.split`, slices, and a push-builder.",
     why: "Core text is UTF-8 bytes with exactly one representation under node and native; UTF-16 code-unit reads and Unicode normalization would reintroduce the encoding seam the bytes model exists to close, so their spellings teach the byte-honest form instead.",
   },
+  NS1061: {
+    id: "NS1061",
+    title: "value records stay scalar where the model keeps them",
+    fix: "Declare the record as an interface (reference storage) to hold heap-backed fields, sit in a model array, carry identity under `===`, or reference itself; an object-literal alias (value storage) in the model tree carries scalar fields only (numbers, booleans, literal-union tags).",
+    why: "An object-literal alias pins by-value storage — the contract projection's value-record spelling. The model's commit machinery copies by-value records shallowly, so heap-backed fields would dangle across frames, arrays of them have no commit walk, equality has no identity to compare, and a self-reference has no finite layout; each of those needs reference storage, which the interface form declares.",
+  },
   // NS9xxx: internal emit-time verification. A checker gap becomes a loud
   // internal error naming the construct, never silent misbehavior.
   NS9001: {

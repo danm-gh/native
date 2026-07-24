@@ -38,6 +38,7 @@ const canvas_frame = @import("canvas_frame.zig");
 const canvas_limits = @import("canvas_limits.zig");
 const launch_timing = @import("launch_timing.zig");
 const runtime_effects = @import("effects.zig");
+const terminal_session = @import("terminal_session.zig");
 const ui_app_provenance = @import("ui_app_provenance.zig");
 
 const Runtime = core.Runtime;
@@ -48,6 +49,14 @@ const ui_app_log = std.log.scoped(.zero_ui_app);
 
 /// Maximum number of webview panes a `UiApp` can drive (`Options.web_panes`).
 pub const max_web_panes: usize = 4;
+
+/// One queued `on-terminal` dispatch: the terminal widget's id and the
+/// post-change view state the reconcile produced (see
+/// `applyTerminalLayout`). `id == 0` marks an empty slot.
+const PendingTerminalState = struct {
+    id: canvas.ObjectId = 0,
+    state: canvas.TerminalState = .{},
+};
 
 /// Approach-end hysteresis for `on_reach_end`, in viewports from the
 /// content end: fire when the offset comes within one viewport, re-arm
@@ -1129,6 +1138,21 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         /// The slot window currently owning the declarative playback
         /// (0 while none does).
         video_slot_owner: platform.WindowId = 0,
+        /// The framework-owned terminal sessions behind `<terminal
+        /// pty={key}>` (see `terminal_session.zig`): the emulator store
+        /// the builder's grid lookup resolves through, fed by the
+        /// effects channel's pty tap. Compiles to inert no-ops when the
+        /// `terminal_vt` seam carries the stub.
+        terminal_sessions: terminal_session.TerminalSessions,
+        /// `on-terminal` states the last rebuild's view-state reconcile
+        /// produced (a resize the layout derived, an applied scrollback
+        /// echo): dispatched at the rebuild's tail, one bounded pass —
+        /// the nested rebuild each dispatch runs reconciles to the same
+        /// state and produces nothing new (`terminal_state_draining`
+        /// makes that one level a hard guarantee).
+        terminal_state_pending: [terminal_session.max_sessions]PendingTerminalState = @splat(.{}),
+        terminal_state_pending_count: usize = 0,
+        terminal_state_draining: bool = false,
         /// Live model-declared secondary windows (`Options.windows_fn`),
         /// keyed by window label.
         window_slots: [max_ui_windows]WindowSlot,
@@ -1162,6 +1186,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 .markup_fragment_slots = if (comptime fragment_watch_enabled) markupFragmentSlotsInit(backing) else {},
                 .hover_msg_leave_arenas = hoverMsgLeaveArenasInit(backing),
                 .effects = Effects.init(backing),
+                .terminal_sessions = terminal_session.TerminalSessions.init(backing),
             };
         }
 
@@ -1226,6 +1251,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 .markup_fragment_slots = if (comptime fragment_watch_enabled) markupFragmentSlotsInit(backing) else {},
                 .hover_msg_leave_arenas = hoverMsgLeaveArenasInit(backing),
                 .effects = Effects.init(backing),
+                .terminal_sessions = terminal_session.TerminalSessions.init(backing),
             };
         }
 
@@ -1246,6 +1272,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             // services binding there, so this second call frees app-side
             // memory only and never touches the dead platform.
             self.effects.deinit();
+            self.terminal_sessions.deinit();
             self.arenas[0].deinit();
             self.arenas[1].deinit();
             self.markup_arenas[0].deinit();
@@ -1314,6 +1341,34 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             if (runtime.options.session_recorder) |recorder| {
                 self.effects.bindJournal(recorder.effectJournal());
             }
+            // The terminal-session seams (no-ops on stub builds): the
+            // pty tap feeds every delivered event into the store, and
+            // the gateway routes the store's outbound bytes (keystrokes,
+            // emulator query answers) and grid sizes back through the
+            // JOURNALED pty verbs. Idempotent, like every bind here.
+            if (comptime terminal_session.enabled) {
+                self.effects.pty_tap = .{ .context = @ptrCast(self), .notify = terminalPtyTap };
+                self.terminal_sessions.setGateway(.{
+                    .context = @ptrCast(self),
+                    .write = terminalGatewayWrite,
+                    .resize = terminalGatewayResize,
+                });
+            }
+        }
+
+        fn terminalPtyTap(context: *anyopaque, event: *const runtime_effects.EffectPtyEvent) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            self.terminal_sessions.notePtyEvent(event);
+        }
+
+        fn terminalGatewayWrite(context: *anyopaque, key: u64, bytes: []const u8) bool {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return self.effects.ptyWrite(key, bytes);
+        }
+
+        fn terminalGatewayResize(context: *anyopaque, key: u64, cols: u16, rows: u16) void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            self.effects.ptyResize(key, cols, rows);
         }
 
         /// Session-replay control (`App.replay_fn`): arm the effects
@@ -1828,6 +1883,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             try self.scheduleAnimations(runtime, window_id);
             try self.scheduleLayoutTweens(runtime, window_id);
             self.applyWebPanes(runtime, window_id, layout);
+            try self.applyTerminalLayout(runtime, window_id, layout, tokens);
             self.applyStatusItem(runtime);
             self.applyVideoDeclaration(runtime);
             // The reconcile can move the playback this very build
@@ -1851,6 +1907,103 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             self.applyWindows(runtime);
             self.applyChromeSelection();
             self.applyChromeNavigation();
+            // Deliver the `on-terminal` states this rebuild's view-state
+            // reconcile produced. Each dispatch rebuilds, and the nested
+            // reconcile finds an already-applied state (nothing new
+            // queues), so one guarded pass is the whole drain.
+            try self.drainTerminalStates(runtime, window_id);
+        }
+
+        /// The `<terminal>` view-state reconcile against the freshly
+        /// laid-out tree: derive each bound terminal's cols/rows from
+        /// its frame (the painter's own sizing seam, so painted cells
+        /// and the pty grid can never disagree), apply a CHANGED
+        /// declared scrollback (source wins), resize the emulator and
+        /// push `ptyResize`, and queue the post-change state for the
+        /// widget's `on-terminal`. A no-op on stub builds and for trees
+        /// without a bound terminal.
+        fn applyTerminalLayout(self: *Self, runtime: *Runtime, window_id: platform.WindowId, layout: canvas.WidgetLayoutTree, tokens: canvas.DesignTokens) anyerror!void {
+            if (comptime !terminal_session.enabled) return;
+            var applied = false;
+            for (layout.nodes) |node| {
+                if (node.widget.kind != .terminal) continue;
+                const pty = node.widget.terminal.pty;
+                if (pty == 0) continue;
+                const frame = node.frame.normalized();
+                if (frame.width <= 0 or frame.height <= 0) continue;
+                // The grid text region sits inside the widget's own
+                // padding (the house inset when none is declared) — the
+                // exact rule the widget painter applies, so the derived
+                // grid is the one the cells paint into.
+                const padding = node.widget.layout.padding;
+                const declared = padding.left + padding.top + padding.right + padding.bottom > 0;
+                const inset: geometry.InsetsF = if (declared) padding else geometry.InsetsF.all(8);
+                const content_width = @max(0, frame.width - inset.left - inset.right);
+                const content_height = @max(0, frame.height - inset.top - inset.bottom);
+                const metrics = canvas.terminalCellMetrics(tokens);
+                if (metrics.width <= 0 or metrics.height <= 0) continue;
+                const proposed = canvas.clampTerminalGrid(
+                    @intFromFloat(@max(2, @floor(content_width / metrics.width))),
+                    @intFromFloat(@max(2, @floor(content_height / metrics.height))),
+                );
+                const state = self.terminal_sessions.reconcile(
+                    pty,
+                    node.widget.terminal.scrollback,
+                    proposed.x,
+                    proposed.y,
+                ) orelse continue;
+                applied = true;
+                if (self.terminal_state_pending_count < self.terminal_state_pending.len) {
+                    self.terminal_state_pending[self.terminal_state_pending_count] = .{
+                        .id = node.widget.id,
+                        .state = state,
+                    };
+                    self.terminal_state_pending_count += 1;
+                }
+            }
+            // An applied change moved the published snapshot AFTER this
+            // rebuild handed its layout over: refresh the retained
+            // display list so the glass shows the post-reconcile grid
+            // this frame (the widget diff always reports bound terminal
+            // grids paint-dirty, and the refresh is batch-aware).
+            if (applied and self.installed) {
+                if (runtime.findViewIndex(window_id, self.options.canvas_label)) |view_index| {
+                    _ = try runtime.refreshCanvasWidgetDisplayListIfOwned(view_index);
+                }
+            }
+        }
+
+        /// Repaint after INPUT moved a terminal's published snapshot (a
+        /// scrollback snap on typing, a wheel scroll): dirty snapshots
+        /// rebuild in place first, so the retained tree's borrowed grid
+        /// pointers paint current state. A no-op when nothing is dirty.
+        fn repaintTerminals(self: *Self, runtime: *Runtime, window_id: platform.WindowId) anyerror!void {
+            if (comptime !terminal_session.enabled) return;
+            if (!self.terminal_sessions.refreshDirty()) return;
+            if (!self.installed) return;
+            if (runtime.findViewIndex(window_id, self.options.canvas_label)) |view_index| {
+                _ = try runtime.refreshCanvasWidgetDisplayListIfOwned(view_index);
+            }
+        }
+
+        /// Dispatch the queued `on-terminal` states (see the rebuild
+        /// tail). Guarded to one level: the nested rebuild each dispatch
+        /// runs reconciles to the same applied state and queues nothing.
+        fn drainTerminalStates(self: *Self, runtime: *Runtime, window_id: platform.WindowId) anyerror!void {
+            if (comptime !terminal_session.enabled) return;
+            if (self.terminal_state_draining) return;
+            if (self.terminal_state_pending_count == 0) return;
+            self.terminal_state_draining = true;
+            defer self.terminal_state_draining = false;
+            while (self.terminal_state_pending_count > 0) {
+                self.terminal_state_pending_count -= 1;
+                const pending = self.terminal_state_pending[self.terminal_state_pending_count];
+                self.terminal_state_pending[self.terminal_state_pending_count] = .{};
+                const tree = self.tree orelse continue;
+                if (tree.msgForTerminal(pending.id, pending.state)) |msg| {
+                    try self.dispatch(runtime, window_id, msg);
+                }
+            }
         }
 
         const BuiltLayout = struct {
@@ -1902,6 +2055,12 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 // snapshot, stamped before the view fn runs — the model
                 // carries none of it.
                 ui.video_state = self.uiVideoState();
+                // The terminal grid lookup (null on stub builds): each
+                // `<terminal pty={key}>` resolves its session's published
+                // snapshot during finalize, with THIS build's tokens
+                // driving the palette's theme mapping.
+                self.terminal_sessions.beginBuild(tokens);
+                ui.terminal_lookup = self.terminal_sessions.lookup();
                 ui.virtual_window_context = @ptrCast(&window_source);
                 ui.virtual_window_source = VirtualWindowResolver.resolve;
                 ui.virtual_extent_context = @ptrCast(self);
@@ -2708,6 +2867,11 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             // build's declaration wins when both declare (one player,
             // one owner); the capture below records this slot's claim.
             ui.video_state = self.uiVideoState();
+            // Window views resolve terminal bindings through the same
+            // session store as the main canvas — one emulator per pty
+            // key, whichever tree binds it.
+            self.terminal_sessions.beginBuild(tokens);
+            ui.terminal_lookup = self.terminal_sessions.lookup();
             ui.context_menu_fallback_target = self.contextMenuFallbackTargetForLabel(slot.canvasLabel());
             if (ui.context_menu_fallback_target != 0) ui.context_menu_fallback_point = self.context_menu_fallback_point;
             self.armUiFragmentHost(&ui);
@@ -3804,7 +3968,12 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 // channel (widget routing never claims a pinch).
                 .gpu_surface_input => |input_event| {
                     try self.handlePinch(runtime, input_event);
-                    try self.handleWheel(runtime, input_event);
+                    // A wheel over a bound terminal is the widget's
+                    // scrollback gesture and consumes the event before
+                    // the app-level wheel seam (widget precedence).
+                    if (!(try self.handleTerminalWheel(runtime, input_event))) {
+                        try self.handleWheel(runtime, input_event);
+                    }
                 },
                 else => {},
             }
@@ -4020,6 +4189,15 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 if (runtime.canvasWidgetLayout(frame_event.window_id, self.options.canvas_label)) |layout| {
                     self.applyWebPanes(runtime, frame_event.window_id, layout);
                 } else |_| {}
+            }
+            // Terminal outbound pacing: a child that read without
+            // echoing freed stdin-FIFO room no output event announces,
+            // so pending session bytes (a retained query reply, a paste
+            // tail) flush on the presented-frame clock — journaled
+            // write verdicts on a journaled event, so replay drains
+            // identically. A no-op when nothing is pending.
+            if (comptime terminal_session.enabled) {
+                _ = self.terminal_sessions.flushPending();
             }
             try self.presentFrame(runtime, frame_event, self.options.canvas_label, installing);
             if (installing) return;
@@ -5119,6 +5297,20 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 }
                 if (tree.findWidget(target.id)) |widget| {
                     if (!widget.state.disabled) {
+                        // A focused BOUND terminal owns its keys the way
+                        // an editable text widget owns typing: specials
+                        // and chords encode through the session's
+                        // emulator toward the pty; consumed either way so
+                        // the app-level key fallback can never fire while
+                        // the user is driving the terminal. An ended
+                        // session declines, and the key falls through
+                        // (an app may bind a restart chord).
+                        if (widget.kind == .terminal and widget.terminal.pty != 0) {
+                            if (self.terminal_sessions.keyEvent(widget.terminal.pty, keyboard_event.keyboard)) {
+                                try self.repaintTerminals(runtime, keyboard_event.window_id);
+                                return;
+                            }
+                        }
                         if (canvas.isWidgetTextEntry(widget)) return;
                         if (canvas.widgetKeyboardControlIntent(widget, keyboard_event.keyboard)) |intent| {
                             // Keyboard activation of the house video
@@ -5154,6 +5346,27 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 }
             }
             if (keyboard_event.keyboard.phase == .text_input) {
+                // A focused BOUND terminal consumes committed text ahead
+                // of the app-level `on_text` seam — the typing channel
+                // the terminal element promises (IME results included;
+                // the runtime already gates this dispatch to committed
+                // insertions). Text arrives TARGET-LESS here because the
+                // terminal deliberately stays out of the TextBuffer
+                // pipeline; the stamped focused id names it.
+                if (comptime terminal_session.enabled) {
+                    if (keyboard_event.keyboard.focused_id) |focused_id| {
+                        if (tree.findWidget(focused_id)) |widget| {
+                            if (widget.kind == .terminal and widget.terminal.pty != 0) {
+                                const edit = keyboard_event.keyboard.textEditEvent() orelse return;
+                                if (edit != .insert_text) return;
+                                if (self.terminal_sessions.textInput(widget.terminal.pty, edit.insert_text)) {
+                                    try self.repaintTerminals(runtime, keyboard_event.window_id);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
                 const text_map = self.options.on_text orelse return;
                 // COMMITTED text only. An IME preedit (`set_composition`)
                 // or a cancel is provisional and must never reach a
@@ -5204,6 +5417,48 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             })) |msg| {
                 try self.dispatch(runtime, input_event.window_id, msg);
             }
+        }
+
+        /// Wheel scrollback over a bound `<terminal>`: natural
+        /// direction, like every terminal — the gesture belongs to the
+        /// widget under the pointer, so it consumes the event ahead of
+        /// the app-level `on_wheel` seam (widget precedence). The
+        /// applied position reports through `on-terminal` like every
+        /// runtime-applied view-state change, and the Msg rides the
+        /// same journaled input event, so a recorded scroll replays to
+        /// the identical viewport. Returns whether a terminal consumed
+        /// the wheel.
+        fn handleTerminalWheel(self: *Self, runtime: *Runtime, input_event: platform.GpuSurfaceInputEvent) anyerror!bool {
+            if (comptime !terminal_session.enabled) return false;
+            if (input_event.kind != .scroll) return false;
+            if (input_event.delta_y == 0) return false;
+            const layout = runtime.canvasWidgetLayout(input_event.window_id, input_event.label) catch return false;
+            const point = geometry.PointF.init(input_event.x, input_event.y);
+            // The TOPMOST bound terminal under the pointer (later nodes
+            // paint over earlier ones).
+            var target: ?canvas.WidgetLayoutNode = null;
+            for (layout.nodes) |node| {
+                if (node.widget.kind != .terminal) continue;
+                if (node.widget.terminal.pty == 0) continue;
+                if (!node.frame.normalized().containsPoint(point)) continue;
+                target = node;
+            }
+            const node = target orelse return false;
+            if (!self.terminal_sessions.hasSession(node.widget.terminal.pty)) return false;
+            if (self.terminal_sessions.wheel(node.widget.terminal.pty, input_event.delta_y)) {
+                try self.repaintTerminals(runtime, input_event.window_id);
+                if (self.terminal_sessions.currentState(node.widget.terminal.pty)) |state| {
+                    if (self.treeForViewLabel(input_event.label)) |tree| {
+                        if (tree.msgForTerminal(node.widget.id, state)) |msg| {
+                            try self.dispatch(runtime, input_event.window_id, msg);
+                        }
+                    }
+                }
+            }
+            // Over a bound terminal the gesture is the terminal's even
+            // when the viewport is already pinned — the app wheel seam
+            // must not double-consume it.
+            return true;
         }
 
         /// Wheel/trackpad scrolls reach the app as the pinch channel's

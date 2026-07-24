@@ -648,11 +648,18 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                     // arriving after the resolution is a genuine
                     // keystroke on every host and always flows.
                     if (self.views[index].kind == .gpu_surface and self.views[index].focused and !targetless_composition_owns_keys) {
+                        // Target-less, but the FOCUSED widget's id still
+                        // rides along (0 = nothing focused): consumers
+                        // that own focused input without editor state —
+                        // the terminal element — resolve their widget
+                        // from it.
+                        const focused_id = self.views[index].canvas_widget_focused_id;
                         try self.dispatchEvent(app, .{ .canvas_widget_keyboard = .{
                             .window_id = input_event.window_id,
                             .view_label = self.views[index].label,
                             .keyboard = .{
                                 .phase = if (input_event.kind == .key_up) .key_up else .key_down,
+                                .focused_id = if (focused_id != 0) focused_id else null,
                                 .key = input_event.key,
                                 .text = input_event.text,
                                 .modifiers = canvas_frame_helpers.canvasWidgetKeyboardModifiers(input_event.modifiers),
@@ -786,11 +793,17 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                         if (self.views[index].kind == .gpu_surface and self.views[index].focused and
                             (!committed_text_claimed or ime_resolution))
                         {
+                            // The focused widget's id rides the
+                            // target-less event (see the key fallback
+                            // above): a focused terminal resolves its
+                            // typing channel from it.
+                            const focused_id = self.views[index].canvas_widget_focused_id;
                             try self.dispatchEvent(app, .{ .canvas_widget_keyboard = .{
                                 .window_id = input_event.window_id,
                                 .view_label = self.views[index].label,
                                 .keyboard = .{
                                     .phase = .text_input,
+                                    .focused_id = if (focused_id != 0) focused_id else null,
                                     .key = input_event.key,
                                     .text = text,
                                     // Mark it committed so the ui-app

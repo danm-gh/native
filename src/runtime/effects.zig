@@ -1009,6 +1009,19 @@ pub const EffectPtyEvent = struct {
     dropped_writes: u32 = 0,
 };
 
+/// The runtime's pty event tap (the terminal-session store behind
+/// `<terminal pty={key}>`): fires at every pty event DELIVERY — the
+/// same instant the app's Msg is built, after the journal note, on the
+/// live drain and the replay/test feed path alike — so a consumer that
+/// derives state from the tapped stream sees exactly the journaled
+/// inputs and replays byte-identical. The event's `bytes` are drain
+/// scratch: valid only inside the call, copy (or feed) immediately.
+/// Type-erased so the engine never names the consumer.
+pub const PtyTap = struct {
+    context: *anyopaque,
+    notify: *const fn (context: *anyopaque, event: *const EffectPtyEvent) void,
+};
+
 /// What one channel event Msg reports. `.data` is one delivered post;
 /// `.closed` is the exactly-one terminal `closeChannel` produces (final
 /// drop totals aboard); `.rejected` is the exactly-one terminal a
@@ -4287,6 +4300,11 @@ pub fn Effects(comptime Msg: type) type {
         /// Scratch a delivered output batch is copied into so the
         /// event's byte slice stays valid while `update` runs.
         pty_drain_scratch: [max_effect_pty_chunk_bytes]u8 = undefined,
+        /// The runtime's pty delivery tap (see `PtyTap`): fired for
+        /// every delivered pty event, live and fed alike, right after
+        /// the journal note and before the Msg constructor runs. Null
+        /// costs one branch per delivery.
+        pty_tap: ?PtyTap = null,
         queue_mutex: SpinMutex = .{},
         queue: [max_effect_queue_entries]Entry = undefined,
         queue_head: usize = 0,
@@ -9633,6 +9651,10 @@ pub fn Effects(comptime Msg: type) type {
                             .pty_signal = event.signal,
                             .pty_dropped_writes = event.dropped_writes,
                         });
+                        // The runtime tap sees the fed stream at the same
+                        // instant the live drain's tap fires — the replay
+                        // half of the emulator's journaled-inputs contract.
+                        if (self.pty_tap) |tap| tap.notify(tap.context, &event);
                         const deliver_fn = on_event orelse continue;
                         return deliver_fn(event);
                     },
@@ -9893,6 +9915,10 @@ pub fn Effects(comptime Msg: type) type {
                     .code = effect_error_exit_code,
                 });
             }
+            // The runtime's terminal-session tap consumes the delivered
+            // stream (journal-noted above), so a bound `<terminal>` grid
+            // derives from exactly the bytes the journal carries.
+            if (self.pty_tap) |tap| tap.notify(tap.context, &event);
             const deliver_fn = on_event orelse return null;
             return deliver_fn(event);
         }

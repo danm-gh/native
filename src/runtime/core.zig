@@ -723,7 +723,9 @@ pub const Runtime = struct {
     const relayoutDescendantWebViewBackends = WindowViewMethods.relayoutDescendantWebViewBackends;
     const relayoutDescendantWebViewBackendsDepth = WindowViewMethods.relayoutDescendantWebViewBackendsDepth;
     const reserveView = WindowViewMethods.reserveView;
-    const findViewIndex = WindowViewMethods.findViewIndex;
+    // Public: the ui-app layer resolves view indices for targeted
+    // display-list refreshes (the terminal repaint path).
+    pub const findViewIndex = WindowViewMethods.findViewIndex;
     const commandSourceForNativeView = WindowViewMethods.commandSourceForNativeView;
     const setFocusedView = WindowViewMethods.setFocusedView;
     const clearFocusedView = WindowViewMethods.clearFocusedView;
@@ -932,7 +934,10 @@ pub const Runtime = struct {
     pub const emitCanvasWidgetDisplayListWithChrome = CanvasWidgetDisplayMethods.emitCanvasWidgetDisplayListWithChrome;
     pub const emitCanvasWidgetDisplayListWithStoredTokensAndChrome = CanvasWidgetDisplayMethods.emitCanvasWidgetDisplayListWithStoredTokensAndChrome;
     const emitCanvasWidgetDisplayListForViewWithChrome = CanvasWidgetDisplayMethods.emitCanvasWidgetDisplayListForViewWithChrome;
-    const refreshCanvasWidgetDisplayListIfOwned = CanvasWidgetDisplayMethods.refreshCanvasWidgetDisplayListIfOwned;
+    // Public: the ui-app layer repaints after a terminal session's
+    // published snapshot moved under the retained tree (batch-aware,
+    // a no-op for chrome-owned display lists).
+    pub const refreshCanvasWidgetDisplayListIfOwned = CanvasWidgetDisplayMethods.refreshCanvasWidgetDisplayListIfOwned;
     const refreshCanvasWidgetDisplayListIfOwnedSkippingAccessibility = CanvasWidgetDisplayMethods.refreshCanvasWidgetDisplayListIfOwnedSkippingAccessibility;
     const refreshCanvasWidgetDisplayListIfOwnedWithAccessibility = CanvasWidgetDisplayMethods.refreshCanvasWidgetDisplayListIfOwnedWithAccessibility;
     const refreshCanvasWidgetDisplayListIfOwnedWithAccessibilityImmediate = CanvasWidgetDisplayMethods.refreshCanvasWidgetDisplayListIfOwnedWithAccessibilityImmediate;

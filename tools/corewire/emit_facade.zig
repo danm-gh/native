@@ -97,6 +97,7 @@ const FacadeEmitter = struct {
     diags: *sidecar_mod.Diagnostics,
     out: std.ArrayListUnmanaged(u8),
     inlined: []const []const u8 = &.{},
+    flattened: []const []const u8 = &.{},
     sample_ordinal: usize = 0,
     sample_slice_depth: usize = 0,
 
@@ -124,6 +125,7 @@ const FacadeEmitter = struct {
 
     fn run(self: *FacadeEmitter) Error!void {
         self.inlined = try emit_mod.inlinedTableNames(self.arena, self.sidecar);
+        self.flattened = try self.flattenedTableNames();
         try self.validateNames();
         self.validateOptionalDepth();
         if (self.diags.hasErrors()) return;
@@ -381,12 +383,14 @@ const FacadeEmitter = struct {
             }
             try self.raw(";\n");
         }
-        // Every table entry gets a NAMED declaration: the subset has no
-        // inline object types, and TypeScript names never reach the
-        // host's reflection surface, so the Zig lane's inline-anonymous
-        // fidelity concern does not exist here.
+        // Every table entry gets a NAMED declaration — except the
+        // flattened single-use records, whose whole shape lives inline
+        // in their one arm literal and whose synthesized names must
+        // stay undeclared (a downstream consumer of the module
+        // re-derives the same names from the inline arms).
         for (self.sidecar.types.structs) |*entry| {
             if (std.mem.eql(u8, entry.name, self.sidecar.model)) continue;
+            if (nameListed(self.flattened, entry.name)) continue;
             try self.structInterface(entry);
         }
         for (self.sidecar.types.unions) |entry| {
@@ -442,6 +446,34 @@ const FacadeEmitter = struct {
             return text.items;
         }
         return std.fmt.allocPrint(self.arena, "{{ readonly kind: \"{s}\"; readonly value: {s} }}", .{ escaped, try self.spellRef(ref, union_name, arm_name) });
+    }
+
+    /// The synthesized single-use records this projection flattens into
+    /// their one arm literal: neither an interface declaration nor a
+    /// named encoder ever spells them, so their synthesized names stay
+    /// free for any downstream consumer of the module that re-derives
+    /// the same names from the inline arms.
+    fn flattenedTableNames(self: *FacadeEmitter) Error![]const []const u8 {
+        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (self.sidecar.msg.arms) |arm| {
+            switch (arm.payload) {
+                .record => {
+                    if (self.synthesizedRecordOf(recordPayloadRef(arm.payload), self.sidecar.msg.name, arm.name)) |record| {
+                        try names.append(self.arena, record.name);
+                    }
+                },
+                else => {},
+            }
+        }
+        for (self.sidecar.types.unions) |entry| {
+            for (entry.arms) |arm| {
+                if (arm.payload == .void) continue;
+                if (self.synthesizedRecordOf(arm.payload, entry.name, arm.name)) |record| {
+                    try names.append(self.arena, record.name);
+                }
+            }
+        }
+        return names.items;
     }
 
     /// The struct behind a synthesized, inlined record reference at
@@ -518,13 +550,19 @@ const FacadeEmitter = struct {
             .void => "void",
             .optional => |inner| try std.fmt.allocPrint(self.arena, "{s} | null", .{try self.spellRef(inner.*, container, member)}),
             .slice => |elem| blk: {
+                // Sequences spell plain `T[]`: the declaration site's own
+                // `readonly` modifier already pins immutability, and the
+                // plain spelling is the one the projection's closed type
+                // vocabulary carries end to end (the readonly-array type
+                // operator has no contract projection).
+                //
                 // Composite element spellings parenthesize: `number |
                 // null[]` would type the null as the array.
                 const spelled = try self.spellRef(elem.*, container, member);
                 if (std.mem.indexOfAny(u8, spelled, " |") != null) {
-                    break :blk try std.fmt.allocPrint(self.arena, "readonly ({s})[]", .{spelled});
+                    break :blk try std.fmt.allocPrint(self.arena, "({s})[]", .{spelled});
                 }
-                break :blk try std.fmt.allocPrint(self.arena, "readonly {s}[]", .{spelled});
+                break :blk try std.fmt.allocPrint(self.arena, "{s}[]", .{spelled});
             },
             // Reference storage is a layout fact of the host mirror;
             // TypeScript sees the record value either way.
@@ -1080,6 +1118,9 @@ const FacadeEmitter = struct {
         }
 
         for (self.sidecar.types.structs) |*entry| {
+            // Flattened single-use records encode inline at their one
+            // arm site; a named encoder would need the undeclared type.
+            if (nameListed(self.flattened, entry.name)) continue;
             try self.structEncoder(entry);
         }
         for (self.sidecar.types.unions) |*entry| {
@@ -1790,7 +1831,7 @@ test "composite slice elements parenthesize in the projection" {
         "{\"name\": \"label\", \"type\": {\"kind\": \"slice\", \"elem\": {\"kind\": \"optional\", \"inner\": {\"kind\": \"f64\"}}}}",
     );
     const generated = try facadeFromJson(arena, source);
-    try testing.expect(std.mem.indexOf(u8, generated, "readonly label: readonly (number | null)[];") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "readonly label: (number | null)[];") != null);
 }
 
 test "renamed roots declare under the profile's designated spellings" {

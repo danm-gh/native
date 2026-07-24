@@ -69,7 +69,7 @@ const export_signatures = [_]ExportSignature{
     .{ .suffix = "command_msg", .params = &.{"bytes"}, .returns = "bytes" },
     .{ .suffix = "frame_msg", .params = &.{ "f64", "f64", "f64", "f64" }, .returns = "bytes" },
     .{ .suffix = "key_msg", .params = &.{ "bytes", "u8", "u8", "u8", "u8" }, .returns = "bytes" },
-    .{ .suffix = "pinch_msg", .params = &.{ "f64", "bytes", "u32", "f64", "f64", "f64", "f64" }, .returns = "bytes" },
+    .{ .suffix = "pinch_msg", .params = &.{ "f64", "bytes", "u32", "f64", "f64", "f64" }, .returns = "bytes" },
 };
 
 /// Suffixes that never enter the export map: the mode-provided symbols
@@ -358,7 +358,7 @@ test "wired channels join the export map with their wire shapes" {
     // The wire-shaped signatures: bytes as buffers, u8 modifier
     // booleans, the pinch phase a u32 member index.
     try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_key_msg\", \"symbol\": \"nsc_core_key_msg\", \"params\": [\"bytes\", \"u8\", \"u8\", \"u8\", \"u8\"], \"returns\": \"bytes\" }") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_pinch_msg\", \"symbol\": \"nsc_core_pinch_msg\", \"params\": [\"f64\", \"bytes\", \"u32\", \"f64\", \"f64\", \"f64\", \"f64\"], \"returns\": \"bytes\" }") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_pinch_msg\", \"symbol\": \"nsc_core_pinch_msg\", \"params\": [\"f64\", \"bytes\", \"u32\", \"f64\", \"f64\", \"f64\"], \"returns\": \"bytes\" }") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_command_msg") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_frame_msg") == null);
 }

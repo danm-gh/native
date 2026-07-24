@@ -265,9 +265,13 @@ export class TypedAst {
           tag = value;
           continue;
         }
+        // An optional payload property has no native slot: the source
+        // permits the absent member while the emitted arm would demand
+        // it, so the shape is not this one (spell absence as `| null`).
+        if (prop.questionToken) return null;
         fields.push({
           name,
-          optional: prop.questionToken !== undefined,
+          optional: false,
           readonly: hasReadonlyModifier(prop),
           typeNode: prop.type,
           declaration: prop,

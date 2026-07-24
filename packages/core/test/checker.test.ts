@@ -920,3 +920,42 @@ export function update(model: Model, msg: Msg): Model { return model; }
 `);
   assert.ok(!ruleIds(treeOverArray).includes("NS1061"), `got ${ruleIds(treeOverArray)}`);
 });
+
+test("NS1061/NS1062: presence checks pass; optional arm payloads and class roots refuse", () => {
+  // A nullable presence check compares the option, not the record.
+  const presence = checkOnly(`
+export type Pos = { readonly x: number };
+export interface Model { readonly pos: Pos | null; readonly n: number; }
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return { pos: null, n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  if (model.pos !== null) {
+    return { pos: model.pos, n: model.pos.x };
+  }
+  return model;
+}
+`);
+  assert.ok(!ruleIds(presence).includes("NS1061"), `got ${ruleIds(presence)}`);
+
+  // An optional payload property has no native slot: the shape is not a
+  // kind-tagged union, so the Msg root refuses with the teaching.
+  const optionalArm = checkOnly(`
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "set"; readonly value?: number } | { readonly kind: "b" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(optionalArm).includes("NS1062"), `got ${ruleIds(optionalArm)}`);
+
+  // A class named Msg is a struct, never a tagged union.
+  const classMsg = checkOnly(`
+export interface Model { readonly n: number; }
+export class Msg {
+  value: number = 0;
+  constructor(value: number) { this.value = value; }
+}
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(classMsg).includes("NS1062"), `got ${ruleIds(classMsg)}`);
+});

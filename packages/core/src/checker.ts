@@ -776,13 +776,13 @@ export class SubsetChecker {
     // struct) has no dispatch path.
     for (const file of this.files) {
       for (const stmt of file.statements) {
-        if (!ts.isInterfaceDeclaration(stmt) && !ts.isTypeAliasDeclaration(stmt)) continue;
-        const rootName = stmt.name.text;
-        if (rootName === "Model" && !this.table.structs.has("Model")) {
-          this.report("NS1062", "`Model` does not declare a record — the model root is a reference-stored record; declare it as an interface.", stmt.name);
+        if (!ts.isInterfaceDeclaration(stmt) && !ts.isTypeAliasDeclaration(stmt) && !(ts.isClassDeclaration(stmt) && stmt.name)) continue;
+        const rootName = stmt.name!.text;
+        if (rootName === "Model" && (ts.isClassDeclaration(stmt) || !this.table.structs.has("Model"))) {
+          this.report("NS1062", "`Model` does not declare a record — the model root is a reference-stored record; declare it as an interface.", stmt.name!);
         }
         if (rootName === "Msg" && !this.table.unions.has("Msg")) {
-          this.report("NS1062", "`Msg` does not declare a kind-tagged union — dispatch routes by the declaration-order kind tags; declare it as a union of `{ kind: \"...\" }` arms.", stmt.name);
+          this.report("NS1062", "`Msg` does not declare a kind-tagged union — dispatch routes by the declaration-order kind tags; declare it as a union of `{ kind: \"...\" }` arms.", stmt.name!);
         }
       }
     }
@@ -929,12 +929,14 @@ export class SubsetChecker {
           (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
             node.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken)
         ) {
-          for (const side of [node.left, node.right]) {
-            const named = aliasStructOfType(this.tast.typeOf(side));
-            if (named !== null) {
-              this.report("NS1061", `\`${named}\` values compare by content, not identity — a value-record alias has no reference to compare; compare its fields, or declare \`${named}\` as an interface for identity.`, node);
-              break;
-            }
+          // Identity is only in question when BOTH sides can be
+          // records at once: a presence check against null (or any
+          // never-a-record operand) compares the option, not the
+          // record, and stays exact.
+          const left = aliasStructOfType(this.tast.typeOf(node.left));
+          const right = aliasStructOfType(this.tast.typeOf(node.right));
+          if (left !== null && right !== null) {
+            this.report("NS1061", `\`${left}\` values compare by content, not identity — a value-record alias has no reference to compare; compare its fields, or declare \`${left}\` as an interface for identity.`, node);
           }
         }
         ts.forEachChild(node, walkEq);

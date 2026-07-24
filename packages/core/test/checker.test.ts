@@ -856,3 +856,67 @@ export function update(model: Model, msg: Msg): Model { return model; }
 `);
   assert.ok(!ruleIds(clean).includes("NS1061"), `got ${ruleIds(clean)}`);
 });
+
+test("NS1062: the entry roots keep their contract shapes", () => {
+  // A plain object alias (or an interface) named Msg has no dispatch
+  // path; a tagged singleton named Model has no commit path.
+  const structMsg = checkOnly(`
+export type Msg = { readonly value: number };
+export interface Model { readonly n: number; }
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(structMsg).includes("NS1062"), `got ${ruleIds(structMsg)}`);
+
+  const interfaceMsg = checkOnly(`
+export interface Msg { readonly value: number; }
+export interface Model { readonly n: number; }
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(interfaceMsg).includes("NS1062"), `got ${ruleIds(interfaceMsg)}`);
+
+  const unionModel = checkOnly(`
+export type Model = { readonly kind: "ready"; readonly count: number };
+export type Msg = { readonly kind: "a" } | { readonly kind: "b" };
+export function initialModel(): Model { return { kind: "ready", count: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(unionModel).includes("NS1062"), `got ${ruleIds(unionModel)}`);
+});
+
+test("NS1061: by-value recursion through a singleton union and wrapped identity comparison refuse", () => {
+  const unionCycle = checkOnly(`
+export type Link = { readonly kind: "link"; readonly next: Link | null };
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "a"; readonly link: Link } | { readonly kind: "b" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(ruleIds(unionCycle).includes("NS1061"), `got ${ruleIds(unionCycle)}`);
+
+  const nullableEq = checkOnly(`
+export type Pos = { readonly x: number };
+export interface Model { readonly pos: Pos | null; readonly n: number; }
+export type Msg = { readonly kind: "moved"; readonly pos: Pos | null } | { readonly kind: "b" };
+export function initialModel(): Model { return { pos: null, n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  if (msg.kind === "moved") {
+    return { pos: msg.pos, n: model.pos === msg.pos ? 1 : 0 };
+  }
+  return model;
+}
+`);
+  assert.ok(ruleIds(nullableEq).includes("NS1061"), `got ${ruleIds(nullableEq)}`);
+
+  // An array breaks the cycle by indirection: a tree over a kids list
+  // stays clean.
+  const treeOverArray = checkOnly(`
+export type Tree = { readonly kind: "node"; readonly label: number } | { readonly kind: "branch"; readonly kids: readonly Tree[] };
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "a"; readonly tree: Tree } | { readonly kind: "b" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.ok(!ruleIds(treeOverArray).includes("NS1061"), `got ${ruleIds(treeOverArray)}`);
+});

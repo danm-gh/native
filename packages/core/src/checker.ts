@@ -768,6 +768,25 @@ export class SubsetChecker {
       this.report("NS1061", "`Model` is declared as an object-literal alias — the model root is reference storage by contract; declare it as an interface.", modelAlias.name);
     }
 
+    // The entry roots keep their contract shapes whatever declaration
+    // form produced them: a `Model` that classified as anything but a
+    // record (a singleton tagged alias becomes a union, for one) has no
+    // commit path, and a `Msg` that classified as anything but a
+    // kind-tagged union (a plain object alias or an interface becomes a
+    // struct) has no dispatch path.
+    for (const file of this.files) {
+      for (const stmt of file.statements) {
+        if (!ts.isInterfaceDeclaration(stmt) && !ts.isTypeAliasDeclaration(stmt)) continue;
+        const rootName = stmt.name.text;
+        if (rootName === "Model" && !this.table.structs.has("Model")) {
+          this.report("NS1062", "`Model` does not declare a record — the model root is a reference-stored record; declare it as an interface.", stmt.name);
+        }
+        if (rootName === "Msg" && !this.table.unions.has("Msg")) {
+          this.report("NS1062", "`Msg` does not declare a kind-tagged union — dispatch routes by the declaration-order kind tags; declare it as a union of `{ kind: \"...\" }` arms.", stmt.name);
+        }
+      }
+    }
+
     // The model-reachable record set, walked over the type table.
     const reachable = new Set<string>();
     const visit = (t: import("./types.ts").ZType, holder: ts.Node): void => {
@@ -822,41 +841,86 @@ export class SubsetChecker {
       }
     }
 
-    // Alias self-reference has no finite by-value layout (a slice breaks
-    // the cycle by indirection; struct and optional fields do not).
+    // By-value self-reference has no finite layout (a slice breaks the
+    // cycle by indirection; struct, union, and optional fields do not).
+    // The walk covers every by-value node — value-stored records AND
+    // tagged unions, whose arms live inline — so recursion through a
+    // singleton union refuses the same way as through a record.
     const cycleEdge = (t: import("./types.ts").ZType): string | null => {
-      if (t.k === "struct") return t.name;
-      if (t.k === "optional" && t.inner.k === "struct") return t.inner.name;
+      const inner = t.k === "optional" ? t.inner : t;
+      if (inner.k === "struct") return this.table.isPointerStruct(inner.name) ? null : inner.name;
+      if (inner.k === "union") return inner.name;
       return null;
     };
-    for (const [name, info] of this.table.structs) {
-      if (!ts.isTypeAliasDeclaration(info.decl)) continue;
+    const byValueEdges = (name: string): string[] => {
+      const edges: string[] = [];
+      const struct = this.table.structs.get(name);
+      if (struct && !this.table.isPointerStruct(name)) {
+        for (const f of struct.fields) {
+          const edge = cycleEdge(f.type);
+          if (edge !== null) edges.push(edge);
+        }
+      }
+      const union = this.table.unions.get(name);
+      if (union) {
+        for (const arm of union.arms) {
+          for (const f of arm.fields) {
+            const edge = cycleEdge(f.type);
+            if (edge !== null) edges.push(edge);
+          }
+        }
+      }
+      return edges;
+    };
+    const cyclic = new Set<string>();
+    for (const name of [...this.table.structs.keys(), ...this.table.unions.keys()]) {
+      if (this.table.structs.has(name) && this.table.isPointerStruct(name)) continue;
       const seen = new Set<string>([name]);
-      const stack = info.fields.map((f) => cycleEdge(f.type)).filter((n): n is string => n !== null);
+      const stack = byValueEdges(name);
       while (stack.length > 0) {
         const next = stack.pop()!;
         if (next === name) {
-          this.report("NS1061", `\`${name}\` reaches itself by value — a value-record alias has no finite layout when it contains itself; declare the recursive record as an interface.`, info.decl.name);
+          cyclic.add(name);
           break;
         }
         if (seen.has(next)) continue;
         seen.add(next);
-        const nested = this.table.structs.get(next);
-        if (nested && ts.isTypeAliasDeclaration(nested.decl)) {
-          for (const f of nested.fields) {
-            const edge = cycleEdge(f.type);
-            if (edge !== null) stack.push(edge);
-          }
-        }
+        stack.push(...byValueEdges(next));
       }
+    }
+    for (const name of cyclic) {
+      const decl = this.table.structs.get(name)?.decl ?? this.table.unions.get(name)?.decl;
+      if (decl === undefined) continue;
+      const declName = (decl as ts.InterfaceDeclaration | ts.TypeAliasDeclaration | ts.ClassDeclaration).name ?? decl;
+      this.report("NS1061", `\`${name}\` reaches itself by value — a by-value layout has no finite size when it contains itself; break the cycle with an array, or store the record in the model (reference storage).`, declName);
     }
 
     // Identity comparison over a value record compares nothing the
-    // storage carries.
+    // storage carries. Union operand types (`Pos | null`) check every
+    // constituent, and plain type aliases resolve to their targets, so
+    // a wrapped spelling cannot slip a value record past the guard.
+    const aliasStructNamed = (spelling: string): string | null => {
+      let named = spelling;
+      const seen = new Set<string>();
+      while (!seen.has(named)) {
+        seen.add(named);
+        const target = this.table.plainAliases.get(named);
+        if (target === undefined) break;
+        named = target;
+      }
+      return aliasStruct(named) !== null ? named : null;
+    };
     const aliasStructOfType = (t: ts.Type): string | null => {
+      if (t.isUnion()) {
+        for (const constituent of t.types) {
+          const named = aliasStructOfType(constituent);
+          if (named !== null) return named;
+        }
+        return null;
+      }
       const named = t.aliasSymbol?.name ?? t.symbol?.name;
       if (!named) return null;
-      return aliasStruct(named) !== null ? named : null;
+      return aliasStructNamed(named);
     };
     for (const file of this.files) {
       const walkEq = (node: ts.Node): void => {

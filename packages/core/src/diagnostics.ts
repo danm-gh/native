@@ -388,6 +388,12 @@ export const rules = {
     fix: "Declare the record as an interface (reference storage) to hold heap-backed fields, sit in a model array, carry identity under `===`, or reference itself; an object-literal alias (value storage) in the model tree carries scalar fields only (numbers, booleans, literal-union tags).",
     why: "An object-literal alias pins by-value storage — the contract projection's value-record spelling. The model's commit machinery copies by-value records shallowly, so heap-backed fields would dangle across frames, arrays of them have no commit walk, equality has no identity to compare, and a self-reference has no finite layout; each of those needs reference storage, which the interface form declares.",
   },
+  NS1062: {
+    id: "NS1062",
+    title: "the entry roots keep their contract shapes",
+    fix: "Declare `Model` as an interface record (`export interface Model { ... }`) and `Msg` as a kind-tagged union (`export type Msg = { kind: \"...\" } | ...`).",
+    why: "The generated wiring commits `Model` as the reference-stored record root and dispatches `Msg` by its declaration-order kind tags; any other shape under those names has no dispatch or commit path and would fail deep inside the emitted module instead of teaching here.",
+  },
   // NS9xxx: internal emit-time verification. A checker gap becomes a loud
   // internal error naming the construct, never silent misbehavior.
   NS9001: {

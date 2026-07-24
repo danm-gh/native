@@ -254,9 +254,24 @@ const FacadeEmitter = struct {
             }
         }
         var facade_decls: std.ArrayListUnmanaged([]const u8) = .empty;
-        try facade_decls.appendSlice(self.arena, &.{ "initialModel", "update", "viewUnbound", "modelUnbound", "msgUnbound", "asciiBytes", "NscfContractError", "NSCF_POW" });
+        try facade_decls.appendSlice(self.arena, &.{ "initialModel", "update", "viewUnbound", "asciiBytes", "NscfContractError", "NSCF_POW" });
         if (self.sidecar.init_returns_cmd or self.sidecar.update_returns_cmd) try facade_decls.append(self.arena, "Cmd");
         if (self.sidecar.has_subscriptions) try facade_decls.append(self.arena, "Sub");
+        // The split unbound consts declare exactly when their lists are
+        // nonempty (unboundDecl), so their names join the fence exactly
+        // then: an unbound MODEL list needs at least one entry naming a
+        // model field (helper entries stay sidecar facts here).
+        const model_struct = sidecar_mod.findStruct(self.sidecar.types, self.sidecar.model).?;
+        const any_field_unbound = blk: {
+            for (self.sidecar.model_unbound) |name| {
+                for (model_struct.fields) |field| {
+                    if (std.mem.eql(u8, field.name, name)) break :blk true;
+                }
+            }
+            break :blk false;
+        };
+        if (any_field_unbound) try facade_decls.append(self.arena, "modelUnbound");
+        if (self.sidecar.msg.unbound.len > 0) try facade_decls.append(self.arena, "msgUnbound");
         // Wired channels add their event records, the channel-function
         // null gates, and (pinch) the phase vocabulary to the facade's
         // own declarations; the host-constructed and environment
@@ -2003,6 +2018,30 @@ test "split unbound consts and host-channel consts restate the sidecar" {
     // No host-constructed arms declared: the consts stay out.
     try testing.expect(std.mem.indexOf(u8, generated, "appearanceMsg") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "chromeMsg") == null);
+}
+
+test "the split unbound names are fenced only when their consts declare" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // A contract type named modelUnbound projects while no unbound
+    // model fields exist: nothing collides, nothing refuses.
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"enums\": []", "\"enums\": [{\"name\": \"modelUnbound\", \"members\": [\"a\", \"b\"]}]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"label\", \"type\": {\"kind\": \"enum\", \"name\": \"modelUnbound\"}}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "export type modelUnbound =") != null);
+    // The same type refuses once an unbound model field makes the
+    // facade declare the const.
+    const colliding = try std.mem.replaceOwned(u8, arena, source, "\"model_unbound\": []", "\"model_unbound\": [\"count\"]");
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, colliding, &diags);
+    try testing.expectError(error.Refused, emitFacade(arena, parsed, &diags));
 }
 
 test "unbound helper names stay out of the facade's viewUnbound list" {

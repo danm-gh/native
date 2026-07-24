@@ -195,6 +195,15 @@ pub fn main(init: std.process.Init) !void {
             std.fs.path.basename(path)
         else
             emit_profile_mod.default_entry;
+        // The profile is a JSON document, and JSON text carries UTF-8
+        // only: a filename with other bytes would not survive the trip
+        // through any conforming consumer, so it refuses here instead
+        // of naming a file nothing can find.
+        if (!std.unicode.utf8ValidateSlice(entry)) {
+            try stderr.print("corewire: the profile's entry spelling \"{s}\" is not valid UTF-8 — the profile is a JSON document and JSON text carries UTF-8 only; rename the facade file\n", .{entry});
+            try stderr.flush();
+            std.process.exit(2);
+        }
         break :blk try emit_profile_mod.emitProfile(arena, parsed, entry);
     } else null;
 
@@ -292,7 +301,10 @@ fn profileRelativeEntry(init: std.process.Init, stderr: *std.Io.Writer, profile_
     var buffer: [std.fs.max_path_bytes]u8 = undefined;
     const cwd_len = std.Io.Dir.cwd().realPath(init.io, &buffer) catch 0;
     const cwd: []const u8 = if (cwd_len == 0) "." else buffer[0..cwd_len];
-    const related = try std.fs.path.relative(arena, cwd, null, profile_dir, facade_path);
+    // The environment rides along for the Windows resolver: a
+    // drive-RELATIVE spelling (C:foo) resolves against that drive's own
+    // working directory, which lives in the environment.
+    const related = try std.fs.path.relative(arena, cwd, init.environ_map, profile_dir, facade_path);
     // Paths on distinct roots have no relative spelling (the resolver
     // hands back an absolute path instead): a profile consumer resolves
     // the entry against the profile's directory, so an unreachable

@@ -1177,8 +1177,19 @@ export class Emitter {
       // declarations (viewUnboundNames), nothing to emit here. The split
       // modelUnbound/msgUnbound pair spells the same facts for contract
       // consumers that read declarations per side; this lane reads
-      // viewUnbound only, so the pair passes through unemitted.
-      if (name === "viewUnbound" || name === "modelUnbound" || name === "msgUnbound") continue;
+      // viewUnbound only, so the pair passes through unemitted — but the
+      // names stay RESERVED contract vocabulary: a data const under either
+      // spelling would emit no declaration while its references still
+      // emit, so anything but the list shape refuses here.
+      if (name === "viewUnbound") continue;
+      if (name === "modelUnbound" || name === "msgUnbound") {
+        let init = decl.initializer;
+        while (ts.isParenthesizedExpression(init) || ts.isAsExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
+        if (!ts.isArrayLiteralExpression(init) || init.elements.some((el) => !ts.isStringLiteral(el))) {
+          this.fail(decl, `\`${name}\` is the contract's unbound-list vocabulary and must be a const array of string literals; rename the constant to keep it as module data`, "NS1032");
+        }
+        continue;
+      }
       // The env override channel: a declarative table the generated wiring
       // walks at comptime (read the named variables once at launch,
       // dispatch each present value through its bytes arm).

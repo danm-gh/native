@@ -271,8 +271,12 @@ const ProfileEmitter = struct {
 
     /// A JSON double-quoted string literal: quotes and backslashes
     /// escape, control bytes take \u escapes, everything else rides as
-    /// UTF-8.
+    /// UTF-8 — which the input must therefore be (JSON has no other
+    /// text). The CLI validates its one caller-supplied string (the
+    /// entry spelling) with a teaching before emission ever starts;
+    /// this check is the emitter's own backstop.
     fn jsonString(self: *ProfileEmitter, text: []const u8) Error![]const u8 {
+        if (!std.unicode.utf8ValidateSlice(text)) return error.Refused;
         var out: std.ArrayListUnmanaged(u8) = .empty;
         try out.append(self.arena, '"');
         for (text) |char| {
@@ -384,6 +388,15 @@ test "the profile tracks the contract's prefix and generations" {
     try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_model_snapshot\", \"symbol\": \"app2_model_snapshot\"") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "\"export\": \"app2_") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "\"build_id_symbol\": \"app2_build_id\"") != null);
+}
+
+test "a non-UTF-8 entry spelling refuses instead of corrupting the JSON" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, sidecar_mod.minimal_valid_json, &diags);
+    try testing.expectError(error.Refused, emitProfile(arena, parsed, "core_\xfffacade.ts"));
 }
 
 test "the emitted profile parses as JSON with the expected top-level keys" {

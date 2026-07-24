@@ -256,10 +256,10 @@ const FacadeEmitter = struct {
             }
         }
         var facade_decls: std.ArrayListUnmanaged([]const u8) = .empty;
-        try facade_decls.appendSlice(self.arena, &.{ "initialModel", "update", "viewUnbound", "asciiBytes", "NscfContractError", "NSCF_POW" });
+        try facade_decls.appendSlice(self.arena, &.{ "initialModel", "update", "asciiBytes", "NscfContractError", "NSCF_POW" });
         if (self.sidecar.init_returns_cmd or self.sidecar.update_returns_cmd) try facade_decls.append(self.arena, "Cmd");
         if (self.sidecar.has_subscriptions) try facade_decls.append(self.arena, "Sub");
-        // The split unbound consts declare exactly when their lists are
+        // The unbound consts declare exactly when their lists are
         // nonempty (unboundDecl), so their names join the fence exactly
         // then: an unbound MODEL list needs at least one entry naming a
         // model field (helper entries stay sidecar facts here).
@@ -272,6 +272,7 @@ const FacadeEmitter = struct {
             }
             break :blk false;
         };
+        if (any_field_unbound or self.sidecar.msg.unbound.len > 0) try facade_decls.append(self.arena, "viewUnbound");
         if (any_field_unbound) try facade_decls.append(self.arena, "modelUnbound");
         if (self.sidecar.msg.unbound.len > 0) try facade_decls.append(self.arena, "msgUnbound");
         // Wired channels add their event records, the channel-function
@@ -316,7 +317,60 @@ const FacadeEmitter = struct {
         for (self.sidecar.types.enums) |entry| try self.fenceDecl(entry.name, facade_decls.items);
         for (self.sidecar.types.unions) |entry| try self.fenceDecl(entry.name, facade_decls.items);
         try self.fenceDecl(self.sidecar.msg.name, facade_decls.items);
+
+        // Declaration form spells storage ONCE per record, so a record
+        // referenced both by node and by value has no projection — one
+        // declaration cannot say both. (The transpiled lane decides
+        // storage per TYPE, so its contracts never mix; a hand contract
+        // that does must split the type.)
+        var value_refs: std.ArrayListUnmanaged([]const u8) = .empty;
+        for (self.sidecar.types.structs) |entry| {
+            for (entry.fields) |field| try noteValueRefs(&value_refs, self.arena, field.type);
+        }
+        for (self.sidecar.types.unions) |entry| {
+            for (entry.arms) |arm| try noteValueRefs(&value_refs, self.arena, arm.payload);
+        }
+        for (self.sidecar.model_helpers) |helper| {
+            try noteValueRefs(&value_refs, self.arena, helper.returns);
+            for (helper.params) |param| try noteValueRefs(&value_refs, self.arena, param);
+        }
+        for (self.sidecar.msg.arms) |arm| {
+            switch (arm.payload) {
+                .scalar => |ref| try noteValueRefs(&value_refs, self.arena, ref),
+                else => {},
+            }
+        }
+        for (value_refs.items) |name| {
+            if (nameListed(self.node_stored, name)) {
+                self.diags.flag("types", "\"{s}\" is stored by reference at one site and by value at another — the projection states storage once per declaration, so one record cannot say both; split the type in the core source", .{name});
+            }
+        }
+
+        // The host-constructed channels build their event record's
+        // fields DIRECTLY on the named arm, so the arm's record must
+        // flatten into the arm literal (the single-use synthesized
+        // shape). A shared named record would project as a nested
+        // `value` member no host construction can fill.
+        if (self.sidecar.channels.appearance_msg) |arm_name| {
+            try self.requireFlattenedChannelArm("channels.appearance_msg", arm_name);
+        }
+        if (self.sidecar.channels.chrome_msg) |arm_name| {
+            try self.requireFlattenedChannelArm("channels.chrome_msg", arm_name);
+        }
         if (!std.mem.eql(u8, self.sidecar.model, "Model")) try self.fenceDecl("", &.{}); // placeholder keeps shape symmetric
+    }
+
+    /// Refuse a host-constructed channel arm whose record does not
+    /// flatten into its arm literal.
+    fn requireFlattenedChannelArm(self: *FacadeEmitter, at: []const u8, arm_name: []const u8) Error!void {
+        const arm = sidecar_mod.findArm(self.sidecar.msg, arm_name) orelse return;
+        switch (arm.payload) {
+            .record => |name| {
+                if (nameListed(self.flattened, name)) return;
+                self.diags.flag(at, "arm \"{s}\" carries the named record \"{s}\", which the projection cannot flatten into the arm (the host fills the event's fields directly on the arm) — declare the event's fields inline on the arm in the core source", .{ arm_name, name });
+            },
+            else => {},
+        }
     }
 
     fn fenceDecl(self: *FacadeEmitter, name: []const u8, facade_decls: []const []const u8) Error!void {
@@ -1616,6 +1670,18 @@ fn noteNodeRefs(names: *std.ArrayListUnmanaged([]const u8), arena: std.mem.Alloc
     }
 }
 
+/// The VALUE-reference twin of noteNodeRefs.
+fn noteValueRefs(names: *std.ArrayListUnmanaged([]const u8), arena: std.mem.Allocator, ref: TypeRef) error{OutOfMemory}!void {
+    switch (ref) {
+        .value => |name| {
+            if (!nameListed(names.items, name)) try names.append(arena, name);
+        },
+        .optional => |inner| try noteValueRefs(names, arena, inner.*),
+        .slice => |elem| try noteValueRefs(names, arena, elem.*),
+        else => {},
+    }
+}
+
 /// A msg record payload as the TypeRef shape synthesizedRecordOf reads.
 fn recordPayloadRef(payload: sidecar_mod.Payload) TypeRef {
     return switch (payload) {
@@ -2095,6 +2161,86 @@ test "split unbound consts and host-channel consts restate the sidecar" {
     // No host-constructed arms declared: the consts stay out.
     try testing.expect(std.mem.indexOf(u8, generated, "appearanceMsg") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "chromeMsg") == null);
+}
+
+test "a record referenced by node and value at once refuses" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"Item\", \"fields\": [{\"name\": \"x\", \"type\": {\"kind\": \"f64\"}}]},");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"live\", \"type\": {\"kind\": \"node\", \"name\": \"Item\"}}, {\"name\": \"cached\", \"type\": {\"kind\": \"value\", \"name\": \"Item\"}}",
+    );
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, source, &diags);
+    try testing.expectError(error.Refused, emitFacade(arena, parsed, &diags));
+    var found = false;
+    for (diags.list.items) |item| {
+        if (item.severity == .@"error" and std.mem.indexOf(u8, item.message, "storage once per declaration") != null) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "a host-constructed channel arm with a shared named record refuses" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // AppearanceEvent is used TWICE (a model field and the arm), so it
+    // never flattens; the host cannot fill its fields directly on the
+    // arm.
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"AppearanceEvent\", \"fields\": [{\"name\": \"colorScheme\", \"type\": {\"kind\": \"enum\", \"name\": \"ColorScheme\"}}, {\"name\": \"reduceMotion\", \"type\": {\"kind\": \"bool\"}}, {\"name\": \"highContrast\", \"type\": {\"kind\": \"bool\"}}]},");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"enums\": []", "\"enums\": [{\"name\": \"ColorScheme\", \"members\": [\"light\", \"dark\"]}]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"last\", \"type\": {\"kind\": \"value\", \"name\": \"AppearanceEvent\"}}",
+    );
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"appearance_changed\", \"payload\": {\"kind\": \"record\", \"name\": \"AppearanceEvent\"}}",
+    );
+    source = try std.mem.replaceOwned(u8, arena, source, "\"appearance_msg\": null", "\"appearance_msg\": \"appearance_changed\"");
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, source, &diags);
+    try testing.expectError(error.Refused, emitFacade(arena, parsed, &diags));
+    var found = false;
+    for (diags.list.items) |item| {
+        if (item.severity == .@"error" and std.mem.indexOf(u8, item.message, "cannot flatten into the arm") != null) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "viewUnbound is fenced only when the const declares" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    // No unbound facts at all: a contract type named viewUnbound
+    // projects (nothing collides).
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"unbound\": [\"label_set\"]", "\"unbound\": []");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"enums\": []", "\"enums\": [{\"name\": \"viewUnbound\", \"members\": [\"a\", \"b\"]}]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"label\", \"type\": {\"kind\": \"enum\", \"name\": \"viewUnbound\"}}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "export type viewUnbound =") != null);
+    // With an unbound arm, the const declares and the name refuses.
+    const colliding = try std.mem.replaceOwned(u8, arena, source, "\"unbound\": []", "\"unbound\": [\"label_set\"]");
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, colliding, &diags);
+    try testing.expectError(error.Refused, emitFacade(arena, parsed, &diags));
 }
 
 test "the split unbound names are fenced only when their consts declare" {

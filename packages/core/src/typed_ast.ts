@@ -234,11 +234,19 @@ export class TypedAst {
 
   /// Union members of a discriminated union type node, with the discriminant
   /// literal of each member for the given tag property. Returns null when the
-  /// node is not a union of object types each carrying a literal tag.
+  /// node is not a union of object types each carrying a literal tag. A bare
+  /// object literal whose tag property is a string LITERAL type is the
+  /// singleton case of the same shape (`type Msg = { kind: "inc" }` is a
+  /// one-arm tagged union, never a record holding a textual `kind`).
   discriminatedUnionMembers(node: tsImpl.TypeNode, tagName: string): UnionMemberInfo[] | null {
-    if (!tsImpl.isUnionTypeNode(node)) return null;
+    const memberNodes: readonly tsImpl.TypeNode[] = tsImpl.isUnionTypeNode(node)
+      ? node.types
+      : tsImpl.isTypeLiteralNode(node)
+        ? [node]
+        : [];
+    if (memberNodes.length === 0) return null;
     const members: UnionMemberInfo[] = [];
-    for (const member of node.types) {
+    for (const member of memberNodes) {
       if (!tsImpl.isTypeLiteralNode(member)) return null;
       let tag: string | null = null;
       const fields: PropInfo[] = [];

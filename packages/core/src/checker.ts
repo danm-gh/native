@@ -465,6 +465,7 @@ export class SubsetChecker {
     this.checkSubPurity();
     this.checkModelBindingSurface();
     this.checkViewUnbound();
+    this.checkReservedContractConsts();
     for (const file of this.files) this.walk(file);
     this.checkExceptions();
     return {
@@ -691,6 +692,44 @@ export class SubsetChecker {
           }
         }
       }
+    }
+  }
+
+  /// The unbound-list consts (viewUnbound and the split
+  /// modelUnbound/msgUnbound pair) are contract vocabulary the build
+  /// reads and never emits, so a reference to one in program code would
+  /// name a declaration the generated module does not carry. Refuse the
+  /// reference where it stands instead of shipping an unresolved
+  /// identifier.
+  private checkReservedContractConsts(): void {
+    const reserved = new Set(["viewUnbound", "modelUnbound", "msgUnbound"]);
+    const declaresReserved = (decl: ts.Declaration): boolean =>
+      ts.isVariableDeclaration(decl) &&
+      ts.isIdentifier(decl.name) &&
+      reserved.has(decl.name.text) &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      ts.isVariableStatement(decl.parent.parent) &&
+      ts.isSourceFile(decl.parent.parent.parent);
+    for (const file of this.files) {
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isIdentifier(node) &&
+          reserved.has(node.text) &&
+          !(ts.isVariableDeclaration(node.parent) && node.parent.name === node) &&
+          !(ts.isExportSpecifier(node.parent) || ts.isImportSpecifier(node.parent))
+        ) {
+          const sym = this.tast.symbolOf(node);
+          if (sym?.declarations?.some(declaresReserved)) {
+            this.report(
+              "NS1032",
+              `\`${node.text}\` is the contract's unbound-list vocabulary the build reads without emitting — it cannot be referenced as module data; rename the constant to use it as data.`,
+              node,
+            );
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(file);
     }
   }
 

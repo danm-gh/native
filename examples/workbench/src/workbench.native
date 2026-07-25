@@ -16,7 +16,9 @@
            on_chrome — the window reads as one seamless terminal surface
            with only the lights floating over it. -->
       <row height="{titlebar_band}" window-drag="true"></row>
-      <terminal pty="{shell_key}" scrollback="{term_scrollback}" on-terminal="term_state" grow="1" label="Shell" />
+      <!-- Autofocused: a terminal window's keyboard belongs to the shell
+           the moment it opens, no click first. -->
+      <terminal pty="{shell_key}" scrollback="{term_scrollback}" on-terminal="term_state" autofocus="true" grow="1" label="Shell" />
     </column>
     <column min-width="420">
       <!-- The browser toolbar: navigation cluster, then the address bar

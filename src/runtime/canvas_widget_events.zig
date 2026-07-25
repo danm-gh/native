@@ -2298,17 +2298,31 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             if (self.views[index].kind != .gpu_surface) return false;
 
             const current_id: ?canvas.ObjectId = if (self.views[index].canvas_widget_focused_id == 0) null else self.views[index].canvas_widget_focused_id;
+            const layout = self.views[index].widgetLayoutTree();
             if (std.ascii.eqlIgnoreCase(input_event.key, "tab")) {
+                // A terminal owns Tab as INPUT (completion, indentation,
+                // and TUI navigation), not as focus traversal. Decide
+                // against the pre-key focus before choosing the next
+                // target: the routed keyboard pass below will therefore
+                // address this same terminal and its emulator can encode
+                // Tab/Shift+Tab for the pty. Disabled/hidden terminals
+                // cannot occupy the focus register because
+                // focusTargetById rejects them, so stale focus still
+                // falls through to the ordinary traversal repair.
+                if (current_id) |id| {
+                    if (layout.focusTargetById(id)) |current| {
+                        if (current.kind == .terminal) return false;
+                    }
+                }
                 const direction: canvas.WidgetFocusDirection = if (input_event.modifiers.shift) .backward else .forward;
                 const target = if (current_id) |id|
-                    self.views[index].canvasWidgetScopedFocusTarget(id, direction) orelse self.views[index].widgetLayoutTree().focusTarget(current_id, direction) orelse return false
+                    self.views[index].canvasWidgetScopedFocusTarget(id, direction) orelse layout.focusTarget(current_id, direction) orelse return false
                 else
-                    self.views[index].widgetLayoutTree().focusTarget(current_id, direction) orelse return false;
+                    layout.focusTarget(current_id, direction) orelse return false;
                 return try setCanvasWidgetFocusFromKeyboardMoved(self, index, current_id, target.id);
             }
 
             const focused_id = current_id orelse return false;
-            const layout = self.views[index].widgetLayoutTree();
             const focused = layout.focusTargetById(focused_id) orelse return false;
             // FRAMEWORK BEHAVIOR CHANGE (deliberate, scoped — the same
             // seam as the keyboard-routing gate below): arrows and

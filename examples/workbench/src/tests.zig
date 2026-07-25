@@ -403,10 +403,18 @@ test "a live pty session flows through the <terminal> element: output, typing, r
 
     // Focus the terminal (a click in the left pane) and type: the
     // keystrokes reach the pty through the journaled write path, with
-    // no app-side keyboard handling at all.
+    // no app-side keyboard handling at all. Tab belongs to the shell
+    // too (completion/indentation), rather than moving focus into the
+    // browser toolbar beside it.
     try h.click(200, 400);
     try h.typeText("ls");
-    try testing.expectEqualStrings("ls", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .key_down,
+        .key = "tab",
+    } });
+    try testing.expectEqualStrings("ls\t", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
 
     // The session ends exactly once and the app notes it.
     try h.app_state.effects.feedPtyExit(app.shell_effect_key, 0, 0, .exited, 0);

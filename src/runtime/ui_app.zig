@@ -5359,6 +5359,15 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                         // session declines, and the key falls through
                         // (an app may bind a restart chord).
                         if (widget.kind == .terminal and widget.terminal.pty != 0) {
+                            // Focus traversal/spatial navigation routes
+                            // the arriving key to the NEW target. That
+                            // key moved focus; it is not terminal input
+                            // (Tabbing into a terminal must not also
+                            // complete at the shell prompt). Once the
+                            // terminal already owns focus, the focus pass
+                            // leaves Tab in place and this flag is false,
+                            // so Tab/Shift+Tab encode normally below.
+                            if (keyboard_event.keyboard.focus_moved) return;
                             // The runtime clipboard pass already copied
                             // this emulator selection. Do not forward the
                             // same Cmd/Ctrl+C chord to the child (where

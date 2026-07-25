@@ -964,12 +964,23 @@ export class SubsetChecker {
             if (t.isUnion()) return t.types.some(canBeRecord);
             return (t.flags & ts.TypeFlags.Object) !== 0;
           };
-          const leftType = this.tast.typeOf(peel(node.left));
-          const rightType = this.tast.typeOf(peel(node.right));
-          const left = aliasStructOfType(leftType);
-          const right = aliasStructOfType(rightType);
-          const named = left ?? right;
-          if (named !== null && (left === null ? canBeRecord(leftType) : canBeRecord(rightType))) {
+          // Each operand is read through BOTH views — the peeled
+          // expression (assertions erase at emission) and the spelled
+          // one (an assertion may be what NAMES the record) — so
+          // neither adding nor shedding a spelling moves a comparison
+          // past the guard.
+          const sideView = (e: ts.Expression): { named: string | null; record: boolean } => {
+            const peeled = this.tast.typeOf(peel(e));
+            const spelled = this.tast.typeOf(e);
+            return {
+              named: aliasStructOfType(peeled) ?? aliasStructOfType(spelled),
+              record: canBeRecord(peeled) || canBeRecord(spelled),
+            };
+          };
+          const left = sideView(node.left);
+          const right = sideView(node.right);
+          const named = left.named ?? right.named;
+          if (named !== null && (left.named === null ? left.record : right.record)) {
             this.report("NS1061", `\`${named}\` values compare by content, not identity — a value-record alias has no reference to compare; compare its fields, or declare \`${named}\` as an interface for identity.`, node);
           }
         }

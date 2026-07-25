@@ -1047,3 +1047,36 @@ export function update(model: Model, msg: Msg): Model { return model; }
   assert.equal(missing.ok, false);
   assert.ok(missing.diagnostics.some((d) => d.id === "NS1032"), JSON.stringify(missing.diagnostics));
 });
+
+test("NS1061: generic and literal-asserted identity stop; enum-kind records stay structs", () => {
+  // Identity through a generic instantiation stops at emission with the
+  // same teaching the checker gives directly.
+  const generic = transpile(`
+export type Pos = { readonly x: number };
+export interface Model { readonly pos: Pos; readonly n: number; }
+export type Msg = { readonly kind: "moved"; readonly pos: Pos } | { readonly kind: "b" };
+function same<T>(a: T, b: T): boolean { return a === b; }
+export function initialModel(): Model { return { pos: { x: 0 }, n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  if (msg.kind === "moved") {
+    return { pos: msg.pos, n: same(model.pos, msg.pos) ? 1 : 0 };
+  }
+  return model;
+}
+`);
+  assert.equal(generic.ok, false);
+  assert.ok(generic.diagnostics.some((d) => d.id === "NS1061"), JSON.stringify(generic.diagnostics));
+
+  // An assertion may be what NAMES the record: both views are read, so
+  // literal-asserted operands refuse at check time.
+  const asserted = checkOnly(`
+export type Pos = { readonly x: number };
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "a"; readonly pos: Pos } | { readonly kind: "b" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  return { n: ({ x: 1 } as Pos) === ({ x: 1 } as Pos) ? 1 : 0 };
+}
+`);
+  assert.ok(ruleIds(asserted).includes("NS1061"), `got ${ruleIds(asserted)}`);
+});

@@ -239,6 +239,7 @@ export class TypedAst {
   /// singleton case of the same shape (`type Msg = { kind: "inc" }` is a
   /// one-arm tagged union, never a record holding a textual `kind`).
   discriminatedUnionMembers(node: tsImpl.TypeNode, tagName: string): UnionMemberInfo[] | null {
+    const singleton = !tsImpl.isUnionTypeNode(node);
     const memberNodes: readonly tsImpl.TypeNode[] = tsImpl.isUnionTypeNode(node)
       ? node.types
       : tsImpl.isTypeLiteralNode(node)
@@ -259,6 +260,14 @@ export class TypedAst {
           // arm, so the shape is not this one.
           if (prop.questionToken) return null;
           if (!prop.type) return null;
+          // The SINGLETON case claims the union reading only for a
+          // syntactic literal tag (`kind: "inc"`): a record whose
+          // `kind` field merely RESOLVES to one literal (an aliased
+          // member type) is a record with a tag-named field, not a
+          // one-arm union.
+          if (singleton && !(tsImpl.isLiteralTypeNode(prop.type) && tsImpl.isStringLiteral(prop.type.literal))) {
+            return null;
+          }
           const t = this.checker.getTypeFromTypeNode(prop.type);
           const value = this.literalValue(t);
           if (typeof value !== "string") return null;

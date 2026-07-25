@@ -2693,3 +2693,18 @@ export function update(model: Model, msg: Msg): Model {
   assert.equal(data.ok, false);
   assert.ok(data.diagnostics.some((d) => d.id === "NS1032"), JSON.stringify(data.diagnostics));
 });
+
+test("a value record whose kind field is an aliased enum stays a struct", () => {
+  // The singleton-union reading claims only a SYNTACTIC literal tag:
+  // a record whose kind field resolves through a named literal union is
+  // a record with a tag-named field.
+  const zig = emit(`
+export type StatusKind = "ready" | "busy";
+export type Status = { readonly kind: StatusKind; readonly count: number };
+export interface Model { readonly n: number; }
+export type Msg = { readonly kind: "a"; readonly status: Status } | { readonly kind: "b" };
+export function initialModel(): Model { return { n: 0 }; }
+export function update(model: Model, msg: Msg): Model { return model; }
+`);
+  assert.match(zig, /pub const Status = struct \{ kind: StatusKind, count: f64 \};/);
+});

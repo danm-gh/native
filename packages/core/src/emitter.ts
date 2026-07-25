@@ -8947,6 +8947,20 @@ export class Emitter {
       // names — the overlap of the two string sets, resolved at compile time.
       const lt = unwrapOptional(this.zTypeOfExpr(expr.left, ctx));
       const rt = unwrapOptional(this.zTypeOfExpr(expr.right, ctx));
+      // Layer-3 re-derivation of NS1061: identity over a by-value record
+      // has no reference to compare (a pointer-stored record's `==` IS
+      // its identity). This is the emission-time authority, so operands
+      // that reached here through generic instantiation or erased
+      // assertions stop the same way the checker teaches directly.
+      for (const t of [lt, rt]) {
+        if (t.k === "struct" && !this.table.isPointerStruct(t.name)) {
+          this.fail(
+            expr,
+            `\`${op === ts.SyntaxKind.EqualsEqualsEqualsToken ? "===" : "!=="}\` compares \`${t.name}\` values by identity, which value storage does not carry — compare fields, or store the record by reference for identity`,
+            "NS1061",
+          );
+        }
+      }
       if (lt.k === "enum" && rt.k === "enum" && lt.name !== rt.name) {
         const l = this.emitExpr(expr.left, ctx).code;
         const r = this.emitExpr(expr.right, ctx).code;

@@ -2288,10 +2288,10 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             try dispatchCanvasWidgetCommandForId(self, app, index, target.id);
         }
 
-        /// Returns true when the key moved keyboard focus to a DIFFERENT
-        /// widget — the caller stamps it onto the routed keyboard event
-        /// (`focus_moved`) so tree rows can tell selection-follows-focus
-        /// arrivals from in-place collapse/expand intents.
+        /// Returns true for an auto-repeat or release belonging to the
+        /// physical Tab gesture that moved focus into a live terminal.
+        /// The caller suppresses that transition; the release also
+        /// retires the gesture latch.
         pub fn consumeCanvasWidgetTerminalFocusEntryTab(self: *Runtime, input_event: GpuSurfaceInputEvent) bool {
             if (input_event.kind != .key_down and input_event.kind != .key_up) return false;
             if (!std.ascii.eqlIgnoreCase(input_event.key, "tab")) return false;
@@ -2304,6 +2304,10 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             return true;
         }
 
+        /// Returns true when the key moved keyboard focus to a DIFFERENT
+        /// widget — the caller stamps it onto the routed keyboard event
+        /// (`focus_moved`) so tree rows can tell selection-follows-focus
+        /// arrivals from in-place collapse/expand intents.
         pub fn updateCanvasWidgetFocusFromKeyboardInput(self: *Runtime, input_event: GpuSurfaceInputEvent) anyerror!bool {
             if (input_event.kind != .key_down) return false;
             const index = runtimeFindViewIndex(self, input_event.window_id, input_event.label) orelse return false;

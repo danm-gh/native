@@ -525,6 +525,24 @@ test "right click on a terminal presents Copy and Paste wired to selection and c
     try std.testing.expect(app_state.last_keyboard_terminal_paste);
     try std.testing.expect(app_state.last_keyboard_standalone);
     try std.testing.expectEqualStrings(paste, app_state.last_edit_insert[0..app_state.last_edit_insert_len]);
+
+    // The keyboard shortcut takes the same provenance-sensitive path,
+    // but remains part of the gpu-input cycle rather than a standalone
+    // native-menu dispatch.
+    const shortcut_paste = "echo shortcut\n";
+    try harness.runtime.writeClipboard(shortcut_paste);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "v",
+        .modifiers = .{ .primary = true, .command = true },
+    } });
+    try std.testing.expectEqual(canvas.WidgetKeyboardPhase.text_input, app_state.last_keyboard_phase);
+    try std.testing.expectEqual(@as(?canvas.ObjectId, 2), app_state.last_keyboard_focused_id);
+    try std.testing.expect(app_state.last_keyboard_terminal_paste);
+    try std.testing.expect(!app_state.last_keyboard_standalone);
+    try std.testing.expectEqualStrings(shortcut_paste, app_state.last_edit_insert[0..app_state.last_edit_insert_len]);
 }
 
 test "terminal Paste disables after exit and a pending live menu revalidates before dispatch" {

@@ -645,15 +645,26 @@ fn handleKey(model: *Model, fx: *Fx, event: canvas.WidgetKeyboardEvent) void {
     encodeKeyEvent(model, fx, event, .press);
 }
 
-/// Encode one key transition through the emulator's encoder and push
-/// the bytes toward the child. Releases ride the same path with
-/// `.release`: the encoder emits them only under the kitty protocol's
-/// negotiated event reporting and stays silent in legacy modes, so
-/// feeding every release is always correct. (Key REPEAT is the one
-/// event type the hosts do not distinguish from a fresh press, so a
-/// TUI that enabled event reporting sees repeats as presses.)
+/// Encode one key transition and push the bytes toward the child. macOS
+/// natural-text arrow gestures use conventional shell bindings;
+/// everything else goes through the emulator's encoder. Releases ride
+/// the same path with `.release`: the encoder emits them only under the
+/// kitty protocol's negotiated event reporting and stays silent in
+/// legacy modes. (Key REPEAT is the one event type the hosts do not
+/// distinguish from a fresh press, so a TUI that enabled event reporting
+/// sees repeats as presses.)
 fn encodeKeyEvent(model: *Model, fx: *Fx, event: canvas.WidgetKeyboardEvent, action: vt.input.KeyAction) void {
     const session = model.session;
+    if (macosNaturalTextSequence(event)) |sequence| {
+        // Natural-text bindings consume the whole gesture. In
+        // particular, a child using kitty event reporting must not
+        // receive a release for a modified arrow whose press arrived as
+        // legacy editing bytes.
+        if (action == .release) return;
+        session.scrollToBottom();
+        enqueueTransient(model, fx, sequence);
+        return;
+    }
     const mods = event.modifiers;
     const key = mapKey(event) orelse blk: {
         // A release of a plain printable never maps (its PRESS came
@@ -691,6 +702,28 @@ fn encodeKeyEvent(model: *Model, fx: *Fx, event: canvas.WidgetKeyboardEvent, act
     // Through the pending ring like committed text, so an encoded key
     // typed while a paste is still draining lands after it in the stream.
     enqueueTransient(model, fx, buffer[0..writer.end]);
+}
+
+/// Match macOS terminals' "natural text editing" bindings. These are
+/// exact bare-modifier gestures: shifted or combined chords continue
+/// through the key encoder so terminal applications can distinguish
+/// them. The raw bindings intentionally bypass negotiated kitty
+/// reporting, just as Ghostty's own default keybinds do.
+fn macosNaturalTextSequence(event: canvas.WidgetKeyboardEvent) ?[]const u8 {
+    if (comptime builtin.os.tag != .macos) return null;
+    const mods = event.modifiers;
+    if (mods.shift or mods.control) return null;
+    if (mods.alt and !mods.super) {
+        if (keyIs(event.key, "arrowleft")) return "\x1bb";
+        if (keyIs(event.key, "arrowright")) return "\x1bf";
+    }
+    if (mods.super and !mods.alt) {
+        if (keyIs(event.key, "arrowleft")) return "\x01";
+        if (keyIs(event.key, "arrowright")) return "\x05";
+        // The physical macOS Delete key is normalized as Backspace.
+        if (keyIs(event.key, "backspace")) return "\x15";
+    }
+    return null;
 }
 
 /// Committed text reaches the child through the emulator's key encoder

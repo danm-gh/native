@@ -4,6 +4,7 @@
 //! pty replays fingerprint-identical offline, no shell present.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const vt = @import("ghostty-vt");
 const app = @import("main.zig");
@@ -971,6 +972,72 @@ test "a primary-aliased Ctrl chord still encodes its C0 byte" {
         .modifiers = .{ .control = true, .primary = true },
     } });
     try testing.expectEqualStrings("\x03", app_state.effects.ptyWrittenBytes(1));
+}
+
+test "macOS natural text arrow gestures use shell editing bindings" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
+    defer harness.destroy(gpa);
+    const app_state = try startFocusedTerminal(gpa, harness);
+    defer gpa.destroy(app_state);
+    defer app_state.model.session.destroy();
+    defer app_state.deinit();
+    const app_iface = app_state.app();
+
+    // Keep the platform-native bindings even after a TUI enables kitty
+    // event reporting: Option moves by words (Esc-b/f), Command moves to
+    // line boundaries (Ctrl-A/E), Command+Delete clears to the start
+    // (Ctrl-U), and a bound release emits nothing.
+    app_state.model.session.feed("\x1b[>11u");
+    const events = [_]native_sdk.platform.GpuSurfaceInputEvent{
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .key_down,
+            .key = "arrowleft",
+            .modifiers = .{ .option = true },
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .key_down,
+            .key = "arrowright",
+            .modifiers = .{ .option = true },
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .key_down,
+            .key = "arrowleft",
+            .modifiers = .{ .primary = true, .command = true },
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .key_down,
+            .key = "arrowright",
+            .modifiers = .{ .primary = true, .command = true },
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .key_down,
+            .key = "backspace",
+            .modifiers = .{ .primary = true, .command = true },
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .key_up,
+            .key = "backspace",
+            .modifiers = .{ .primary = true, .command = true },
+        },
+    };
+    for (events) |event| {
+        try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = event });
+    }
+    try testing.expectEqualStrings("\x1bb\x1bf\x01\x05\x15", app_state.effects.ptyWrittenBytes(1));
 }
 
 test "stdin order holds: a retained reply reaches the child before newer typing" {

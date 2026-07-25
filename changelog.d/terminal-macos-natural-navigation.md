@@ -1,0 +1,1 @@
+fix: **Natural terminal editing on macOS**: focused terminals now translate Option+Left/Right to word movement, Command+Left/Right to line boundaries, and Command+Delete to clearing back to the line start, instead of leaking unsupported modifier sequences into the shell prompt; Command+V now sends clipboard text through the terminal's bracketed-paste-aware input path.

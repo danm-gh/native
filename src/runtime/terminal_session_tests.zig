@@ -8,6 +8,7 @@
 //! `terminal_vt` seam carries the stub.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const canvas = @import("canvas");
 const effects = @import("effects.zig");
 const terminal_session = @import("terminal_session.zig");
@@ -196,6 +197,45 @@ test "committed text and encoded keys reach the pty through the gateway in stdin
     gw.written.clearRetainingCapacity();
     try testing.expect(store.keyEvent(3, .{ .phase = .key_down, .key = "a" }));
     try testing.expectEqualStrings("", gw.written.items);
+
+    if (comptime builtin.os.tag == .macos) {
+        // Natural text navigation follows macOS terminal conventions:
+        // Option moves by words and Command moves to line boundaries.
+        // These bindings intentionally remain legacy bytes after a TUI
+        // enables kitty reporting, and their releases stay consumed.
+        feedOutput(&store, 3, "\x1b[>11u");
+        try testing.expect(store.keyEvent(3, .{
+            .phase = .key_down,
+            .key = "arrowleft",
+            .modifiers = .{ .alt = true },
+        }));
+        try testing.expect(store.keyEvent(3, .{
+            .phase = .key_down,
+            .key = "arrowright",
+            .modifiers = .{ .alt = true },
+        }));
+        try testing.expect(store.keyEvent(3, .{
+            .phase = .key_down,
+            .key = "arrowleft",
+            .modifiers = .{ .super = true },
+        }));
+        try testing.expect(store.keyEvent(3, .{
+            .phase = .key_down,
+            .key = "arrowright",
+            .modifiers = .{ .super = true },
+        }));
+        try testing.expect(store.keyEvent(3, .{
+            .phase = .key_down,
+            .key = "backspace",
+            .modifiers = .{ .super = true },
+        }));
+        try testing.expect(store.keyEvent(3, .{
+            .phase = .key_up,
+            .key = "backspace",
+            .modifiers = .{ .super = true },
+        }));
+        try testing.expectEqualStrings("\x1bb\x1bf\x01\x05\x15", gw.written.items);
+    }
 }
 
 test "clipboard paste uses terminal paste encoding and ended sessions refuse it" {

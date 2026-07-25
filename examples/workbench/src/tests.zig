@@ -512,7 +512,7 @@ test "a live pty session flows through the <terminal> element: output, typing, r
     try testing.expectEqualStrings("", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
 }
 
-test "terminal context-menu Paste uses VT paste encoding and revalidates a pending session" {
+test "terminal Paste shortcuts and context menus use VT encoding and revalidate the session" {
     if (comptime !native_sdk.runtime.terminal_sessions_enabled) return error.SkipZigTest;
     var h = try Harness.create();
     defer h.destroy();
@@ -520,7 +520,7 @@ test "terminal context-menu Paste uses VT paste encoding and revalidates a pendi
     // Mode 2004 is emulator state derived from child output. Context
     // Paste must observe it rather than treating clipboard bytes as an
     // ordinary multi-character typing commit.
-    try h.app_state.effects.feedPtyOutput(app.shell_effect_key, "demo$ \x1b[?2004h");
+    try h.app_state.effects.feedPtyOutput(app.shell_effect_key, "demo$ \x1b[?2004h\x1b[>11u");
     try h.frame();
     const pasted = "echo one\n\x1b[201~echo two\x03";
     try h.harness.runtime.writeClipboard(pasted);
@@ -539,6 +539,29 @@ test "terminal context-menu Paste uses VT paste encoding and revalidates a pendi
     try testing.expectEqualStrings(
         "\x1b[200~echo one\n [201~echo two \x1b[201~",
         written[before..],
+    );
+
+    // Cmd+V follows the same paste encoder. Its physical key-up is
+    // consumed too: kitty event reporting must not receive an orphan
+    // modified-V release after the key-down became clipboard input.
+    const before_shortcut = written.len;
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .key_down,
+        .key = "v",
+        .modifiers = .{ .primary = true, .command = true },
+    } });
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .key_up,
+        .key = "v",
+        .modifiers = .{ .primary = true, .command = true },
+    } });
+    try testing.expectEqualStrings(
+        "\x1b[200~echo one\n [201~echo two \x1b[201~",
+        h.app_state.effects.ptyWrittenBytes(app.shell_effect_key)[before_shortcut..],
     );
 
     // Open another live menu, then let the child exit before the native

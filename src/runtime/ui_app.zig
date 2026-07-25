@@ -5381,11 +5381,17 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                             // this emulator selection. Do not forward the
                             // same Cmd/Ctrl+C chord to the child (where
                             // Ctrl+C would be an interrupt).
-                            const copy_chord = (keyboard_event.keyboard.phase == .key_down or keyboard_event.keyboard.phase == .key_up) and
+                            const clipboard_chord = (keyboard_event.keyboard.phase == .key_down or keyboard_event.keyboard.phase == .key_up) and
                                 keyboard_event.keyboard.modifiers.hasCommandModifier() and
                                 !keyboard_event.keyboard.modifiers.alt and
-                                !keyboard_event.keyboard.modifiers.shift and
-                                std.ascii.eqlIgnoreCase(keyboard_event.keyboard.key, "c");
+                                !keyboard_event.keyboard.modifiers.shift;
+                            // Cmd/Ctrl+V's key-down was rewritten to a
+                            // provenance-tagged text_input by the runtime
+                            // clipboard pass. Consume its physical key-up
+                            // too, or kitty event reporting would receive
+                            // an orphan modified-V release.
+                            if (clipboard_chord and std.ascii.eqlIgnoreCase(keyboard_event.keyboard.key, "v")) return;
+                            const copy_chord = clipboard_chord and std.ascii.eqlIgnoreCase(keyboard_event.keyboard.key, "c");
                             if (copy_chord) {
                                 if (widget.terminal.grid) |grid| {
                                     if (grid.selection_active) return;
@@ -5445,7 +5451,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                                 const edit = keyboard_event.keyboard.textEditEvent() orelse return;
                                 if (edit != .insert_text) return;
                                 if (keyboard_event.terminal_paste) {
-                                    // Context-menu paste is provenance-
+                                    // Clipboard paste is provenance-
                                     // sensitive terminal input: the
                                     // session must apply bracketed-paste
                                     // framing and paste sanitization.
@@ -5467,6 +5473,10 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                         }
                     }
                 }
+                // A provenance-tagged terminal paste is terminal-addressed
+                // even when no enabled emulator is wired in this build.
+                // Never leak its clipboard bytes to app-level `on_text`.
+                if (keyboard_event.terminal_paste) return;
                 const text_map = self.options.on_text orelse return;
                 // COMMITTED text only. An IME preedit (`set_composition`)
                 // or a cancel is provisional and must never reach a

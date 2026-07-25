@@ -281,17 +281,17 @@ export function turnRows(model: Model): readonly TurnRow[] {
 
 // ----------------------------------------------------------------- update
 
-export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "draft_edit":
-      return { ...model, draft: composerApply(model.draft, msg.edit) };
+      return [{ ...model, draft: composerApply(model.draft, msg.edit) }, Cmd.none];
     case "send": {
       // The in-flight guard: one request at a time, by model state — a
       // second send while one is out is a no-op, so the "chat" key can
       // never collide at the engine.
-      if (!isConfigured(model) || model.phase === "sending") return model;
+      if (!isConfigured(model) || model.phase === "sending") return [model, Cmd.none];
       const text = trimAsciiSpaces(model.draft.bytes);
-      if (text.length === 0) return model;
+      if (text.length === 0) return [model, Cmd.none];
       const turns: readonly Turn[] = [...model.turns, { id: model.nextId, role: "user", text: text }];
       return [
         {
@@ -320,9 +320,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "retry": {
       // Re-send the conversation as it stands: only from the failed
       // state, and only when the last turn is the unanswered user turn.
-      if (model.phase !== "failed" || !isConfigured(model)) return model;
-      if (model.turns.length === 0) return model;
-      if (model.turns[model.turns.length - 1].role !== "user") return model;
+      if (model.phase !== "failed" || !isConfigured(model)) return [model, Cmd.none];
+      if (model.turns.length === 0) return [model, Cmd.none];
+      if (model.turns[model.turns.length - 1].role !== "user") return [model, Cmd.none];
       return [
         { ...model, phase: "sending", failReason: new Uint8Array(0) },
         Cmd.fetch(
@@ -338,64 +338,64 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ];
     }
     case "clear": {
-      if (model.phase === "sending" || model.turns.length === 0) return model;
-      return {
+      if (model.phase === "sending" || model.turns.length === 0) return [model, Cmd.none];
+      return [{
         ...model,
         turns: [],
         nextId: 1,
         phase: "idle",
         failReason: new Uint8Array(0),
         chatScrollTop: 0,
-      };
+      }, Cmd.none];
     }
     case "chat_response": {
       // The "chat" key carries exactly one live request and the sending
       // guard blocks re-sends, so a response outside the sending phase
       // can only be stale — drop it rather than corrupt the history.
-      if (model.phase !== "sending") return model;
+      if (model.phase !== "sending") return [model, Cmd.none];
       if (msg.status === 200) {
         const content = parseChatContent(msg.body);
         if (content === null) {
           // A 200 whose body is not a chat completion is a failed
           // request, never a half-parsed conversation.
-          return {
+          return [{
             ...model,
             phase: "failed",
             failReason: asciiBytes("the response did not parse as a chat completion"),
-          };
+          }, Cmd.none];
         }
-        return {
+        return [{
           ...model,
           turns: [...model.turns, { id: model.nextId, role: "assistant", text: content }],
           nextId: model.nextId + 1,
           phase: "idle",
           chatScrollTop: SCROLL_BOTTOM,
-        };
+        }, Cmd.none];
       }
       // Any other status is a delivered response whose meaning is "the
       // endpoint said no": surface its own error.message when the body
       // carries one, the bare status line when it does not.
       const message = parseErrorMessage(msg.body);
-      return {
+      return [{
         ...model,
         phase: "failed",
         failReason: message ?? asciiBytes(`the endpoint answered HTTP ${msg.status}`),
-      };
+      }, Cmd.none];
     }
     case "chat_failed":
       // The transport reason is machine-readable (`timed_out`,
       // `connect_failed`, `truncated`, ...) — shown as-is, never silence.
-      return { ...model, phase: "failed", failReason: msg.reason };
+      return [{ ...model, phase: "failed", failReason: msg.reason }, Cmd.none];
     case "chat_scrolled":
       // The controlled-scroll echo: the applied offset lands in the
       // model, so the next rebuild's `value` binding never fights the
       // runtime.
-      return { ...model, chatScrollTop: msg.scroll.offsetY };
+      return [{ ...model, chatScrollTop: msg.scroll.offsetY }, Cmd.none];
     case "endpoint_set":
-      return { ...model, endpoint: msg.value };
+      return [{ ...model, endpoint: msg.value }, Cmd.none];
     case "model_set":
-      return { ...model, modelName: msg.value };
+      return [{ ...model, modelName: msg.value }, Cmd.none];
     case "key_set":
-      return { ...model, apiKey: msg.value };
+      return [{ ...model, apiKey: msg.value }, Cmd.none];
   }
 }

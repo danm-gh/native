@@ -183,23 +183,28 @@ pub fn PairedCore(comptime ts_lane: type, comptime shim_lane: type) type {
         /// canonical encoding of the mirror-classed result. The mirror's
         /// Model methods route helper_call into the archive; the
         /// transpiled Model carries the same names as direct methods.
+        /// Each lane's call shape follows ITS OWN declaration (a
+        /// compiled contract may class an allocation-needing helper
+        /// arena-taking where the transpiled lane returns frame-arena
+        /// slices without one).
         fn helperParity(committed: *const Model) void {
             inline for (@typeInfo(shim_lane.Model).@"struct".decls) |decl| {
                 const DeclType = @TypeOf(@field(shim_lane.Model, decl.name));
                 if (@typeInfo(DeclType) == .@"fn") {
                     const fn_info = @typeInfo(DeclType).@"fn";
                     const Ret = fn_info.return_type.?;
-                    if (fn_info.params.len == 1 and fn_info.params[0].type == *const shim_lane.Model) {
-                        const shim_result = @field(shim_lane.Model, decl.name)(shimRoot());
-                        const ts_result = @field(Model, decl.name)(committed);
-                        checkBytes(
-                            referenceBytes(Ret, ts_result),
-                            corewire_rt.encodeAlloc(Ret, shim_result, arena()),
-                            "the model helper " ++ decl.name,
-                        );
-                    } else if (fn_info.params.len == 2 and fn_info.params[0].type == *const shim_lane.Model and fn_info.params[1].type == std.mem.Allocator) {
-                        const shim_result = @field(shim_lane.Model, decl.name)(shimRoot(), arena());
-                        const ts_result = @field(Model, decl.name)(committed, arena());
+                    if (fn_info.params.len >= 1 and fn_info.params[0].type == *const shim_lane.Model and
+                        (fn_info.params.len == 1 or (fn_info.params.len == 2 and fn_info.params[1].type == std.mem.Allocator)))
+                    {
+                        const shim_result = if (fn_info.params.len == 2)
+                            @field(shim_lane.Model, decl.name)(shimRoot(), arena())
+                        else
+                            @field(shim_lane.Model, decl.name)(shimRoot());
+                        const ts_fn_info = @typeInfo(@TypeOf(@field(Model, decl.name))).@"fn";
+                        const ts_result = if (ts_fn_info.params.len == 2)
+                            @field(Model, decl.name)(committed, arena())
+                        else
+                            @field(Model, decl.name)(committed);
                         checkBytes(
                             referenceBytes(Ret, ts_result),
                             corewire_rt.encodeAlloc(Ret, shim_result, arena()),

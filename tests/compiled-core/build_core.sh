@@ -1,0 +1,127 @@
+#!/bin/sh
+# Build one ts-core fixture's compiled-core archive + contract sidecar
+# with an external core toolchain (library mode), staging everything the
+# compile needs into a scratch tree:
+#
+#   NATIVE_SDK_CORE_COMPILER="<toolchain command>" \
+#     tests/compiled-core/build_core.sh <fixture> <workdir>
+#
+#   <fixture>: ai-chat | soundboard | system-monitor | host-fixture
+#   <workdir>: scratch directory (created; contents replaced)
+#
+# The stage carries: the AUTHOR'S core sources verbatim except for
+# import-specifier resolution (the "@native-sdk/core*" bare specifiers
+# rewrite to the staged ./sdk/ copies of the same files — the toolchain
+# compiles its module graph from files, not package resolution), the
+# hand-authored adapter entry + shared wire codec, and the fixture's
+# core profile. The extracted contract under zig-out/core-contracts/
+# (`zig build stage-core-contracts`) is the reference for authoring a
+# fixture's adapter, not a compile input.
+#
+# Outputs in <workdir>: lib<name>.a, core.contract.json, and a
+# build-times line (cold/warm wall clock) on stdout.
+
+set -eu
+
+fixture="${1:?usage: build_core.sh <fixture> <workdir>}"
+work="${2:?usage: build_core.sh <fixture> <workdir>}"
+compiler="${NATIVE_SDK_CORE_COMPILER:?set NATIVE_SDK_CORE_COMPILER to the external core toolchain command}"
+repo="$(cd "$(dirname "$0")/../.." && pwd)"
+
+case "$fixture" in
+  ai-chat)
+    sources="examples/ai-chat-ts/src/core.ts examples/ai-chat-ts/src/api.ts"
+    adapter="ai_chat_adapter.ts"
+    ;;
+  soundboard)
+    sources="examples/soundboard-ts/src/core.ts examples/soundboard-ts/src/library.ts examples/soundboard-ts/src/player.ts"
+    adapter="soundboard_adapter.ts"
+    ;;
+  system-monitor)
+    sources="examples/system-monitor-ts/src/core.ts examples/system-monitor-ts/src/parsers.ts examples/system-monitor-ts/src/table.ts"
+    adapter="system_monitor_adapter.ts"
+    ;;
+  host-fixture)
+    sources="tests/ts-core/fixture.ts"
+    adapter="host_fixture_adapter.ts"
+    ;;
+  *)
+    echo "unknown fixture \"$fixture\" (ai-chat | soundboard | system-monitor | host-fixture)" >&2
+    exit 2
+    ;;
+esac
+
+rm -rf "$work"
+mkdir -p "$work/sdk"
+
+# Two mechanical, behavior-preserving staging transforms:
+#   1. bare-specifier resolution — the staged tree carries the SDK
+#      modules the author imports, so every specifier resolves to a
+#      file in the stage;
+#   2. readonly-array erasure — `readonly T[]` (ReadonlyArray) sits
+#      outside the toolchain's sidecar type vocabulary today, so the
+#      TYPE-LEVEL readonly is erased on staged copies (`T[]` projects);
+#      values and behavior are untouched, and the paired battery holds
+#      the result byte-identical to the transpiler lane;
+#   3. Bytes-alias folding — the corpus's `type Bytes = Uint8Array`
+#      alias is tabled (not folded) by the toolchain's sidecar emitter
+#      and a tabled scalar alias refuses, so staged copies spell
+#      Uint8Array directly and drop the alias declaration/imports.
+resolve_specifiers() {
+  sed \
+    -e 's|"@native-sdk/core/text"|"./sdk/text.ts"|g' \
+    -e 's|"@native-sdk/core/events"|"./sdk/events.ts"|g' \
+    -e 's|"@native-sdk/core"|"./sdk/core.ts"|g' \
+    -e 's|readonly \([A-Za-z_][A-Za-z0-9_]*\(<[A-Za-z_, ]*>\)\{0,1\}\)\[\]|\1[]|g' \
+    -e 's|\([^A-Za-z0-9_]\)Bytes\([^A-Za-z0-9_]\)|\1Uint8Array\2|g' \
+    -e '/^export type Uint8Array = Uint8Array;$/d' \
+    -e '/^ *type Uint8Array,$/d' \
+    -e 's|type Uint8Array, ||g' \
+    -e 's|, type Uint8Array\([,}]\)|\1|g' \
+    "$1" > "$2"
+}
+
+for src in $sources; do
+  resolve_specifiers "$repo/$src" "$work/$(basename "$src")"
+done
+for sdk_file in text.ts events.ts; do
+  cp "$repo/packages/core/sdk/$sdk_file" "$work/sdk/$sdk_file"
+done
+# The stage's @native-sdk/core is the static restatement: the reference
+# module's factory VALUES verbatim, inside the toolchain's static
+# surface (no overloads, no generic value instantiation). The paired
+# battery holds every produced byte to the transpiler lane. The
+# reference module's byte-text ambient surface also stays out: no
+# fixture calls it, and its Uint8Array augmentation collides with the
+# toolchain's own node ambient typings.
+cp "$repo/tests/compiled-core/sdk_core_static.ts" "$work/sdk/core.ts"
+cp "$repo/tests/compiled-core/wire.ts" "$work/wire.ts"
+cp "$repo/tests/compiled-core/adapters/$adapter" "$work/core_adapter.ts"
+cp "$repo/tests/compiled-core/profiles/$fixture.profile.json" "$work/profile.json"
+
+name="$(printf '%s' "$fixture" | tr '-' '_')_core"
+
+cd "$work"
+cold_start=$(date +%s)
+$compiler build --lib --profile profile.json -o "$name"
+cold_end=$(date +%s)
+warm_start=$(date +%s)
+$compiler build --lib --profile profile.json -o "$name"
+warm_end=$(date +%s)
+
+# The toolchain writes the ar archive at the bare -o name (some
+# releases add .lib.a); the link input needs a recognized extension, so
+# normalize to lib<name>.a.
+if [ -f "$name.lib.a" ]; then
+  mv "$name.lib.a" "lib$name.a"
+elif [ -f "$name" ]; then
+  mv "$name" "lib$name.a"
+fi
+if [ ! -f "lib$name.a" ]; then
+  echo "no archive produced (expected $name.lib.a or $name)" >&2
+  exit 1
+fi
+
+echo "archive: $work/lib$name.a ($(wc -c < "lib$name.a" | tr -d ' ') bytes)"
+echo "sidecar: $work/core.contract.json"
+echo "build-times: cold $((cold_end - cold_start))s, warm $((warm_end - warm_start))s"

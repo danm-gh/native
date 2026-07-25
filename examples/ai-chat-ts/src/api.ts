@@ -73,7 +73,8 @@ function encodeTurn(turn: Turn): Bytes {
 /// written inline. Non-ASCII UTF-8 bytes pass through raw (valid JSON).
 export function jsonString(text: Bytes): Bytes {
   let len = 2;
-  for (const b of text) {
+  for (let i = 0; i < text.length; i++) {
+    const b = text[i];
     if (b === 0x22 || b === 0x5c || b === 0x08 || b === 0x09 || b === 0x0a || b === 0x0c || b === 0x0d) {
       len += 2;
     } else if (b < 0x20) {
@@ -85,7 +86,8 @@ export function jsonString(text: Bytes): Bytes {
   const out = new Uint8Array(len);
   out[0] = 0x22;
   let at = 1;
-  for (const b of text) {
+  for (let i = 0; i < text.length; i++) {
+    const b = text[i];
     if (b === 0x22 || b === 0x5c) {
       out[at] = 0x5c;
       out[at + 1] = b;

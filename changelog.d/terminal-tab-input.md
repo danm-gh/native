@@ -1,1 +1,0 @@
-fix: **Terminal Tab input**: focused live `<terminal>` components now send Tab and Shift+Tab to the PTY for completion, indentation, and TUI navigation, while focus-entry gestures and ended or unbound terminals retain ordinary traversal.

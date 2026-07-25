@@ -1,1 +1,0 @@
-fix: **Selectable terminal text**: `<terminal>` now supports pointer-drag cell selection, double-click word selection, triple-click line selection, and Cmd/Ctrl+C clipboard copy without forwarding the copy chord to the child.

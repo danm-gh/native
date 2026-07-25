@@ -235,7 +235,7 @@ fn emitWidgetDepthContent(builder: *Builder, widget: Widget, tokens: DesignToken
         .icon => try emitIconWidget(builder, paint_widget, tokens),
         .image => try emitImageWidget(builder, paint_widget),
         .media_surface => try emitMediaSurfaceWidget(builder, paint_widget),
-        .terminal => try emitTerminalWidget(builder, paint_widget, tokens),
+        .terminal => try emitTerminalWidget(builder, paint_widget, tokens, paint_widget.state.focused),
         .avatar => try emitAvatarWidget(builder, paint_widget, tokens),
         .badge => try emitBadgeWidget(builder, paint_widget, tokens),
         .button, .toggle_button, .toggle => try widget_render_controls.emitButtonWidget(builder, paint_widget, tokens),
@@ -578,7 +578,7 @@ fn emitWidgetLayoutNodeContent(
         .icon => try emitIconWidget(builder, paint_widget, tokens),
         .image => try emitImageWidget(builder, paint_widget),
         .media_surface => try emitMediaSurfaceWidget(builder, paint_widget),
-        .terminal => try emitTerminalWidget(builder, paint_widget, tokens),
+        .terminal => try emitTerminalWidget(builder, paint_widget, tokens, widgetHasLogicalFocus(paint_widget, state)),
         .avatar => try emitAvatarWidget(builder, paint_widget, tokens),
         .badge => try emitBadgeWidget(builder, paint_widget, tokens),
         .button, .toggle_button, .toggle => try widget_render_controls.emitButtonWidget(builder, paint_widget, tokens),
@@ -1249,7 +1249,7 @@ fn mediaSurfaceQuadRadius(radius: Radius, bar: f32) Radius {
 /// the widget's frame, so a terminal awaiting its pty reads as an empty
 /// terminal, never a hole. Focus wears the house ring like every other
 /// focusable control.
-fn emitTerminalWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
+fn emitTerminalWidget(builder: *Builder, widget: Widget, tokens: DesignTokens, focused: bool) Error!void {
     const frame = widget.frame.normalized();
     if (frame.isEmpty()) return;
     if (widget.terminal.grid) |grid| {
@@ -1283,6 +1283,7 @@ fn emitTerminalWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) E
             .frame = content,
             .background_frame = frame,
             .tokens = tokens,
+            .focused = focused,
             .id_base = widget.id,
             .command_budget = command_budget,
             .text_reserve = canvas.terminal_grid.widget_text_reserve,
@@ -2792,6 +2793,19 @@ fn widgetWithRenderState(widget: Widget, state: WidgetRenderState) Widget {
         copy.state.pressed = copy.id != 0 and copy.id == pressed_id;
     }
     return copy;
+}
+
+/// The terminal cursor follows logical keyboard focus, not merely
+/// focus-visible: the outer ring is a modality affordance, while the
+/// filled-vs-hollow cursor answers whether typed bytes go to this pty.
+/// With no runtime state, a baked focused widget remains the static
+/// scene/test source of truth.
+fn widgetHasLogicalFocus(widget: Widget, state: WidgetRenderState) bool {
+    if (state.focused_id != null or state.focus_visible_id != null) {
+        const focused_id = state.focused_id orelse return false;
+        return widget.id != 0 and widget.id == focused_id;
+    }
+    return widget.state.focused;
 }
 
 fn accordionChildrenVisible(widget: Widget) bool {

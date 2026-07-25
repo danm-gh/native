@@ -243,6 +243,12 @@ pub const TerminalPaintOptions = struct {
     /// Grid origin and extent in canvas points (the text region).
     frame: geometry.RectF,
     tokens: canvas.DesignTokens,
+    /// Whether this terminal owns keyboard focus. A live focused cursor
+    /// paints solid; an unfocused cursor paints as a hollow outline, the
+    /// conventional terminal-window focus cue. Defaults on for direct
+    /// painter callers; the `.terminal` widget always supplies its live
+    /// logical focus state.
+    focused: bool = true,
     /// The rect the grid background fills — the widget's whole frame,
     /// so the inset text region sits on a full-bleed surface. Null
     /// fills `frame` (tests that paint the grid alone).
@@ -894,8 +900,10 @@ pub fn paint(grid: TerminalGrid, builder: *canvas.Builder, options: TerminalPain
         painted_rows = row_index + 1;
     }
 
-    // The cursor, over the ink: filled while live, hollow-dim after exit.
-    // Suppressed if its row was never painted (dropped for budget).
+    // The cursor, over the ink: solid only while this live terminal owns
+    // keyboard focus. Blur leaves the conventional hollow terminal
+    // cursor; an ended session keeps that outline at the dimmer stopped
+    // alpha. Suppressed if its row was never painted (dropped for budget).
     if (grid.cursor) |cursor| if (cursor.y < painted_rows) {
         const cursor_x = origin_x + @as(f32, @floatFromInt(cursor.x)) * cell_w;
         const cursor_y = origin_y + @as(f32, @floatFromInt(cursor.y)) * cell_h;
@@ -910,11 +918,19 @@ pub fn paint(grid: TerminalGrid, builder: *canvas.Builder, options: TerminalPain
             .underline => geometry.RectF.init(cursor_x, cursor_y + cell_h - 2, cell_w, 2),
             .block => geometry.RectF.init(cursor_x, cursor_y, cell_w, cell_h),
         };
-        try builder.fillRect(.{
-            .id = ids.at(0x61_0002),
-            .rect = rect,
-            .fill = .{ .color = cursor_color },
-        });
+        if (options.focused and grid.running) {
+            try builder.fillRect(.{
+                .id = ids.at(0x61_0002),
+                .rect = rect,
+                .fill = .{ .color = cursor_color },
+            });
+        } else {
+            try builder.strokeRect(.{
+                .id = ids.at(0x61_0002),
+                .rect = rect,
+                .stroke = .{ .fill = .{ .color = cursor_color }, .width = 1 },
+            });
+        }
     };
 
     // Selection head outline while selecting (the keyboard caret).

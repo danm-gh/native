@@ -177,7 +177,7 @@ test "the selection wash and keyboard caret paint from snapshot state" {
     try testing.expect(saw_caret);
 }
 
-test "the cursor register: filled while running, dim after exit" {
+test "the cursor register: filled only while focused and live, hollow otherwise" {
     const rows = [_]grid_model.TerminalRow{.{ .cells = &.{} }};
     var grid = baseGrid(&rows);
     grid.cursor = .{ .x = 0, .y = 0 };
@@ -186,6 +186,7 @@ test "the cursor register: filled while running, dim after exit" {
     var builder = try paintInto(grid, &commands, .{
         .frame = geometry.RectF.init(0, 0, 100, 40),
         .tokens = .{},
+        .focused = true,
     });
     var running_alpha: f32 = 0;
     for (builder.displayList().commands) |command| {
@@ -198,22 +199,96 @@ test "the cursor register: filled while running, dim after exit" {
     }
     try testing.expectApproxEqAbs(@as(f32, 0.45), running_alpha, 0.001);
 
+    var blurred_commands: [16]canvas.CanvasCommand = undefined;
+    var blurred_builder = try paintInto(grid, &blurred_commands, .{
+        .frame = geometry.RectF.init(0, 0, 100, 40),
+        .tokens = .{},
+        .focused = false,
+    });
+    var blurred_alpha: f32 = 0;
+    for (blurred_builder.displayList().commands) |command| {
+        switch (command) {
+            .stroke_rect => |stroke| {
+                if (stroke.stroke.fill == .color and stroke.stroke.fill.color.b == blue.b) {
+                    blurred_alpha = stroke.stroke.fill.color.a;
+                    try testing.expectEqual(@as(f32, 1), stroke.stroke.width);
+                }
+            },
+            else => {},
+        }
+    }
+    try testing.expectApproxEqAbs(@as(f32, 0.45), blurred_alpha, 0.001);
+
     grid.running = false;
     var ended_commands: [16]canvas.CanvasCommand = undefined;
     var ended_builder = try paintInto(grid, &ended_commands, .{
         .frame = geometry.RectF.init(0, 0, 100, 40),
         .tokens = .{},
+        .focused = true,
     });
     var ended_alpha: f32 = 0;
     for (ended_builder.displayList().commands) |command| {
         switch (command) {
-            .fill_rect => |fill| {
-                if (fill.fill == .color and fill.fill.color.b == blue.b and fill.fill.color.a < 1) ended_alpha = fill.fill.color.a;
+            .stroke_rect => |stroke| {
+                if (stroke.stroke.fill == .color and stroke.stroke.fill.color.b == blue.b) {
+                    ended_alpha = stroke.stroke.fill.color.a;
+                    try testing.expectEqual(@as(f32, 1), stroke.stroke.width);
+                }
             },
             else => {},
         }
     }
     try testing.expectApproxEqAbs(@as(f32, 0.22), ended_alpha, 0.001);
+}
+
+test "the terminal widget cursor follows logical focus independently of the outer ring" {
+    const rows = [_]grid_model.TerminalRow{.{ .cells = &.{} }};
+    var grid = baseGrid(&rows);
+    grid.cursor = .{ .x = 0, .y = 0 };
+    const terminal = canvas.Widget{
+        .id = 9,
+        .kind = .terminal,
+        .frame = geometry.RectF.init(0, 0, 200, 100),
+        .terminal = .{ .pty = 1, .grid = &grid },
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(terminal, terminal.frame, &nodes);
+    const cursor_id = grid_model.paintIdBase(terminal.id) + 0x61_0002;
+
+    // Logical focus fills the cursor even when the modality-specific
+    // outer ring is quiet.
+    var focused_commands: [32]canvas.CanvasCommand = undefined;
+    var focused_builder = canvas.Builder.init(&focused_commands);
+    try layout.emitDisplayListWithState(&focused_builder, .{}, .{ .focused_id = terminal.id });
+    var saw_filled_cursor = false;
+    var saw_outer_ring = false;
+    for (focused_builder.displayList().commands) |command| {
+        switch (command) {
+            .fill_rect => |fill| if (fill.id == cursor_id) {
+                saw_filled_cursor = true;
+            },
+            .stroke_rect => |stroke| if (stroke.id != cursor_id) {
+                saw_outer_ring = true;
+            },
+            else => {},
+        }
+    }
+    try testing.expect(saw_filled_cursor);
+    try testing.expect(!saw_outer_ring);
+
+    var blurred_commands: [32]canvas.CanvasCommand = undefined;
+    var blurred_builder = canvas.Builder.init(&blurred_commands);
+    try layout.emitDisplayListWithState(&blurred_builder, .{}, .{});
+    var saw_hollow_cursor = false;
+    for (blurred_builder.displayList().commands) |command| {
+        switch (command) {
+            .stroke_rect => |stroke| if (stroke.id == cursor_id) {
+                saw_hollow_cursor = true;
+            },
+            else => {},
+        }
+    }
+    try testing.expect(saw_hollow_cursor);
 }
 
 test "the scrollback thumb paints only while the viewport is in history" {

@@ -15,6 +15,7 @@ const Model = app.Model;
 const Msg = app.Msg;
 const WorkbenchUi = canvas.Ui(Msg);
 const WorkbenchApp = native_sdk.UiApp(Model, Msg);
+const CursorPaintKind = enum { filled, hollow };
 
 fn buildTree(arena: std.mem.Allocator, model: *const Model) !WorkbenchUi.Tree {
     var ui = WorkbenchUi.init(arena);
@@ -55,6 +56,16 @@ fn fakeEffects() app.Effects {
     var fx = app.Effects.init(testing.allocator);
     fx.executor = .fake;
     return fx;
+}
+
+fn expectTerminalCursorPaint(harness: *native_sdk.TestHarness(), terminal_id: canvas.ObjectId, expected: CursorPaintKind) !void {
+    const cursor_id = canvas.terminal_grid.paintIdBase(terminal_id) + 0x61_0002;
+    const command = (try harness.runtime.canvasDisplayList(1, app.canvas_label)).findCommandById(cursor_id) orelse return error.TestExpectedCursor;
+    switch (command.command) {
+        .fill_rect => try testing.expectEqual(CursorPaintKind.filled, expected),
+        .stroke_rect => try testing.expectEqual(CursorPaintKind.hollow, expected),
+        else => return error.TestUnexpectedCursorCommand,
+    }
 }
 
 // ------------------------------------------------------------------ layout
@@ -479,4 +490,46 @@ test "a live pty session flows through the <terminal> element: output, typing, r
     } });
     try testing.expectEqual(divider_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
     try testing.expectEqualStrings("", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
+}
+
+test "the terminal cursor follows app and key-window keyboard ownership" {
+    if (comptime !native_sdk.runtime.terminal_sessions_enabled) return error.SkipZigTest;
+    var h = try Harness.create();
+    defer h.destroy();
+
+    try h.app_state.effects.feedPtyOutput(app.shell_effect_key, "demo$ ");
+    try h.frame();
+    try h.click(200, 400);
+
+    const layout = try h.harness.runtime.canvasWidgetLayout(1, app.canvas_label);
+    var terminal_id: canvas.ObjectId = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .terminal) terminal_id = node.widget.id;
+    }
+    try testing.expect(terminal_id != 0);
+    const view_index = h.harness.runtime.findViewIndex(1, app.canvas_label) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(terminal_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
+    try expectTerminalCursorPaint(h.harness, terminal_id, .filled);
+
+    // App blur hollows the cursor but preserves the per-window focus
+    // memory that activation restores.
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .app_deactivated);
+    try testing.expectEqual(terminal_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
+    try expectTerminalCursorPaint(h.harness, terminal_id, .hollow);
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .app_activated);
+    try expectTerminalCursorPaint(h.harness, terminal_id, .filled);
+
+    // Moving key status to another app window has the same pixel
+    // consequence without discarding the first window's remembered
+    // widget focus.
+    const second = try h.harness.runtime.createWindow(.{
+        .label = "tools",
+        .title = "Tools",
+        .source = native_sdk.platform.WebViewSource.html("<p>Tools</p>"),
+    });
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .window_focused = second.id });
+    try testing.expectEqual(terminal_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
+    try expectTerminalCursorPaint(h.harness, terminal_id, .hollow);
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .window_focused = 1 });
+    try expectTerminalCursorPaint(h.harness, terminal_id, .filled);
 }

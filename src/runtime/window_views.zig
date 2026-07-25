@@ -47,6 +47,7 @@ pub fn RuntimeWindowViews(comptime Runtime: type) type {
         pub const findShellLayoutIndex = WindowStorageMethods.findShellLayoutIndex;
         pub const removeShellLayoutForWindow = WindowStorageMethods.removeShellLayoutForWindow;
         pub const setFocusedIndex = WindowStorageMethods.setFocusedIndex;
+        pub const setAppActive = WindowStorageMethods.setAppActive;
         pub const findWindowIndexById = WindowStorageMethods.findWindowIndexById;
         pub const findWindowIndexByLabel = WindowStorageMethods.findWindowIndexByLabel;
         pub const allocateWindowId = WindowStorageMethods.allocateWindowId;

@@ -631,11 +631,22 @@ test "widget render state dirty bounds tracks terminal logical focus" {
         terminal.frame,
         layout.renderStateDirtyBounds(.{}, .{ .focused_id = terminal.id }),
     );
+    try expectRect(
+        terminal.frame,
+        layout.renderStateDirtyBounds(
+            .{ .focused_id = terminal.id },
+            .{ .keyboard_active = false, .focused_id = terminal.id },
+        ),
+    );
 
     // An ended cursor is hollow in both states: logical focus no longer
     // changes pixels, so no damage is reported.
     grid.running = false;
     try std.testing.expect(layout.renderStateDirtyBounds(.{}, .{ .focused_id = terminal.id }) == null);
+    try std.testing.expect(layout.renderStateDirtyBounds(
+        .{ .focused_id = terminal.id },
+        .{ .keyboard_active = false, .focused_id = terminal.id },
+    ) == null);
 }
 
 test "widget render state dirty bounds uses custom focus stroke tokens" {

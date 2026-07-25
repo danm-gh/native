@@ -1773,7 +1773,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             // live tokens, so the dirty region must measure the same way.
             const local_dirty = self.views[view_index].widgetLayoutTree().renderStateDirtyBoundsWithTokens(previous, next, self.views[view_index].widget_tokens);
             invalidateForCanvasWidgetRenderStateDirty(self, view_index, local_dirty);
-            const publish_accessibility = previous.focused_id != next.focused_id;
+            const publish_accessibility = previous.focused_id != next.focused_id or previous.keyboard_active != next.keyboard_active;
             _ = try runtime_canvas_widget_display.RuntimeCanvasWidgetDisplay(Runtime).refreshCanvasWidgetDisplayListIfOwnedWithAccessibility(self, view_index, publish_accessibility);
         }
 
@@ -1791,6 +1791,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
         pub fn canvasWidgetRenderStateAfterLayout(previous: canvas.WidgetRenderState, layout: canvas.WidgetLayoutTree) canvas.WidgetRenderState {
             const next_focused_id = if (previous.focused_id) |id| if (layout.focusTargetById(id) != null) id else null else null;
             return .{
+                .keyboard_active = previous.keyboard_active,
                 .focused_id = next_focused_id,
                 .focus_visible_id = if (previous.focus_visible_id) |id| if (next_focused_id != null and next_focused_id.? == id and layout.focusTargetById(id) != null) id else null else null,
                 .hovered_id = if (previous.hovered_id) |id| if (canvasWidgetInteractionTargetExists(layout, id)) id else null else null,
@@ -1802,7 +1803,8 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
         }
 
         pub fn canvasWidgetRenderStatesEqual(a: canvas.WidgetRenderState, b: canvas.WidgetRenderState) bool {
-            return a.focused_id == b.focused_id and
+            return a.keyboard_active == b.keyboard_active and
+                a.focused_id == b.focused_id and
                 a.focus_visible_id == b.focus_visible_id and
                 a.hovered_id == b.hovered_id and
                 a.pressed_id == b.pressed_id and

@@ -369,6 +369,7 @@ pub fn RuntimeViewCanvasWidgetTree(comptime RuntimeView: type) type {
         pub fn canvasWidgetRenderState(self: *const RuntimeView) canvas.WidgetRenderState {
             const focused_id: ?canvas.ObjectId = if (!self.focused or self.canvas_widget_focused_id == 0) null else self.canvas_widget_focused_id;
             return .{
+                .keyboard_active = self.keyboard_active,
                 .focused_id = focused_id,
                 .focus_visible_id = if (focused_id) |id| if (self.canvas_widget_focus_visible_id == id) id else null else null,
                 .hovered_id = if (self.canvas_widget_hovered_id == 0) null else self.canvas_widget_hovered_id,

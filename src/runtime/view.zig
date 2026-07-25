@@ -722,7 +722,16 @@ pub const RuntimeView = struct {
     widget_chart_points_len: usize = 0,
     widget_chart_x_labels: [canvas_limits.max_canvas_widget_chart_x_labels_per_view][]const u8 = undefined,
     widget_chart_x_labels_len: usize = 0,
+    /// Whether this view is the focused child INSIDE its window. This
+    /// memory deliberately survives app deactivation and window key
+    /// loss so focus returns to the same child when keyboard ownership
+    /// comes back.
     focused: bool = false,
+    /// Whether the app is active AND this view's owning window is key.
+    /// Kept separate from `focused`: retained widget focus remains
+    /// remembered while inactive, but it must not paint or report as
+    /// keyboard focus until this gate reopens.
+    keyboard_active: bool = false,
     open: bool = false,
     label_storage: [platform.max_view_label_bytes]u8 = undefined,
     parent_storage: [platform.max_view_label_bytes]u8 = undefined,

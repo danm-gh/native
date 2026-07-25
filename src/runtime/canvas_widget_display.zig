@@ -234,7 +234,7 @@ pub fn RuntimeCanvasWidgetDisplay(comptime Runtime: type) type {
                     .scroll_viewport_extent = if (node.scroll.present) node.scroll.viewport_extent else null,
                     .scroll_content_extent = if (node.scroll.present) node.scroll.content_extent else null,
                     .enabled = !node.state.disabled,
-                    .focused = node.state.focused or (view.focused and node.id == view.canvas_widget_focused_id),
+                    .focused = node.state.focused or (view.keyboard_active and view.focused and node.id == view.canvas_widget_focused_id),
                     .hovered = node.state.hovered or (node.id != 0 and node.id == view.canvas_widget_hovered_id),
                     .pressed = node.state.pressed or (node.id != 0 and node.id == view.canvas_widget_pressed_id),
                     .selected = canvasWidgetSelectedState(node),

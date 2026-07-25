@@ -278,17 +278,27 @@ test "the terminal widget cursor follows logical focus independently of the oute
 
     var blurred_commands: [32]canvas.CanvasCommand = undefined;
     var blurred_builder = canvas.Builder.init(&blurred_commands);
-    try layout.emitDisplayListWithState(&blurred_builder, .{}, .{});
+    try layout.emitDisplayListWithState(&blurred_builder, .{}, .{
+        .keyboard_active = false,
+        .focused_id = terminal.id,
+        .focus_visible_id = terminal.id,
+    });
     var saw_hollow_cursor = false;
+    var kept_outer_ring = false;
     for (blurred_builder.displayList().commands) |command| {
         switch (command) {
             .stroke_rect => |stroke| if (stroke.id == cursor_id) {
                 saw_hollow_cursor = true;
+            } else {
+                kept_outer_ring = true;
             },
             else => {},
         }
     }
     try testing.expect(saw_hollow_cursor);
+    // Key-window/app activity gates the terminal's ownership cue only;
+    // retained focus-visible chrome keeps its normal restoration state.
+    try testing.expect(kept_outer_ring);
 }
 
 test "the scrollback thumb paints only while the viewport is in history" {

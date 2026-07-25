@@ -493,6 +493,7 @@ pub fn RuntimeWindowViewRuntime(comptime Runtime: type) type {
                 .gpu_status = if (options.kind == .gpu_surface) .ready else .unavailable,
                 .gpu_surface_created_timestamp_ns = if (options.kind == .gpu_surface) timestampToU64(nowNanoseconds()) else 0,
                 .focused = false,
+                .keyboard_active = windowKeyboardActive(self, options.window_id),
                 .open = true,
             };
             self.views[index].label = try copyInto(&self.views[index].label_storage, options.label);
@@ -502,6 +503,12 @@ pub fn RuntimeWindowViewRuntime(comptime Runtime: type) type {
             self.views[index].text = try copyInto(&self.views[index].text_storage, options.text);
             self.views[index].command = try copyInto(&self.views[index].command_storage, options.command);
             self.view_count += 1;
+        }
+
+        fn windowKeyboardActive(self: *const Runtime, window_id: platform.WindowId) bool {
+            if (!self.app_active) return false;
+            const window_index = WindowStorageMethods.findWindowIndexById(self, window_id) orelse return false;
+            return self.windows[window_index].info.focused;
         }
 
         pub fn findViewIndex(self: *const Runtime, window_id: platform.WindowId, label: []const u8) ?usize {

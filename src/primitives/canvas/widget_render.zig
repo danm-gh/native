@@ -2801,6 +2801,7 @@ fn widgetWithRenderState(widget: Widget, state: WidgetRenderState) Widget {
 /// With no runtime state, a baked focused widget remains the static
 /// scene/test source of truth.
 fn widgetHasLogicalFocus(widget: Widget, state: WidgetRenderState) bool {
+    if (!state.keyboard_active) return false;
     if (state.focused_id != null or state.focus_visible_id != null) {
         const focused_id = state.focused_id orelse return false;
         return widget.id != 0 and widget.id == focused_id;

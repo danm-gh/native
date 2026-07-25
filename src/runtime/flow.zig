@@ -242,7 +242,7 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                     log(self, "app.start", "app started", &.{trace.string("app", app.name)});
                 },
                 .app_activated => {
-                    self.app_active = true;
+                    try WindowViewMethods().setAppActive(self, true);
                     try dispatchEvent(self, app, .{ .lifecycle = .activate });
                     emitAppLifecycleEvent(self, "app:activate") catch |err| log(self, "app.activate.emit_failed", @errorName(err), &.{});
                 },
@@ -254,7 +254,7 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                     // that already knows the app is inactive: the
                     // adoption arm's reveal/arm paths are gated on this
                     // register and stay silent.
-                    self.app_active = false;
+                    try WindowViewMethods().setAppActive(self, false);
                     // Deactivation drops every tooltip conversation in
                     // every window (see the seam's own rationale) BEFORE
                     // the app hears the lifecycle event, so a model that

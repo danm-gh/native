@@ -272,9 +272,13 @@ pub fn RuntimeWindowStorage(comptime Runtime: type) type {
         /// and the re-key restores focus where it was without revealing
         /// anything.
         pub fn setFocusedIndex(self: *Runtime, focused_index: usize) anyerror!void {
+            var first_error: ?anyerror = null;
             for (0..self.window_count) |index| {
-                try Self.setWindowFocused(self, index, index == focused_index);
+                Self.setWindowFocused(self, index, index == focused_index) catch |err| {
+                    if (first_error == null) first_error = err;
+                };
             }
+            if (first_error) |err| return err;
         }
 
         /// The ONE writer of a tracked window's `focused` flag: the
@@ -303,8 +307,47 @@ pub fn RuntimeWindowStorage(comptime Runtime: type) type {
             const window = &self.windows[index];
             const was_focused = window.info.focused;
             window.info.focused = focused;
+            var first_error: ?anyerror = null;
+            for (self.views[0..self.view_count], 0..) |*view, view_index| {
+                if (view.window_id != window.info.id) continue;
+                Self.setViewKeyboardActive(self, view_index, self.app_active and focused) catch |err| {
+                    if (first_error == null) first_error = err;
+                };
+            }
             if (was_focused and !focused) {
-                try CanvasWidgetEventMethods.resetCanvasTooltipIntentForWindowKeyLoss(self, window.info.id);
+                CanvasWidgetEventMethods.resetCanvasTooltipIntentForWindowKeyLoss(self, window.info.id) catch |err| {
+                    if (first_error == null) first_error = err;
+                };
+            }
+            if (first_error) |err| return err;
+        }
+
+        /// Move the application-active register and project it into every
+        /// view's keyboard gate without disturbing per-window focus
+        /// memory. A deactivated app owns no keyboard focus; activation
+        /// reopens the gate only in the key window.
+        pub fn setAppActive(self: *Runtime, active: bool) anyerror!void {
+            self.app_active = active;
+            var first_error: ?anyerror = null;
+            for (self.views[0..self.view_count], 0..) |*view, view_index| {
+                const window_index = Self.findWindowIndexById(self, view.window_id);
+                const window_focused = if (window_index) |index| self.windows[index].info.focused else false;
+                Self.setViewKeyboardActive(self, view_index, active and window_focused) catch |err| {
+                    if (first_error == null) first_error = err;
+                };
+            }
+            if (first_error) |err| return err;
+        }
+
+        fn setViewKeyboardActive(self: *Runtime, view_index: usize, active: bool) anyerror!void {
+            const CanvasWidgetEventMethods = runtime_canvas_widget_events.RuntimeCanvasWidgetEvents(Runtime);
+            const view = &self.views[view_index];
+            if (view.keyboard_active == active) return;
+            const previous_state = view.canvasWidgetRenderState();
+            view.keyboard_active = active;
+            const next_state = view.canvasWidgetRenderState();
+            if (!CanvasWidgetEventMethods.canvasWidgetRenderStatesEqual(previous_state, next_state)) {
+                try CanvasWidgetEventMethods.invalidateForCanvasWidgetRenderStateChange(self, view_index, previous_state, next_state);
             }
         }
 

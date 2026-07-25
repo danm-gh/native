@@ -332,6 +332,10 @@ pub fn widgetRenderStateDirtyBounds(layout: anytype, previous: WidgetRenderState
         appendOptionalObjectId(&ids, &id_len, previous.focused_id);
         appendOptionalObjectId(&ids, &id_len, next.focused_id);
     }
+    if (previous.keyboard_active != next.keyboard_active) {
+        appendOptionalObjectId(&ids, &id_len, previous.focused_id);
+        appendOptionalObjectId(&ids, &id_len, next.focused_id);
+    }
     if (previous.focus_visible_id != next.focus_visible_id) {
         appendOptionalObjectId(&ids, &id_len, previous.focus_visible_id);
         appendOptionalObjectId(&ids, &id_len, next.focus_visible_id);
@@ -398,6 +402,7 @@ fn terminalLogicalFocusPaintChanged(widget: Widget, previous: WidgetRenderState,
 }
 
 fn widgetHasLogicalFocus(widget: Widget, state: WidgetRenderState) bool {
+    if (!state.keyboard_active) return false;
     if (state.focused_id != null or state.focus_visible_id != null) {
         const focused_id = state.focused_id orelse return false;
         return widget.id != 0 and widget.id == focused_id;

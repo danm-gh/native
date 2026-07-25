@@ -264,6 +264,12 @@ pub const WidgetState = struct {
 };
 
 pub const WidgetRenderState = struct {
+    /// Whether the app is active and this widget tree's window is key.
+    /// Runtime focus ids stay retained while false so focus-visible
+    /// chrome and per-window restoration keep their existing semantics;
+    /// controls whose pixels represent CURRENT keyboard ownership (the
+    /// terminal cursor) consult this gate too.
+    keyboard_active: bool = true,
     focused_id: ?ObjectId = null,
     focus_visible_id: ?ObjectId = null,
     hovered_id: ?ObjectId = null,

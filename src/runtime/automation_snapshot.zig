@@ -221,7 +221,7 @@ pub fn RuntimeAutomationSnapshot(comptime Runtime: type) type {
                         },
                         .virtual_range = canvasVirtualRange(layout.virtualRangeById(node.id)),
                         .bounds = node.bounds.translate(geometry.OffsetF.init(view.frame.x, view.frame.y)),
-                        .focused = node.state.focused or (view.focused and node.id == view.canvas_widget_focused_id),
+                        .focused = node.state.focused or (view.keyboard_active and view.focused and node.id == view.canvas_widget_focused_id),
                         .enabled = !node.state.disabled,
                         .hovered = node.state.hovered or (node.id != 0 and node.id == view.canvas_widget_hovered_id),
                         .pressed = node.state.pressed or (node.id != 0 and node.id == view.canvas_widget_pressed_id),

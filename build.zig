@@ -2842,35 +2842,15 @@ fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
 }
 
 /// The framework module's `terminal_vt` import for THIS repository's own
-/// builds: the ghostty-vt wrapper when the lazy `ghostty` pin resolves,
-/// the stub otherwise. Gated on being the build ROOT (`b.pkg_hash` is
-/// empty exactly for the root package): a consumer running this build
-/// script through `b.dependency("native_sdk")` must never traverse
-/// ghostty's graph — its configure step walks lazy dependencies (wuffs,
-/// translate_c) whose build scripts fail in consumer package stores, and
-/// its full build pulls harfbuzz. Consumer apps opt in by pinning
-/// ghostty in their OWN build.zig.zon and passing the module through
-/// `addAppArtifacts(.{ .ghostty_vt = ... })` (see build/app.zig).
+/// builds: always the stub. The emulator (libghostty-vt) is pinned by
+/// the APPS that want live `<terminal>` sessions, never by this package
+/// — a pin in `build.zig.zon` is materialized into every consumer's
+/// package directory even when lazy and unused, and ghostty's own graph
+/// walks translate_c/wuffs and pulls harfbuzz, which is exactly what a
+/// scaffolded app must never carry. `AppOptions.terminal_sessions`
+/// resolves the app's own pin (see build/app.zig), and the terminal
+/// examples own the enabled path's test coverage.
 fn terminalVtModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    if (b.pkg_hash.len == 0) {
-        if (b.lazyDependency("ghostty", .{
-            .target = target,
-            .optimize = optimize,
-            // Keep the vt module pure Zig: the SIMD paths pull vendored
-            // C++ dependencies the session store does not need.
-            .simd = false,
-            // Only the vt MODULE is consumed: ghostty's macOS app and
-            // xcframework artifacts default ON for Darwin hosts and
-            // their configure step resolves the iOS libc, which aborts
-            // on a machine with only the command-line tools.
-            .@"emit-xcframework" = false,
-            .@"emit-macos-app" = false,
-        })) |ghostty| {
-            const wrapper = module(b, target, optimize, "src/runtime/terminal_vt_ghostty.zig");
-            wrapper.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
-            return wrapper;
-        }
-    }
     return module(b, target, optimize, "src/runtime/terminal_vt_stub.zig");
 }
 

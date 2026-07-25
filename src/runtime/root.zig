@@ -126,6 +126,14 @@ pub const max_effect_host_name_bytes = runtime_effects.max_effect_host_name_byte
 pub const max_effect_host_payload_bytes = runtime_effects.max_effect_host_payload_bytes;
 pub const max_effect_host_result_bytes = runtime_effects.max_effect_host_result_bytes;
 
+const runtime_terminal_session = @import("terminal_session.zig");
+/// Whether this build carries the terminal emulator behind bound
+/// `<terminal pty={key}>` sessions (`AppOptions.terminal_sessions`).
+/// False builds render the empty terminal surface and never traverse the
+/// emulator's dependency graph — the flag an app's tests gate on.
+pub const terminal_sessions_enabled = runtime_terminal_session.enabled;
+pub const max_terminal_sessions = runtime_terminal_session.max_sessions;
+
 const runtime_ts_core_host = @import("ts_core_host.zig");
 pub const TsCoreHost = runtime_ts_core_host.TsCoreHost;
 pub const ts_core_request_key_base = runtime_ts_core_host.request_key_base;

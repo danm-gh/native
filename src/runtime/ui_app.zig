@@ -498,6 +498,11 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             /// Optional mapping from shell command events (menus, shortcuts,
             /// native controls) into messages.
             on_command: ?*const fn (name: []const u8) ?MsgT = null,
+            /// Optional mapping from app lifecycle events into messages.
+            /// A single-window app can use activate/deactivate as its
+            /// keyboard-focus signal for custom canvas chrome whose
+            /// pixels live outside the widget focus register.
+            on_lifecycle: ?*const fn (event: core.LifecycleEvent) ?MsgT = null,
             /// Model-driven selection for declared platform chrome
             /// (`scene.chrome.tabs`): returns the id of the tab the
             /// model currently selects (one of the declared tab ids, or
@@ -3892,6 +3897,10 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
 
         fn handleRuntimeEvent(self: *Self, runtime: *Runtime, event_value: Event) anyerror!void {
             switch (event_value) {
+                .lifecycle => |lifecycle| {
+                    const map = self.options.on_lifecycle orelse return;
+                    if (map(lifecycle)) |msg| try self.dispatch(runtime, self.canvas_window_id, msg);
+                },
                 .command => |command| {
                     const map = self.options.on_command orelse return;
                     if (map(command.name)) |msg| {

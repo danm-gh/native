@@ -115,6 +115,10 @@ pub const Model = struct {
     /// the app starts); everything inside derives from journaled inputs.
     session: *grid.Session,
     phase: Phase = .starting,
+    /// This single-window app owns terminal keyboard input exactly while
+    /// the application is active. Lifecycle messages rebuild the custom
+    /// chrome so the cursor fills on focus and hollows on blur.
+    focused: bool = true,
     exit_code: i32 = 0,
     exit_signal: i32 = 0,
     exit_reason: native_sdk.EffectExitReason = .exited,
@@ -194,6 +198,7 @@ pub const Msg = union(enum) {
     /// points, accumulated into whole rows of scrollback.
     wheel: f32,
     chrome_changed: native_sdk.platform.WindowChrome,
+    focus_changed: bool,
 };
 
 const TerminalApp = native_sdk.UiApp(Model, Msg);
@@ -317,6 +322,9 @@ pub fn update(model: *Model, msg: Msg, fx: *Fx) void {
         },
         .chrome_changed => |chrome| {
             model.chrome_top = chrome.insets.top;
+        },
+        .focus_changed => |focused| {
+            model.focused = focused;
         },
         .wheel => |delta| {
             // Natural direction, like every terminal: swiping the
@@ -538,6 +546,14 @@ fn onWheel(wheel: native_sdk.platform.WheelEvent) ?Msg {
 
 fn onChrome(chrome: native_sdk.platform.WindowChrome) ?Msg {
     return .{ .chrome_changed = chrome };
+}
+
+fn onLifecycle(event: native_sdk.LifecycleEvent) ?Msg {
+    return switch (event) {
+        .activate => .{ .focus_changed = true },
+        .deactivate => .{ .focus_changed = false },
+        else => null,
+    };
 }
 
 fn handleKey(model: *Model, fx: *Fx, event: canvas.WidgetKeyboardEvent) void {
@@ -860,6 +876,7 @@ fn buildChrome(model: *const Model, builder: *canvas.Builder, size: geometry.Siz
         .background_frame = geometry.RectF.init(0, 0, size.width, size.height),
         .tokens = tokens,
         .running = model.phase == .live or model.phase == .starting,
+        .focused = model.focused,
         .selecting = model.selecting,
         .command_budget = grid_command_budget,
         .text_reserve = grid_text_reserve,
@@ -921,6 +938,7 @@ pub fn appOptions() TerminalApp.Options {
         .on_text = onText,
         .on_wheel = onWheel,
         .on_chrome = onChrome,
+        .on_lifecycle = onLifecycle,
         .on_frame = onFrame,
         .chrome = .{
             .prefix_commands = grid_command_budget,

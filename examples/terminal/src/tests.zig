@@ -131,6 +131,44 @@ test "the grid paints real text runs with theme-derived ANSI and exact truecolor
     try testing.expect(saw_exact);
 }
 
+test "the custom cursor fills only while focused and live" {
+    const session = try createSession(20, 4);
+    defer session.destroy();
+
+    var focused_commands: [64]canvas.CanvasCommand = undefined;
+    var focused_builder = canvas.Builder.init(&focused_commands);
+    try grid.paint(session, &focused_builder, .{
+        .frame = geometry.RectF.init(0, 0, 200, 100),
+        .tokens = .{},
+        .running = true,
+        .focused = true,
+        .selecting = false,
+    });
+    try expectCursorPaintKind(focused_builder.displayList(), .filled);
+
+    var blurred_commands: [64]canvas.CanvasCommand = undefined;
+    var blurred_builder = canvas.Builder.init(&blurred_commands);
+    try grid.paint(session, &blurred_builder, .{
+        .frame = geometry.RectF.init(0, 0, 200, 100),
+        .tokens = .{},
+        .running = true,
+        .focused = false,
+        .selecting = false,
+    });
+    try expectCursorPaintKind(blurred_builder.displayList(), .hollow);
+
+    var ended_commands: [64]canvas.CanvasCommand = undefined;
+    var ended_builder = canvas.Builder.init(&ended_commands);
+    try grid.paint(session, &ended_builder, .{
+        .frame = geometry.RectF.init(0, 0, 200, 100),
+        .tokens = .{},
+        .running = false,
+        .focused = true,
+        .selecting = false,
+    });
+    try expectCursorPaintKind(ended_builder.displayList(), .hollow);
+}
+
 test "a styled wide character's background covers both of its cells" {
     const session = try createSession(30, 4);
     defer session.destroy();
@@ -383,6 +421,17 @@ test "grid clamping trades rows for columns inside the cell budget" {
 
 const TerminalApp = native_sdk.UiApp(app.Model, app.Msg);
 
+const CursorPaintKind = enum { filled, hollow };
+
+fn expectCursorPaintKind(display_list: anytype, expected: CursorPaintKind) !void {
+    const command = display_list.findCommandById(grid.cursor_command_id) orelse return error.TestExpectedCursor;
+    switch (command.command) {
+        .fill_rect => try testing.expectEqual(CursorPaintKind.filled, expected),
+        .stroke_rect => try testing.expectEqual(CursorPaintKind.hollow, expected),
+        else => return error.TestUnexpectedCursorCommand,
+    }
+}
+
 const JournalBuffer = struct {
     bytes: [512 * 1024]u8 = undefined,
     len: usize = 0,
@@ -565,6 +614,28 @@ fn startFocusedTerminal(gpa: std.mem.Allocator, harness: anytype) !*TerminalApp 
         .y = 200,
     } });
     return app_state;
+}
+
+test "terminal lifecycle focus rebuilds the custom cursor fill" {
+    const gpa = testing.allocator;
+    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });
+    defer harness.destroy(gpa);
+    const app_state = try startFocusedTerminal(gpa, harness);
+    defer gpa.destroy(app_state);
+    defer app_state.model.session.destroy();
+    defer app_state.deinit();
+    const app_iface = app_state.app();
+
+    try testing.expect(app_state.model.focused);
+    try expectCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), .filled);
+
+    try harness.runtime.dispatchPlatformEvent(app_iface, .app_deactivated);
+    try testing.expect(!app_state.model.focused);
+    try expectCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), .hollow);
+
+    try harness.runtime.dispatchPlatformEvent(app_iface, .app_activated);
+    try testing.expect(app_state.model.focused);
+    try expectCursorPaintKind(harness.runtime.views[0].canvasDisplayList(), .filled);
 }
 
 test "IME: a preedit is provisional; only the commit reaches the pty" {

@@ -606,6 +606,38 @@ test "widget render state dirty bounds tracks changed runtime states" {
     try std.testing.expect(layout.renderStateDirtyBounds(.{ .focused_id = 99 }, .{ .focused_id = 100 }) == null);
 }
 
+test "widget render state dirty bounds tracks terminal logical focus" {
+    const rows = [_]canvas.TerminalRow{.{ .cells = &.{} }};
+    var grid = canvas.TerminalGrid{
+        .rows = &rows,
+        .background = Color.rgb8(0, 0, 0),
+        .foreground = Color.rgb8(255, 255, 255),
+        .cursor_color = Color.rgb8(255, 255, 255),
+        .selection_color = Color.rgb8(0, 128, 255),
+        .cursor = .{ .x = 0, .y = 0 },
+    };
+    const terminal = Widget{
+        .id = 9,
+        .kind = .terminal,
+        .frame = geometry.RectF.init(10, 12, 200, 100),
+        .terminal = .{ .pty = 1, .grid = &grid },
+    };
+    var nodes: [1]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTree(terminal, terminal.frame, &nodes);
+
+    // Logical focus changes the live cursor from outline to fill even
+    // when focus-visible stays quiet, so the terminal frame is dirty.
+    try expectRect(
+        terminal.frame,
+        layout.renderStateDirtyBounds(.{}, .{ .focused_id = terminal.id }),
+    );
+
+    // An ended cursor is hollow in both states: logical focus no longer
+    // changes pixels, so no damage is reported.
+    grid.running = false;
+    try std.testing.expect(layout.renderStateDirtyBounds(.{}, .{ .focused_id = terminal.id }) == null);
+}
+
 test "widget render state dirty bounds uses custom focus stroke tokens" {
     const children = [_]Widget{.{
         .id = 2,

@@ -26,6 +26,7 @@ pub const max_cells: usize = 7168;
 /// Stable command-id namespace for grid commands so the retained
 /// renderer matches rows across rebuilds and damage stays row-shaped.
 const grid_id_base: u64 = 0x7e21_0000_0000_0000;
+pub const cursor_command_id: u64 = grid_id_base + 0x1_0000_0000;
 
 /// One text run's staging capacity — shared by the paint loop's scratch
 /// and the preflight's per-cell cap so measure and emission agree.
@@ -465,6 +466,10 @@ pub const PaintOptions = struct {
     /// The pty is live (cursor paints filled; an ended session paints
     /// the cursor hollow).
     running: bool,
+    /// Whether this terminal window currently owns keyboard focus.
+    /// A live cursor fills only while focused; blur leaves its outline
+    /// in place as the conventional inactive-terminal cue.
+    focused: bool = true,
     /// Selection mode is armed (the head cell paints a focus outline).
     selecting: bool,
     /// Hard ceiling on display-list commands this paint may emit — the
@@ -868,7 +873,8 @@ pub fn paint(session: *Session, builder: *canvas.Builder, options: PaintOptions)
         }
     }
 
-    // The cursor, over the ink: filled while live, hollow after exit.
+    // The cursor, over the ink: filled only while focused and live;
+    // blur or session exit leaves the conventional hollow outline.
     if (rs.cursor.visible) {
         if (rs.cursor.viewport) |cursor| {
             const cursor_x = origin_x + @as(f32, @floatFromInt(cursor.x)) * cell_w;
@@ -884,11 +890,19 @@ pub fn paint(session: *Session, builder: *canvas.Builder, options: PaintOptions)
                 .underline => geometry.RectF.init(cursor_x, cursor_y + cell_h - 2, cell_w, 2),
                 else => geometry.RectF.init(cursor_x, cursor_y, cell_w, cell_h),
             };
-            try builder.fillRect(.{
-                .id = grid_id_base + 0x1_0000_0000,
-                .rect = rect,
-                .fill = .{ .color = cursor_color },
-            });
+            if (options.focused and options.running) {
+                try builder.fillRect(.{
+                    .id = cursor_command_id,
+                    .rect = rect,
+                    .fill = .{ .color = cursor_color },
+                });
+            } else {
+                try builder.strokeRect(.{
+                    .id = cursor_command_id,
+                    .rect = rect,
+                    .stroke = .{ .fill = .{ .color = cursor_color }, .width = 1 },
+                });
+            }
         }
     }
 

@@ -957,7 +957,10 @@ const Session = if (enabled) struct {
                 cluster_bytes += cellClusterBytes(row.cells.get(x));
             }
         }
-        const cell_count = row_count * @min(col_count, canvas.max_terminal_cols);
+        // Widen before multiplying: `@min` against a comptime bound
+        // REFINES its result type to the bound's range (u7-by-u9 here),
+        // and the product does not fit the refined peer type.
+        const cell_count = @as(usize, row_count) * @as(usize, @min(col_count, canvas.max_terminal_cols));
         if (session.cells_buf.len < cell_count) {
             if (session.cells_buf.len > 0) gpa.free(session.cells_buf);
             session.cells_buf = &.{};

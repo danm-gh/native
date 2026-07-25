@@ -636,7 +636,7 @@ function withTransientNote(model: Model, note: Bytes): Model {
   };
 }
 
-export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "info_done": {
       // The macOS probe answered: exit 0 with two integers selects the
@@ -698,17 +698,17 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           ];
         }
       }
-      return { ...model, phase: "unsupported" };
+      return [{ ...model, phase: "unsupported" }, Cmd.none];
     }
     case "info2_err":
-      return { ...model, phase: "unsupported" };
+      return [{ ...model, phase: "unsupported" }, Cmd.none];
     case "tick": {
-      if (model.phase !== "ready" || model.paused) return model;
+      if (model.phase !== "ready" || model.paused) return [model, Cmd.none];
       // A tick that lands while the previous spawns still run is skipped
       // and counted — overlapping two ps runs would only add the load
       // this app measures.
       if (model.psInflight || model.memInflight) {
-        return { ...model, ticksSkipped: model.ticksSkipped + 1 };
+        return [{ ...model, ticksSkipped: model.ticksSkipped + 1 }, Cmd.none];
       }
       if (model.memCommand === "vmstat") {
         return [
@@ -739,7 +739,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "ps_done": {
       if (msg.code !== 0) {
-        return withNote({ ...model, psInflight: false }, asciiBytes(`ps failed (code ${msg.code})`));
+        return [withNote({ ...model, psInflight: false }, asciiBytes(`ps failed (code ${msg.code})`)), Cmd.none];
       }
       // The sample timestamp is a JOURNALED clock read (Cmd.now): under
       // session replay it resolves from the journal, so the same Msg
@@ -747,37 +747,37 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       return [appliedPsSample(model, parsePs(msg.output)), Cmd.now("stamped")];
     }
     case "ps_err":
-      return withNote(
+      return [withNote(
         { ...model, psInflight: false, parseFailures: model.parseFailures + 1 },
         concat3(asciiBytes("ps failed ("), msg.reason, asciiBytes(")")),
-      );
+      ), Cmd.none];
     case "mem_done": {
       if (msg.code !== 0) {
-        return withNote({ ...model, memInflight: false }, asciiBytes(`memory sample failed (code ${msg.code})`));
+        return [withNote({ ...model, memInflight: false }, asciiBytes(`memory sample failed (code ${msg.code})`)), Cmd.none];
       }
       const sample = model.memCommand === "vmstat" ? parseVmStat(msg.output) : parseMeminfo(msg.output);
       if (sample === null) {
-        return { ...model, memInflight: false, parseFailures: model.parseFailures + 1 };
+        return [{ ...model, memInflight: false, parseFailures: model.parseFailures + 1 }, Cmd.none];
       }
-      return appliedMemSample(model, sample);
+      return [appliedMemSample(model, sample), Cmd.none];
     }
     case "mem_err":
-      return withNote(
+      return [withNote(
         { ...model, memInflight: false, parseFailures: model.parseFailures + 1 },
         concat3(asciiBytes("memory sample failed ("), msg.reason, asciiBytes(")")),
-      );
+      ), Cmd.none];
     case "stamped":
-      return { ...model, sampledAtDayMs: msg.at % 86400000 };
+      return [{ ...model, sampledAtDayMs: msg.at % 86400000 }, Cmd.none];
     case "toggle_sampling": {
       if (!model.paused) {
         // Pause: the subscription reconciles away after this commit.
-        return { ...model, paused: true };
+        return [{ ...model, paused: true }, Cmd.none];
       }
       // Resume: the subscription re-arms, and the eager sample runs now
       // (the Zig original samples immediately on resume too).
-      if (model.phase !== "ready") return { ...model, paused: false };
+      if (model.phase !== "ready") return [{ ...model, paused: false }, Cmd.none];
       if (model.psInflight || model.memInflight) {
-        return { ...model, paused: false, ticksSkipped: model.ticksSkipped + 1 };
+        return [{ ...model, paused: false, ticksSkipped: model.ticksSkipped + 1 }, Cmd.none];
       }
       if (model.memCommand === "vmstat") {
         return [
@@ -807,32 +807,32 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ];
     }
     case "search_edit":
-      return { ...model, search: searchApply(model.search, msg.edit) };
+      return [{ ...model, search: searchApply(model.search, msg.edit) }, Cmd.none];
     case "table_scrolled":
-      return { ...model, tableScroll: msg.scroll.offsetY };
+      return [{ ...model, tableScroll: msg.scroll.offsetY }, Cmd.none];
     case "sort_cpu":
-      return sortedBy(model, "cpu");
+      return [sortedBy(model, "cpu"), Cmd.none];
     case "sort_mem":
-      return sortedBy(model, "mem");
+      return [sortedBy(model, "mem"), Cmd.none];
     case "sort_pid":
-      return sortedBy(model, "pid");
+      return [sortedBy(model, "pid"), Cmd.none];
     case "sort_name":
-      return sortedBy(model, "name");
+      return [sortedBy(model, "name"), Cmd.none];
     case "row_pressed":
-      return model;
+      return [model, Cmd.none];
     case "request_kill": {
       const row = model.rows.find((r) => r.pid === msg.pid);
       if (row === undefined) {
-        return withNote(model, asciiBytes(`pid ${msg.pid} is gone (it left the sample)`));
+        return [withNote(model, asciiBytes(`pid ${msg.pid} is gone (it left the sample)`)), Cmd.none];
       }
       // Copy the target out of the row at request time, so a later
       // sample can never retarget a confirmation the user is reading.
-      return { ...model, pendingKill: { pid: row.pid, name: row.name } };
+      return [{ ...model, pendingKill: { pid: row.pid, name: row.name } }, Cmd.none];
     }
     case "cancel_kill":
-      return { ...model, pendingKill: null };
+      return [{ ...model, pendingKill: null }, Cmd.none];
     case "confirm_kill": {
-      if (model.pendingKill === null) return model;
+      if (model.pendingKill === null) return [model, Cmd.none];
       const pid = model.pendingKill.pid;
       // SIGTERM only — the graceful, catchable request. There is no
       // SIGKILL anywhere in this app.
@@ -854,30 +854,30 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // the delivery notice retires with them instead of sitting in the
       // footer forever (a sample already in flight predates the kill
       // and cannot).
-      if (msg.code === 0) return withTransientNote(model, asciiBytes("terminate request delivered"));
-      return withNote(
+      if (msg.code === 0) return [withTransientNote(model, asciiBytes("terminate request delivered")), Cmd.none];
+      return [withNote(
         model,
         emDashJoin(asciiBytes(`kill failed (code ${msg.code}`), asciiBytes("not your process?)")),
-      );
+      ), Cmd.none];
     }
     case "kill_err":
-      return withNote(model, concat3(asciiBytes("kill failed ("), msg.reason, asciiBytes(")")));
+      return [withNote(model, concat3(asciiBytes("kill failed ("), msg.reason, asciiBytes(")"))), Cmd.none];
     case "copy_name": {
       const row = model.rows.find((r) => r.pid === msg.pid);
-      if (row === undefined) return model;
+      if (row === undefined) return [model, Cmd.none];
       // Fire-and-forget: the clipboard op has no result routing, so the
       // note reports the request (the Zig original notes the outcome).
       return [withNote(model, asciiBytes("name copy requested")), Cmd.clipboardWrite(row.name)];
     }
     case "chrome_changed":
-      return {
+      return [{
         ...model,
         chromeLeading: msg.insets.left,
         // Match the header to the titlebar band so its centered controls
         // share the traffic lights' centerline; the natural height is the
         // floor when no band overlays the content.
         headerHeight: Math.max(HEADER_NATURAL_HEIGHT, msg.insets.top),
-      };
+      }, Cmd.none];
   }
 }
 

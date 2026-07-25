@@ -674,30 +674,30 @@ export function queueLen(model: Model): number {
 
 // ------------------------------------------------------------------ update
 
-export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "show_albums":
-      return { ...model, tab: "albums", libraryScrollTop: 0 };
+      return [{ ...model, tab: "albums", libraryScrollTop: 0 }, Cmd.none];
     case "show_songs":
-      return { ...model, tab: "songs", libraryScrollTop: 0 };
+      return [{ ...model, tab: "songs", libraryScrollTop: 0 }, Cmd.none];
     case "open_album": {
       // Resolve the payload id against the table and store the TABLE's
       // id: markup payloads arrive as wire f64s, and keeping every id in
       // the model integer-classed starts here.
       const album = ALBUMS.find((a) => a.id === msg.id);
-      if (album === undefined) return model;
+      if (album === undefined) return [model, Cmd.none];
       // Every page change resets the controlled scroll: the offset is
       // model state, so the fresh page opens at its top.
-      return { ...model, openAlbum: album.id, tab: "albums", libraryScrollTop: 0 };
+      return [{ ...model, openAlbum: album.id, tab: "albums", libraryScrollTop: 0 }, Cmd.none];
     }
     case "close_album":
-      return { ...model, openAlbum: null, libraryScrollTop: 0 };
+      return [{ ...model, openAlbum: null, libraryScrollTop: 0 }, Cmd.none];
     case "play_album": {
       const album = ALBUMS.find((a) => a.id === msg.id);
-      if (album === undefined) return model;
+      if (album === undefined) return [model, Cmd.none];
       const albumId = album.id;
       const first = TRACKS.find((t) => t.album === albumId && t.number === 1);
-      if (first === undefined) return model;
+      if (first === undefined) return [model, Cmd.none];
       return [
         startedModel(model, first.id, first.durationMs),
         Cmd.audioPlay(
@@ -715,7 +715,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         return [{ ...model, playing: true }, Cmd.audioResume("player")];
       }
       const track = TRACKS.find((t) => t.id === msg.id);
-      if (track === undefined) return model;
+      if (track === undefined) return [model, Cmd.none];
       return [
         startedModel(model, track.id, track.durationMs),
         Cmd.audioPlay(
@@ -742,9 +742,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "next_track": {
       const target = nextTrackId(model);
-      if (target === 0) return model;
+      if (target === 0) return [model, Cmd.none];
       const track = trackById(target);
-      if (track === undefined) return model;
+      if (track === undefined) return [model, Cmd.none];
       return [
         startedModel(dequeued(model, target), track.id, track.durationMs),
         Cmd.audioPlay(
@@ -755,16 +755,16 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ];
     }
     case "prev_track": {
-      if (model.now === null) return model;
+      if (model.now === null) return [model, Cmd.none];
       // Restart the current track when it is a few seconds in — the same
       // 3s rule as the original (this is the seek verb's home here).
       if (model.elapsedMs > 3000) {
         return [{ ...model, elapsedMs: 0 }, Cmd.audioSeek("player", 0)];
       }
       const target = previousTrackId(model);
-      if (target === 0) return model;
+      if (target === 0) return [model, Cmd.none];
       const track = trackById(target);
-      if (track === undefined) return model;
+      if (track === undefined) return [model, Cmd.none];
       return [
         startedModel(model, track.id, track.durationMs),
         Cmd.audioPlay(
@@ -776,39 +776,39 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     }
     case "queue_track": {
       const track = TRACKS.find((t) => t.id === msg.id);
-      if (track === undefined) return model;
-      if (model.queue.some((q) => q.id === track.id)) return model;
+      if (track === undefined) return [model, Cmd.none];
+      if (model.queue.some((q) => q.id === track.id)) return [model, Cmd.none];
       if (model.queue.length >= MAX_QUEUE) {
-        return { ...model, queueDropped: model.queueDropped + 1 };
+        return [{ ...model, queueDropped: model.queueDropped + 1 }, Cmd.none];
       }
-      return { ...model, queue: [...model.queue, { id: track.id }] };
+      return [{ ...model, queue: [...model.queue, { id: track.id }] }, Cmd.none];
     }
     case "copy_title": {
       const track = TRACKS.find((t) => t.id === msg.id);
-      if (track === undefined) return model;
+      if (track === undefined) return [model, Cmd.none];
       return [
         { ...model, copiesRequested: model.copiesRequested + 1 },
         Cmd.clipboardWrite(track.title),
       ];
     }
     case "search_edit":
-      return { ...model, search: searchApply(model.search, msg.edit) };
+      return [{ ...model, search: searchApply(model.search, msg.edit) }, Cmd.none];
     case "audio_event": {
       switch (msg.state) {
         case "loaded": {
           const next = adoptPlatformDuration(model, msg.durationMs);
-          return {
+          return [{
             ...next,
             loadPending: false,
             elapsedMs: msg.positionMs,
             playing: msg.playing,
             buffering: msg.buffering,
-          };
+          }, Cmd.none];
         }
         case "position": {
           // One audio channel: a position from the replaced playback can
           // land before the new track's `loaded` — drop it by the guard.
-          if (model.loadPending || model.now === null) return model;
+          if (model.loadPending || model.now === null) return [model, Cmd.none];
           const next = adoptPlatformDuration(model, msg.durationMs);
           // The coarse tick corrects the rendered clock. In motion,
           // forward corrections apply and small backward ones hold flat
@@ -819,25 +819,25 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
               msg.positionMs > next.elapsedMs ||
               next.elapsedMs - msg.positionMs > POSITION_SNAP_SLACK_MS
             ) {
-              return { ...next, elapsedMs: msg.positionMs, buffering: msg.buffering };
+              return [{ ...next, elapsedMs: msg.positionMs, buffering: msg.buffering }, Cmd.none];
             }
-            return { ...next, buffering: msg.buffering };
+            return [{ ...next, buffering: msg.buffering }, Cmd.none];
           }
-          return { ...next, elapsedMs: msg.positionMs, buffering: msg.buffering };
+          return [{ ...next, elapsedMs: msg.positionMs, buffering: msg.buffering }, Cmd.none];
         }
         // Band-magnitude analysis frames are consciously ignored — the
         // soundboard's identity is the clean catalog (parity with the
         // original, which drops them the same way).
         case "spectrum":
-          return model;
+          return [model, Cmd.none];
         case "completed": {
           // A stale completion (from the replaced playback) must never
           // double-advance.
-          if (model.loadPending || model.now === null) return model;
+          if (model.loadPending || model.now === null) return [model, Cmd.none];
           const target = nextTrackId(model);
-          if (target === 0) return model;
+          if (target === 0) return [model, Cmd.none];
           const track = trackById(target);
-          if (track === undefined) return model;
+          if (track === undefined) return [model, Cmd.none];
           return [
             startedModel(dequeued(model, target), track.id, track.durationMs),
             Cmd.audioPlay(
@@ -856,7 +856,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           // local assets are simply not prepared — the Zig original's
           // launch split, now expressible because the wiring delivers
           // the override as a Msg.
-          return {
+          return [{
             ...model,
             now: null,
             playing: false,
@@ -867,11 +867,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
             elapsedMs: 0,
             nowDurationMs: 0,
             platformDurationMs: 0,
-          };
+          }, Cmd.none];
       }
     }
     case "scrubbed": {
-      if (model.now === null || model.loadPending || model.nowDurationMs < 1) return model;
+      if (model.now === null || model.loadPending || model.nowDurationMs < 1) return [model, Cmd.none];
       // The slider's applied 0..1 fraction into whole milliseconds at
       // per-mille granularity: the permille counts in the integer domain
       // while the fraction accumulates in the float domain (the NS1016
@@ -899,11 +899,11 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // The controlled-scroll echo: the applied offset lands in the
       // model, so the next rebuild's `value` binding never fights the
       // runtime (and page changes reset it to 0 above).
-      return { ...model, libraryScrollTop: msg.scroll.offsetY };
+      return [{ ...model, libraryScrollTop: msg.scroll.offsetY }, Cmd.none];
     case "canvas_resized":
-      return { ...model, canvasWidth: msg.width };
+      return [{ ...model, canvasWidth: msg.width }, Cmd.none];
     case "url_base_set":
-      return { ...model, urlBase: msg.value };
+      return [{ ...model, urlBase: msg.value }, Cmd.none];
     case "chrome_changed":
       // Pad whichever edge the platform puts its window controls on
       // (macOS: traffic lights leading; Windows: min/max/close trailing
@@ -911,21 +911,21 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // header to the titlebar band so its centered controls share the
       // traffic lights' centerline; the natural height is the floor when
       // no band overlays the content (the Zig original's rule).
-      return {
+      return [{
         ...model,
         chromeLeading: msg.insets.left,
         chromeTrailing: msg.insets.right,
         headerHeight: Math.max(HEADER_NATURAL_HEIGHT, msg.insets.top),
-      };
+      }, Cmd.none];
     case "clock_tick": {
-      if (!model.playing || model.now === null || model.buffering) return model;
+      if (!model.playing || model.now === null || model.buffering) return [model, Cmd.none];
       // Fixed per-fire advance: the subscription fires on its own
       // cadence, so each tick steps exactly one interval — a burst of
       // queued fires is bounded by construction — and the position
       // events correct any drift. The clock never passes the total.
       const advanced = model.elapsedMs + CLOCK_TICK_MS;
       const cap = model.nowDurationMs > 0 ? model.nowDurationMs : advanced;
-      return { ...model, elapsedMs: Math.min(advanced, cap) };
+      return [{ ...model, elapsedMs: Math.min(advanced, cap) }, Cmd.none];
     }
   }
 }

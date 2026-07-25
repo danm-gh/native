@@ -168,13 +168,13 @@ function applyDraftEdit(draft: Uint8Array, edit: TextInputEvent): Uint8Array {
   }
 }
 
-export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "add": {
       const slot = model.nextId % 3;
       const title = slot === 0 ? asciiBytes("alpha") : slot === 1 ? asciiBytes("beta") : asciiBytes("gamma");
       const added: Task = { id: model.nextId, title: title, done: false };
-      return { ...model, tasks: [...model.tasks, added], nextId: model.nextId + 1 };
+      return [{ ...model, tasks: [...model.tasks, added], nextId: model.nextId + 1 }, Cmd.none];
     }
     case "toggle": {
       const next = model.tasks.map((t) => (t.id === msg.id ? { ...t, done: !t.done } : t));
@@ -184,33 +184,33 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
           done = done + 1;
         }
       }
-      return { ...model, tasks: next, doneCount: done };
+      return [{ ...model, tasks: next, doneCount: done }, Cmd.none];
     }
     case "pick":
-      return { ...model, selected: msg.id };
+      return [{ ...model, selected: msg.id }, Cmd.none];
     case "hover_row":
-      return { ...model, hoveredId: msg.id };
+      return [{ ...model, hoveredId: msg.id }, Cmd.none];
     case "hover_off":
-      return model.hoveredId === msg.id ? { ...model, hoveredId: 0 } : model;
+      return [model.hoveredId === msg.id ? { ...model, hoveredId: 0 } : model, Cmd.none];
     case "cycle":
-      return { ...model, filter: model.filter === "all" ? "open" : model.filter === "open" ? "done" : "all" };
+      return [{ ...model, filter: model.filter === "all" ? "open" : model.filter === "open" ? "done" : "all" }, Cmd.none];
     case "clear":
-      return { ...model, tasks: [], doneCount: 0, selected: null, banner: asciiBytes("cleared") };
+      return [{ ...model, tasks: [], doneCount: 0, selected: null, banner: asciiBytes("cleared") }, Cmd.none];
     case "stamp":
       return [model, Cmd.now("stamped")];
     case "stamped":
-      return { ...model, stampMs: msg.at };
+      return [{ ...model, stampMs: msg.at }, Cmd.none];
     case "draft_edit":
-      return { ...model, draft: applyDraftEdit(model.draft, msg.edit) };
+      return [{ ...model, draft: applyDraftEdit(model.draft, msg.edit) }, Cmd.none];
     case "canvas_resized":
-      return { ...model, canvasWidth: msg.width };
+      return [{ ...model, canvasWidth: msg.width }, Cmd.none];
     case "zoomed":
-      return { ...model, zoom: model.zoom * msg.factor, zoomWindowId: msg.windowId, zoomFromBoard: msg.fromBoard };
+      return [{ ...model, zoom: model.zoom * msg.factor, zoomWindowId: msg.windowId, zoomFromBoard: msg.fromBoard }, Cmd.none];
     case "appearance_changed":
-      return { ...model, dark: msg.colorScheme === "dark" };
+      return [{ ...model, dark: msg.colorScheme === "dark" }, Cmd.none];
     case "chrome_changed":
-      return { ...model, chromeTop: msg.insets.top };
+      return [{ ...model, chromeTop: msg.insets.top }, Cmd.none];
     case "banner_set":
-      return { ...model, banner: msg.value };
+      return [{ ...model, banner: msg.value }, Cmd.none];
   }
 }

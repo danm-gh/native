@@ -1,0 +1,45 @@
+{
+  "profile_format": 1,
+  "name": "native-sdk-markup-core",
+  "entry": "core_adapter.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "nsc_core_",
+    "init_symbol": "nsc_core_init",
+    "sink_register_symbol": "nsc_core_set_panic_sink",
+    "collect_symbol": "nsc_core_collect",
+    "result_reset_symbol": "nsc_core_frame_reset"
+  },
+  "exports": [
+    { "export": "boot_cmd", "symbol": "nsc_core_boot_cmd", "params": [], "returns": "bytes" },
+    { "export": "dispatch_void", "symbol": "nsc_core_dispatch_void", "params": ["u8"], "returns": "bytes" },
+    { "export": "dispatch_bytes", "symbol": "nsc_core_dispatch_bytes", "params": ["u8", "bytes"], "returns": "bytes" },
+    { "export": "dispatch_number", "symbol": "nsc_core_dispatch_number", "params": ["u8", "f64"], "returns": "bytes" },
+    { "export": "dispatch_number_bytes", "symbol": "nsc_core_dispatch_number_bytes", "params": ["u8", "f64", "bytes"], "returns": "bytes" },
+    { "export": "dispatch_bool", "symbol": "nsc_core_dispatch_bool", "params": ["u8", "u8"], "returns": "bytes" },
+    { "export": "dispatch_enum", "symbol": "nsc_core_dispatch_enum", "params": ["u8", "u32"], "returns": "bytes" },
+    { "export": "dispatch_record", "symbol": "nsc_core_dispatch_record", "params": ["u8", "bytes"], "returns": "bytes" },
+    { "export": "dispatch_text_input", "symbol": "nsc_core_dispatch_text_input", "params": ["u8", "bytes"], "returns": "bytes" },
+    { "export": "dispatch_scroll_state", "symbol": "nsc_core_dispatch_scroll_state", "params": ["u8", "f64", "f64", "f64", "f64", "f64", "f64", "f64", "f64"], "returns": "bytes" },
+    { "export": "subscriptions", "symbol": "nsc_core_subscriptions", "params": [], "returns": "bytes" },
+    { "export": "model_snapshot", "symbol": "nsc_core_model_snapshot", "params": [], "returns": "bytes" },
+    { "export": "helper_call", "symbol": "nsc_core_helper_call", "params": ["u32", "bytes"], "returns": "bytes" },
+    { "export": "abi_frame_msg", "symbol": "nsc_core_frame_msg", "params": ["f64", "f64", "f64", "f64"], "returns": "bytes" },
+    { "export": "abi_key_msg", "symbol": "nsc_core_key_msg", "params": ["bytes", "u8", "u8", "u8", "u8"], "returns": "bytes" },
+    { "export": "abi_pinch_msg", "symbol": "nsc_core_pinch_msg", "params": ["f64", "bytes", "u32", "f64", "f64", "f64"], "returns": "bytes" }
+  ],
+  "sidecar": {
+    "path": "core.contract.json",
+    "wire_version": 3,
+    "abi_version": 1,
+    "snapshot_format": 1,
+    "build_id_symbol": "nsc_core_build_id",
+    "abi_version_symbol": "nsc_core_abi_version",
+    "model": "Model",
+    "msg": "Msg",
+    "init_export": "init",
+    "update_export": "coreUpdate",
+    "subscriptions_export": "coreSubscriptions",
+    "integer_slots": []
+  }
+}

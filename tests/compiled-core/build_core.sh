@@ -6,7 +6,7 @@
 #   NATIVE_SDK_CORE_COMPILER="<toolchain command>" \
 #     tests/compiled-core/build_core.sh <fixture> <workdir>
 #
-#   <fixture>: ai-chat | soundboard | system-monitor | host-fixture
+#   <fixture>: ai-chat | soundboard | system-monitor | host-fixture | markup
 #   <workdir>: scratch directory (created; contents replaced)
 #
 # The stage carries: the AUTHOR'S core sources verbatim except for
@@ -45,8 +45,12 @@ case "$fixture" in
     sources="tests/ts-core/fixture.ts"
     adapter="host_fixture_adapter.ts"
     ;;
+  markup)
+    sources="tests/ts-core/markup_fixture.ts"
+    adapter="markup_adapter.ts"
+    ;;
   *)
-    echo "unknown fixture \"$fixture\" (ai-chat | soundboard | system-monitor | host-fixture)" >&2
+    echo "unknown fixture \"$fixture\" (ai-chat | soundboard | system-monitor | host-fixture | markup)" >&2
     exit 2
     ;;
 esac

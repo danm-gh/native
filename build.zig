@@ -3168,6 +3168,10 @@ fn tsCoreE2eArtifact(
         second_mod: ?*std.Build.Module = null,
     }{
         .{ .name = "host", .supply = compiledCoreEnv(b, "HOST"), .ts_mod = fixture_mod, .root = b.path("tests/ts-core/host_e2e_tests.zig"), .core_import = "ts_core_fixture", .second_import = "ts_markup_fixture", .second_mod = markup_fixture_mod },
+        // The markup battery is the mirror image of the host one: the
+        // markup fixture's core pairs, and the host fixture rides along
+        // transpiler-only as the second lane.
+        .{ .name = "markup", .supply = compiledCoreEnv(b, "MARKUP"), .ts_mod = markup_fixture_mod, .root = b.path("tests/ts-core/markup_e2e_tests.zig"), .core_import = "ts_markup_fixture", .second_import = "ts_core_fixture", .second_mod = fixture_mod },
         .{ .name = "soundboard", .supply = compiledCoreEnv(b, "SOUNDBOARD"), .ts_mod = soundboard_core_mod, .root = soundboard_root, .core_import = "ts_soundboard_core" },
         .{ .name = "system-monitor", .supply = compiledCoreEnv(b, "SYSTEM_MONITOR"), .ts_mod = monitor_core_mod, .root = monitor_root, .core_import = "ts_system_monitor_core" },
         .{ .name = "ai-chat", .supply = compiledCoreEnv(b, "AI_CHAT"), .ts_mod = ai_chat_core_mod, .root = ai_chat_root, .core_import = "ts_ai_chat_core" },

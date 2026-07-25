@@ -60,6 +60,25 @@ pub fn update(model: *Model, msg: Msg) void {
 
 `pty` is the model-owned pty key — one `{binding}`, never a markup literal, exactly like `<media-surface surface>` and `<image image>`. A `<terminal>` without it is refused at validation the way a `<media-surface>` without `surface` is: dead markup can never attach a session. The grid derives its `cols`/`rows` from the frame the layout gives it, so size the element like any leaf (`grow`, or a definite `width`/`height`); the runtime pushes the derived size to the pty with `ptyResize`.
 
+Behind the binding, the runtime owns the session: it feeds the key's output batches into the emulator as they are journaled, encodes the focused element's keys and committed IME text back through `ptyWrite`, answers the device queries a program sends (cursor position, device attributes), scrolls history on the wheel, and reports the applied view state through `on-terminal`. Because every byte in both directions crosses the journaled effect boundary, a recorded session replays to the same screen with no shell present — the same guarantee the raw vocabulary gives, through the element.
+
+### Enabling live sessions
+
+The emulator is opt-in per app, so an app that never renders a terminal never pays for one. Pin `ghostty` as a **lazy** dependency in your app's `build.zig.zon` and ask for sessions in its `build.zig`:
+
+```zig
+pub fn build(b: *std.Build) void {
+    _ = native_sdk.addAppArtifacts(b, b.dependency("native_sdk", .{}), .{
+        .name = "workbench",
+        .terminal_sessions = true,
+    });
+}
+```
+
+Without that flag — every scaffolded app, by default — `<terminal>` renders its empty surface and the build never traverses the emulator's dependency graph. `native_sdk.runtime.terminal_sessions_enabled` reports which half the build carries, so an app's tests can gate on it.
+
+[`examples/workbench`](https://github.com/native-sdk/native-sdk/tree/main/examples/workbench) is the element end to end: a live shell beside a browser in one resizable split, with no emulator wiring in the app at all.
+
 The rest of this page is the effect vocabulary the element sits on — spawn a pty yourself when you want the raw stream, or let the element own the session end to end.
 
 ## Spawn, then stream

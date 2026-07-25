@@ -183,6 +183,17 @@ pub const TerminalCellMetrics = struct {
     font_size: f32,
 };
 
+/// Glyphs in the advance probe. A row paints as MERGED text runs the
+/// text layout advances itself, so the cell width has to be the layout's
+/// own advance: one glyph's measured width is its box, which on a real
+/// mono face sits inside the advance, and the difference compounds
+/// across a run until the row's tail clips at the widget edge. Measuring
+/// a run and dividing takes the advance the layout will actually use
+/// (every mono cell the same), so column N lands where the painter's
+/// backgrounds, cursor, and selection put it.
+const advance_probe_len = 16;
+const advance_probe = "M" ** advance_probe_len;
+
 pub fn cellMetrics(tokens: canvas.DesignTokens) TerminalCellMetrics {
     const font_size = tokens.typography.label_size;
     const height = @round(font_size * 1.4);
@@ -190,10 +201,16 @@ pub fn cellMetrics(tokens: canvas.DesignTokens) TerminalCellMetrics {
     const measured = canvas.measureTextWidthForFont(
         tokens.text_measure,
         tokens.typography.mono_font_id,
-        "M",
+        advance_probe,
         font_size,
     );
-    if (measured > 0) width = measured;
+    if (measured > 0) width = measured / advance_probe_len;
+    // Deliberately NOT quantized to the device pixel grid: the cell
+    // width has to be the advance the text renderer actually walks a
+    // merged run by, and that advance is the face's, not a rounded one.
+    // Rounding it — even to a whole device pixel — makes every glyph in
+    // a run land a fraction past its cell, and by column 50 the drift is
+    // visible against the cell backgrounds, cursor, and selection.
     return .{ .width = width, .height = height, .font_size = font_size };
 }
 
@@ -747,6 +764,25 @@ pub fn paint(grid: TerminalGrid, builder: *canvas.Builder, options: TerminalPain
                     ),
                     .color = run_fg,
                     .text = run_text,
+                    // The run carries the measurement seam for one
+                    // reason: a command's raster extent comes from its
+                    // own declared bounds, and without a provider those
+                    // bounds are the estimator's 0.6 em mono pitch. A
+                    // host face with a wider pitch (macOS resolves the
+                    // mono id to the system monospaced face at 0.618 em
+                    // when Geist Mono is absent) then inks past the
+                    // declared extent, and a full-width row loses its
+                    // last cell — measured: column 50 of 50 sheared to a
+                    // two-pixel sliver. Measuring the run the way the
+                    // host inks it makes the bounds cover the ink for
+                    // whatever face resolves. Line breaking stays off
+                    // (`wrap = .none`, no `max_width`), so the run still
+                    // paints as one line at this exact baseline.
+                    .text_layout = .{
+                        .wrap = .none,
+                        .line_height = cell_h,
+                        .measure = tokens.text_measure,
+                    },
                 });
                 if (run_underline) {
                     try builder.fillRect(.{

@@ -682,6 +682,75 @@ test "the path reserve holds one maximal filled-line chart series" {
     try testing.expect(grid_model.widget_path_reserve >= 2 * canvas.max_chart_points_per_series + 3);
 }
 
+/// A mono face with a WIDER pitch than the estimator's 0.6 em — what
+/// macOS resolves the mono id to when Geist Mono is absent (the system
+/// monospaced face, 0.618 em). Everything mono measures at this pitch,
+/// so cells and runs both derive from it.
+const wide_pitch_em: f32 = 0.62;
+
+fn measureWidePitch(context: ?*anyopaque, font_id: canvas.FontId, size: f32, text: []const u8) f32 {
+    _ = context;
+    _ = font_id;
+    var count: f32 = 0;
+    var index: usize = 0;
+    while (index < text.len) : (index += 1) {
+        if (text[index] & 0xc0 != 0x80) count += 1;
+    }
+    return count * size * wide_pitch_em;
+}
+
+const wide_pitch_provider = canvas.TextMeasureProvider{ .measure_fn = measureWidePitch };
+
+test "a full-width row's runs declare bounds that cover their ink" {
+    // The regression: a merged run's raster extent is its own declared
+    // bounds, and an estimator-only bound (0.6 em) falls short of a
+    // wider host face's ink — the row's last cell sheared off at the
+    // widget edge. Cells and bounds must both come from the measurement
+    // the host inks with.
+    const tokens = canvas.DesignTokens{ .text_measure = &wide_pitch_provider };
+    const metrics = grid_model.cellMetrics(tokens);
+    try testing.expectApproxEqAbs(
+        tokens.typography.label_size * wide_pitch_em,
+        metrics.width,
+        0.001,
+    );
+
+    const row_cells = comptime asciiRow("0123456789012345678901234567890123456789", white);
+    const rows = [_]grid_model.TerminalRow{.{ .cells = &row_cells }};
+    const frame = geometry.RectF.init(
+        0,
+        0,
+        metrics.width * @as(f32, @floatFromInt(row_cells.len)),
+        metrics.height * 2,
+    );
+
+    var commands: [512]canvas.CanvasCommand = undefined;
+    var builder = try paintInto(baseGrid(&rows), &commands, .{
+        .frame = frame,
+        .tokens = tokens,
+    });
+
+    var saw_run = false;
+    for (builder.displayList().commands) |command| {
+        switch (command) {
+            .draw_text => |text| {
+                saw_run = true;
+                const bounds = canvas.CanvasCommand{ .draw_text = text };
+                const rect = bounds.bounds() orelse return error.MissingTextBounds;
+                const cells: f32 = @floatFromInt(text.text.len);
+                const ink_right = text.origin.x + cells * metrics.width;
+                try testing.expect(rect.x + rect.width >= ink_right);
+                // The run's own frame has to hold it too — a row that
+                // fits the grid's columns can never need more width
+                // than the cells it was measured into.
+                try testing.expect(ink_right <= frame.x + frame.width + 0.001);
+            },
+            else => {},
+        }
+    }
+    try testing.expect(saw_run);
+}
+
 test "cell metrics derive from the mono face and never collapse" {
     const metrics = grid_model.cellMetrics(.{});
     try testing.expect(metrics.width > 0);

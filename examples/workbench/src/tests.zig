@@ -1,0 +1,417 @@
+//! Workbench tests: the markup's shape (one live terminal, one browser
+//! toolbar, no tabs), the app-owned navigation history behind the web
+//! pane, and the headline — a live pty session flowing through the
+//! `<terminal>` element with no emulator wiring in this app at all.
+
+const std = @import("std");
+const native_sdk = @import("native_sdk");
+const app = @import("main.zig");
+
+const canvas = native_sdk.canvas;
+const geometry = native_sdk.geometry;
+const testing = std.testing;
+
+const Model = app.Model;
+const Msg = app.Msg;
+const WorkbenchUi = canvas.Ui(Msg);
+const WorkbenchApp = native_sdk.UiApp(Model, Msg);
+
+fn buildTree(arena: std.mem.Allocator, model: *const Model) !WorkbenchUi.Tree {
+    var ui = WorkbenchUi.init(arena);
+    return ui.finalize(app.CompiledWorkbenchView.build(&ui, model));
+}
+
+fn findByLabel(widget: canvas.Widget, label: []const u8) ?canvas.Widget {
+    if (std.mem.eql(u8, widget.semantics.label, label)) return widget;
+    for (widget.children) |child| {
+        if (findByLabel(child, label)) |found| return found;
+    }
+    return null;
+}
+
+fn findByKind(widget: canvas.Widget, kind: canvas.WidgetKind) ?canvas.Widget {
+    if (widget.kind == kind) return widget;
+    for (widget.children) |child| {
+        if (findByKind(child, kind)) |found| return found;
+    }
+    return null;
+}
+
+fn countKind(widget: canvas.Widget, kind: canvas.WidgetKind) usize {
+    var total: usize = if (widget.kind == kind) 1 else 0;
+    for (widget.children) |child| total += countKind(child, kind);
+    return total;
+}
+
+/// A booted model: the history seeded and the shell spawn requested,
+/// exactly as `init_fx` leaves it.
+fn bootedModel(fx: *app.Effects) Model {
+    var model: Model = .{};
+    app.boot(&model, fx);
+    return model;
+}
+
+fn fakeEffects() app.Effects {
+    var fx = app.Effects.init(testing.allocator);
+    fx.executor = .fake;
+    return fx;
+}
+
+// ------------------------------------------------------------------ layout
+
+test "the markup lays a terminal-left split with a browser toolbar and no tabs" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+
+    const tree = try buildTree(arena_state.allocator(), &model);
+
+    // One split, laid at the terminal's default third.
+    const split = findByKind(tree.root, .split) orelse return error.TestUnexpectedResult;
+    try testing.expectApproxEqAbs(@as(f32, 1.0 / 3.0), split.value, 0.0001);
+    // Two panes with the builder-synthesized divider between them.
+    try testing.expectEqual(@as(usize, 3), split.children.len);
+    try testing.expectEqual(canvas.WidgetKind.split_divider, split.children[1].kind);
+
+    // The terminal pane is the FIRST child (left), and the browser
+    // toolbar lives in the last — the demo's fixed geometry.
+    try testing.expect(findByKind(split.children[0], .terminal) != null);
+    try testing.expect(findByLabel(split.children[2], "Browser toolbar") != null);
+
+    // Exactly one terminal, bound to the model's pty key with the
+    // scrollback echo — the element carries the binding, not this app.
+    try testing.expectEqual(@as(usize, 1), countKind(tree.root, .terminal));
+    const terminal = findByLabel(tree.root, "Shell") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(canvas.WidgetKind.terminal, terminal.kind);
+    try testing.expectEqual(app.shell_effect_key, terminal.terminal.pty);
+    try testing.expectEqual(@as(u32, 0), terminal.terminal.scrollback);
+
+    // The browser chrome is the whole toolbar: back, forward, reload,
+    // address bar — and nothing else. No tabs anywhere in the tree.
+    const toolbar = findByLabel(tree.root, "Browser toolbar") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 3), countKind(toolbar, .button));
+    try testing.expectEqual(@as(usize, 1), countKind(toolbar, .text_field));
+    try testing.expectEqual(@as(usize, 3), countKind(tree.root, .button));
+    try testing.expectEqual(@as(usize, 0), countKind(tree.root, .tabs));
+
+    // The address bar shows the committed URL after boot.
+    const address = findByLabel(tree.root, "Address") orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings(app.home_url, address.text);
+
+    // The web pane's anchor exists for the webview to snap to.
+    const anchor = findByLabel(tree.root, app.web_pane_anchor) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 0), anchor.children.len);
+}
+
+test "the split fraction and the terminal scrollback echo back into the view" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+
+    // The divider drag reports the applied fraction; the next build lays
+    // the panes at exactly that value (the controlled-split contract).
+    app.update(&model, .{ .split_resized = 0.62 }, &fx);
+    try testing.expectApproxEqAbs(@as(f32, 0.62), model.split_fraction, 0.0001);
+
+    // The terminal reports its applied view state; the binding hands the
+    // scrollback back, so wheel scrollback survives rebuilds.
+    app.update(&model, .{ .term_state = .{ .scrollback = 12, .history = 400, .cols = 80, .rows = 24 } }, &fx);
+    try testing.expectEqual(@as(u32, 12), model.term_scrollback);
+
+    const tree = try buildTree(arena_state.allocator(), &model);
+    const split = findByKind(tree.root, .split) orelse return error.TestUnexpectedResult;
+    try testing.expectApproxEqAbs(@as(f32, 0.62), split.value, 0.0001);
+    const terminal = findByLabel(tree.root, "Shell") orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(u32, 12), terminal.terminal.scrollback);
+}
+
+test "the titlebar band clears the traffic lights and floors before the first chrome report" {
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+
+    // No chrome report yet: the band still holds a terminal-window band.
+    try testing.expect(model.titlebar_band() >= 38);
+
+    app.update(&model, .{ .chrome_changed = .{ .insets = .{ .top = 52, .left = 0, .right = 0, .bottom = 0 } } }, &fx);
+    try testing.expectEqual(@as(f32, 60), model.titlebar_band());
+
+    // Fullscreen hides the lights (zero insets) and the band holds its
+    // floor rather than snapping the terminal upward.
+    app.update(&model, .{ .chrome_changed = .{ .insets = .{ .top = 0, .left = 0, .right = 0, .bottom = 0 } } }, &fx);
+    try testing.expectEqual(@as(f32, 38), model.titlebar_band());
+}
+
+// -------------------------------------------------------------- navigation
+
+test "the address bar commits a navigation the web pane picks up" {
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+    var panes: [1]WorkbenchApp.WebViewPane = undefined;
+
+    // Boot: the home page is the pane's URL, and back/forward are dead.
+    try testing.expectEqual(@as(usize, 1), app.webPanes(&model, &panes));
+    try testing.expectEqualStrings(app.web_view_label, panes[0].label);
+    try testing.expectEqualStrings(app.web_pane_anchor, panes[0].anchor orelse "");
+    try testing.expectEqualStrings(app.home_url, panes[0].url);
+    try testing.expect(model.back_disabled());
+    try testing.expect(model.forward_disabled());
+
+    // Typing alone navigates NOTHING: the pane follows committed
+    // history, never the in-progress edit.
+    app.update(&model, .{ .address_edit = .{ .insert_text = "!" } }, &fx);
+    _ = app.webPanes(&model, &panes);
+    try testing.expectEqualStrings(app.home_url, panes[0].url);
+
+    // Submitting commits it.
+    app.update(&model, .navigate, &fx);
+    _ = app.webPanes(&model, &panes);
+    try testing.expectEqualStrings("https://ziglang.org!", panes[0].url);
+    try testing.expect(!model.back_disabled());
+    try testing.expect(model.forward_disabled());
+}
+
+test "a bare host normalizes to https and an empty address is a no-op" {
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+
+    model.address_field.set("example.com");
+    app.update(&model, .navigate, &fx);
+    try testing.expectEqualStrings("https://example.com", model.currentUrl());
+    // The bar shows the normalized URL, not what was typed.
+    try testing.expectEqualStrings("https://example.com", model.address());
+
+    // An explicit scheme passes through untouched.
+    model.address_field.set("http://example.org/page");
+    app.update(&model, .navigate, &fx);
+    try testing.expectEqualStrings("http://example.org/page", model.currentUrl());
+
+    // Blank (or whitespace) commits nothing and leaves history alone.
+    const before = model.history_count;
+    model.address_field.set("   ");
+    app.update(&model, .navigate, &fx);
+    try testing.expectEqual(before, model.history_count);
+    try testing.expectEqualStrings("http://example.org/page", model.currentUrl());
+}
+
+test "back and forward walk the app-owned history, and a new navigation drops the tail" {
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+
+    model.address_field.set("https://a.example");
+    app.update(&model, .navigate, &fx);
+    model.address_field.set("https://b.example");
+    app.update(&model, .navigate, &fx);
+    try testing.expectEqual(@as(usize, 3), model.history_count);
+
+    // Back walks to the previous entry and re-fills the address bar.
+    app.update(&model, .go_back, &fx);
+    try testing.expectEqualStrings("https://a.example", model.currentUrl());
+    try testing.expectEqualStrings("https://a.example", model.address());
+    try testing.expect(!model.forward_disabled());
+
+    // Forward returns.
+    app.update(&model, .go_forward, &fx);
+    try testing.expectEqualStrings("https://b.example", model.currentUrl());
+    try testing.expect(model.forward_disabled());
+
+    // Navigating from mid-history drops the forward entries.
+    app.update(&model, .go_back, &fx);
+    app.update(&model, .go_back, &fx);
+    try testing.expectEqualStrings(app.home_url, model.currentUrl());
+    try testing.expect(model.back_disabled());
+    model.address_field.set("https://c.example");
+    app.update(&model, .navigate, &fx);
+    try testing.expectEqual(@as(usize, 2), model.history_count);
+    try testing.expect(model.forward_disabled());
+
+    // Past the ends both verbs are no-ops (the buttons are disabled
+    // there, and the model refuses regardless).
+    app.update(&model, .go_forward, &fx);
+    try testing.expectEqualStrings("https://c.example", model.currentUrl());
+    app.update(&model, .go_back, &fx);
+    app.update(&model, .go_back, &fx);
+    try testing.expectEqualStrings(app.home_url, model.currentUrl());
+}
+
+test "the navigation buttons disable at the ends of history" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+
+    const fresh = try buildTree(arena_state.allocator(), &model);
+    try testing.expect((findByLabel(fresh.root, "Back") orelse return error.TestUnexpectedResult).state.disabled);
+    try testing.expect((findByLabel(fresh.root, "Forward") orelse return error.TestUnexpectedResult).state.disabled);
+    try testing.expect(!(findByLabel(fresh.root, "Reload") orelse return error.TestUnexpectedResult).state.disabled);
+
+    model.address_field.set("https://a.example");
+    app.update(&model, .navigate, &fx);
+    const navigated = try buildTree(arena_state.allocator(), &model);
+    try testing.expect(!(findByLabel(navigated.root, "Back") orelse return error.TestUnexpectedResult).state.disabled);
+    try testing.expect((findByLabel(navigated.root, "Forward") orelse return error.TestUnexpectedResult).state.disabled);
+}
+
+test "reload bumps the pane token without changing the URL" {
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+    var panes: [1]WorkbenchApp.WebViewPane = undefined;
+
+    _ = app.webPanes(&model, &panes);
+    const before = panes[0].reload_token;
+    app.update(&model, .reload, &fx);
+    _ = app.webPanes(&model, &panes);
+    try testing.expect(panes[0].reload_token != before);
+    try testing.expectEqualStrings(app.home_url, panes[0].url);
+}
+
+// ------------------------------------------------------------ live session
+
+test "boot spawns the shell against the key the terminal element binds" {
+    var fx = fakeEffects();
+    defer fx.deinit();
+    var model = bootedModel(&fx);
+
+    try testing.expectEqual(@as(usize, 1), fx.pendingPtyCount());
+    const request = fx.pendingPtyAt(0) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(app.shell_effect_key, request.key);
+    try testing.expectEqualStrings(app.default_shell_argv[0], request.argv[0]);
+    try testing.expectEqual(model.shell_key(), request.key);
+    try testing.expect(!model.shell_live);
+}
+
+const webview_origins = [_][]const u8{ "zero://inline", "zero://app", "*" };
+
+const Harness = struct {
+    harness: *native_sdk.TestHarness(),
+    app_state: *WorkbenchApp,
+    app_iface: native_sdk.App,
+
+    fn create() !Harness {
+        const harness = try native_sdk.TestHarness().create(testing.allocator, .{
+            .size = geometry.SizeF.init(app.window_width, app.window_height),
+        });
+        errdefer harness.destroy(testing.allocator);
+        harness.null_platform.gpu_surfaces = true;
+        // The scene declares a webview; the harness runtime allows the
+        // origins the app's own security policy allows.
+        harness.runtime.options.security.navigation.allowed_origins = &webview_origins;
+
+        const app_state = try testing.allocator.create(WorkbenchApp);
+        errdefer testing.allocator.destroy(app_state);
+        app_state.* = WorkbenchApp.init(testing.allocator, .{}, .{
+            .name = "workbench",
+            .scene = app.shell_scene,
+            .canvas_label = app.canvas_label,
+            .update_fx = app.update,
+            .init_fx = app.boot,
+            .view = app.CompiledWorkbenchView.build,
+            .on_chrome = app.onChrome,
+            .web_panes = app.webPanes,
+        });
+        errdefer app_state.deinit();
+
+        const app_iface = app_state.app();
+        try harness.start(app_iface);
+        app_state.effects.executor = .fake;
+        var self = Harness{ .harness = harness, .app_state = app_state, .app_iface = app_iface };
+        try self.frame();
+        return self;
+    }
+
+    fn destroy(self: *Harness) void {
+        self.app_state.deinit();
+        testing.allocator.destroy(self.app_state);
+        self.harness.destroy(testing.allocator);
+    }
+
+    var frame_index: u64 = 0;
+
+    fn frame(self: *Harness) !void {
+        frame_index += 1;
+        try self.harness.runtime.dispatchPlatformEvent(self.app_iface, .{ .gpu_surface_frame = .{
+            .label = app.canvas_label,
+            .size = geometry.SizeF.init(app.window_width, app.window_height),
+            .scale_factor = 2,
+            .frame_index = frame_index,
+            .timestamp_ns = frame_index * 16_000_000,
+        } });
+        try self.harness.runtime.dispatchPlatformEvent(self.app_iface, .wake);
+        try self.harness.runtime.dispatchPlatformEvent(self.app_iface, .frame_requested);
+    }
+
+    fn click(self: *Harness, x: f32, y: f32) !void {
+        try self.harness.runtime.dispatchPlatformEvent(self.app_iface, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = app.canvas_label,
+            .kind = .pointer_down,
+            .x = x,
+            .y = y,
+        } });
+    }
+
+    fn typeText(self: *Harness, text: []const u8) !void {
+        try self.harness.runtime.dispatchPlatformEvent(self.app_iface, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = app.canvas_label,
+            .kind = .text_input,
+            .text = text,
+        } });
+    }
+
+    /// The grid the painter would draw: resolved through the runtime's
+    /// installed lookup, exactly as the retained tree reads it.
+    fn grid(self: *Harness) !*const canvas.TerminalGrid {
+        const lookup = self.app_state.terminal_sessions.lookup() orelse return error.TestExpectedGrid;
+        return lookup.resolve(lookup.context, app.shell_effect_key) orelse error.TestExpectedGrid;
+    }
+};
+
+test "a live pty session flows through the <terminal> element: output, typing, resize" {
+    if (comptime !native_sdk.runtime.terminal_sessions_enabled) return error.SkipZigTest;
+    var h = try Harness.create();
+    defer h.destroy();
+
+    // The element's binding requested the session; boot's spawn is the
+    // only pty wiring this app performs.
+    try testing.expectEqual(@as(usize, 1), h.app_state.effects.pendingPtyCount());
+
+    // Shell output reaches the emulator through the effects tap and
+    // lands as real cells in the grid the painter reads.
+    try h.app_state.effects.feedPtyOutput(app.shell_effect_key, "demo$ echo hi\r\nhi\r\ndemo$ ");
+    try h.frame();
+    try testing.expect(h.app_state.model.shell_live);
+    const grid = try h.grid();
+    try testing.expect(grid.running);
+    try testing.expect(std.mem.indexOf(u8, grid.screen_text, "echo hi") != null);
+    try testing.expect(std.mem.indexOf(u8, grid.screen_text, "hi") != null);
+
+    // The layout drove the pty's size: the left third of a 1280x800
+    // window is a real cols/rows pair, reported once.
+    const size = h.app_state.effects.ptySize(app.shell_effect_key) orelse return error.TestUnexpectedResult;
+    try testing.expect(size.cols > 0 and size.rows > 0);
+    try testing.expectEqual(size.rows, @as(u16, @intCast(grid.rows.len)));
+
+    // Focus the terminal (a click in the left pane) and type: the
+    // keystrokes reach the pty through the journaled write path, with
+    // no app-side keyboard handling at all.
+    try h.click(200, 400);
+    try h.typeText("ls");
+    try testing.expectEqualStrings("ls", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
+
+    // The session ends exactly once and the app notes it.
+    try h.app_state.effects.feedPtyExit(app.shell_effect_key, 0, 0, .exited, 0);
+    try h.frame();
+    try testing.expect(h.app_state.model.shell_exited);
+    try testing.expect(!h.app_state.model.shell_live);
+    try testing.expect(!(try h.grid()).running);
+}

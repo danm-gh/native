@@ -2423,6 +2423,20 @@ test "mac webview presses report the focused child label" {
     try std.testing.expect(std.mem.indexOf(u8, host_source, ".view_label = label") != null);
 }
 
+test "mac Chromium webview focus reports the focused child label" {
+    // CEF's focus handler is the engine-level ownership edge: it covers
+    // pointer, keyboard, and programmatic focus without predicting from
+    // a press. A generation guard keeps a closing/replaced child from
+    // publishing its old label after runtime storage has moved on.
+    const host_source = @embedFile("cef_host.mm");
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "public CefFocusHandler") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "CefRefPtr<CefFocusHandler> GetFocusHandler() override") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "void NativeSdkCefClient::OnGotFocus") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "webViewGeneration:webview_generation_ matchesKey:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, ".kind = NATIVE_SDK_APPKIT_EVENT_VIEW_FOCUSED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "emitViewFocusedForWindowId:window_id_ label:") != null);
+}
+
 test "mac dock icon fallback renders the embedded toolkit default" {
     // The exact pipeline `defaultDockIconRenderMain` hands the host:
     // decode the embedded default and render the packaging canvas. This

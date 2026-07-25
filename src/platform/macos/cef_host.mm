@@ -16,6 +16,7 @@
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
 #include "include/cef_application_mac.h"
+#include "include/cef_focus_handler.h"
 #include "include/cef_load_handler.h"
 #include "include/cef_process_message.h"
 #include "include/cef_values.h"
@@ -102,7 +103,7 @@ private:
     IMPLEMENT_REFCOUNTING(NativeSdkCefBridgeV8Handler);
 };
 
-class NativeSdkCefClient final : public CefClient, public CefLifeSpanHandler, public CefLoadHandler, public CefRequestHandler {
+class NativeSdkCefClient final : public CefClient, public CefLifeSpanHandler, public CefLoadHandler, public CefRequestHandler, public CefFocusHandler {
 public:
     explicit NativeSdkCefClient(NativeSdkChromiumHost *host, uint64_t window_id) : host_(host), window_id_(window_id) {}
     NativeSdkCefClient(NativeSdkChromiumHost *host, uint64_t window_id, std::string webview_key, uint64_t webview_generation, bool bridge_enabled) : host_(host), window_id_(window_id), webview_key_(webview_key), webview_generation_(webview_generation), bridge_enabled_(bridge_enabled) {}
@@ -119,8 +120,13 @@ public:
         return this;
     }
 
+    CefRefPtr<CefFocusHandler> GetFocusHandler() override {
+        return this;
+    }
+
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
     void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
+    void OnGotFocus(CefRefPtr<CefBrowser> browser) override;
     void OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode errorCode, const CefString& errorText, const CefString& failedUrl) override;
     bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefRequest> request, bool user_gesture, bool is_redirect) override;
     bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefProcessId source_process, CefRefPtr<CefProcessMessage> message) override;
@@ -595,6 +601,7 @@ static const char *NativeSdkCefBridgeScript() {
 - (void)emitWindowFrameForWindowId:(uint64_t)windowId open:(BOOL)open;
 - (void)emitFrame;
 - (void)emitShutdown;
+- (void)emitViewFocusedForWindowId:(uint64_t)windowId label:(NSString *)label;
 - (void)loadSource:(NSString *)source kind:(NSInteger)kind assetRoot:(NSString *)assetRoot entry:(NSString *)entry origin:(NSString *)origin spaFallback:(BOOL)spaFallback;
 - (void)loadSource:(NSString *)source kind:(NSInteger)kind assetRoot:(NSString *)assetRoot entry:(NSString *)entry origin:(NSString *)origin spaFallback:(BOOL)spaFallback windowId:(uint64_t)windowId;
 - (void)setAllowedNavigationOrigins:(NSArray<NSString *> *)origins externalURLs:(NSArray<NSString *> *)externalURLs externalAction:(NSInteger)externalAction;
@@ -1188,6 +1195,18 @@ static const char *NativeSdkCefBridgeScript() {
 
 - (void)emitEvent:(native_sdk_appkit_event_t)event {
     if (self.callback) self.callback(self.context, &event);
+}
+
+- (void)emitViewFocusedForWindowId:(uint64_t)windowId label:(NSString *)label {
+    NSWindow *window = self.windows[@(windowId)] ?: (windowId == 1 ? self.window : nil);
+    if (!window || label.length == 0) return;
+    const char *labelBytes = label.UTF8String ?: "";
+    [self emitEvent:(native_sdk_appkit_event_t){
+        .kind = NATIVE_SDK_APPKIT_EVENT_VIEW_FOCUSED,
+        .window_id = windowId,
+        .view_label = labelBytes,
+        .view_label_len = strlen(labelBytes),
+    }];
 }
 
 - (void)startApplicationActivationObservers {
@@ -2002,6 +2021,18 @@ void NativeSdkCefClient::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
     if (webview_key_.empty()) return;
     NSString *key = [[NSString alloc] initWithBytes:webview_key_.data() length:webview_key_.size() encoding:NSUTF8StringEncoding];
     [host_ cleanupClosedWebViewWithKey:key ?: @"" generation:webview_generation_];
+}
+
+void NativeSdkCefClient::OnGotFocus(CefRefPtr<CefBrowser> browser) {
+    (void)browser;
+    if (!host_) return;
+    if (!webview_key_.empty()) {
+        NSString *key = [[NSString alloc] initWithBytes:webview_key_.data() length:webview_key_.size() encoding:NSUTF8StringEncoding];
+        if (![host_ webViewGeneration:webview_generation_ matchesKey:key ?: @""]) return;
+    }
+    const std::string label = WebViewLabel();
+    NSString *labelString = [[NSString alloc] initWithBytes:label.data() length:label.size() encoding:NSUTF8StringEncoding];
+    [host_ emitViewFocusedForWindowId:window_id_ label:labelString ?: @""];
 }
 
 void NativeSdkCefClient::OnLoadError(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, ErrorCode errorCode, const CefString& errorText, const CefString& failedUrl) {

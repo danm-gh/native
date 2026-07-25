@@ -496,7 +496,7 @@ test "runtime dispatches routed canvas widget pointer events" {
     try std.testing.expect(app_state.last_keyboard_shift);
 }
 
-test "a focused terminal owns Tab instead of moving focus" {
+test "only a focused live terminal owns Tab and focus entry suppresses the whole gesture" {
     const TestApp = struct {
         keyboard_count: u32 = 0,
         target_id: canvas.ObjectId = 0,
@@ -542,12 +542,18 @@ test "a focused terminal owns Tab instead of moving focus" {
         .kind = .gpu_surface,
         .frame = geometry.RectF.init(0, 0, 320, 180),
     });
-    const children = [_]canvas.Widget{
+    var terminal_grid = canvas.TerminalGrid{
+        .background = canvas.Color.rgba(0, 0, 0, 1),
+        .foreground = canvas.Color.rgba(1, 1, 1, 1),
+        .cursor_color = canvas.Color.rgba(1, 1, 1, 1),
+        .selection_color = canvas.Color.rgba(0, 0.5, 1, 1),
+    };
+    var children = [_]canvas.Widget{
         .{
             .id = 2,
             .kind = .terminal,
             .frame = geometry.RectF.init(10, 10, 200, 100),
-            .terminal = .{ .pty = 7 },
+            .terminal = .{ .pty = 7, .grid = &terminal_grid },
         },
         .{
             .id = 3,
@@ -587,6 +593,104 @@ test "a focused terminal owns Tab instead of moving focus" {
     try std.testing.expectEqual(@as(canvas.ObjectId, 2), app_state.target_id);
     try std.testing.expectEqual(canvas.WidgetKind.terminal, app_state.target_kind);
     try std.testing.expect(!app_state.focus_moved);
+
+    // A Tab pressed while the terminal already owns focus is terminal
+    // input for its whole lifetime, including the release protocols
+    // such as kitty keyboard reporting can encode.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_up,
+        .key = "tab",
+    } });
+    try std.testing.expectEqual(@as(u32, 2), app_state.keyboard_count);
+
+    // The inverse gesture is focus traversal: Shift+Tab from the button
+    // enters the live terminal, but its repeat and release must not be
+    // reinterpreted against the newly focused pty.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = 240,
+        .y = 24,
+    } });
+    try std.testing.expectEqual(@as(canvas.ObjectId, 3), harness.runtime.views[0].canvas_widget_focused_id);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "tab",
+        .modifiers = .{ .shift = true },
+    } });
+    try std.testing.expectEqual(@as(u32, 3), app_state.keyboard_count);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_focused_id);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), app_state.target_id);
+    try std.testing.expect(app_state.focus_moved);
+    try std.testing.expect(harness.runtime.views[0].canvas_widget_terminal_focus_entry_tab_held);
+
+    // Auto-repeat while Tab is held, then its key-up: neither produces
+    // another widget event at the terminal.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "tab",
+        .modifiers = .{ .shift = true },
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_up,
+        .key = "tab",
+        .modifiers = .{ .shift = true },
+    } });
+    try std.testing.expectEqual(@as(u32, 3), app_state.keyboard_count);
+    try std.testing.expect(!harness.runtime.views[0].canvas_widget_terminal_focus_entry_tab_held);
+
+    // The same nonzero binding after session exit is no longer an input
+    // owner: its published grid says the session cannot accept input,
+    // so Tab resumes ordinary traversal to the button.
+    terminal_grid.running = false;
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "tab",
+    } });
+    try std.testing.expectEqual(@as(u32, 4), app_state.keyboard_count);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 3), harness.runtime.views[0].canvas_widget_focused_id);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 3), app_state.target_id);
+    try std.testing.expect(app_state.focus_moved);
+
+    // The explicit unbound sentinel behaves the same even if a caller
+    // supplied a running-looking grid by mistake: no pty means no Tab
+    // input owner.
+    terminal_grid.running = true;
+    children[0].terminal.pty = 0;
+    const unbound_layout = try canvas.layoutWidgetTree(
+        .{ .id = 1, .kind = .panel, .children = &children },
+        geometry.RectF.init(0, 0, 320, 180),
+        &nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", unbound_layout);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = 40,
+        .y = 40,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "tab",
+    } });
+    try std.testing.expectEqual(@as(u32, 5), app_state.keyboard_count);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 3), harness.runtime.views[0].canvas_widget_focused_id);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 3), app_state.target_id);
+    try std.testing.expect(app_state.focus_moved);
 }
 
 test "runtime routes captured canvas pointer drags without outside release activation" {

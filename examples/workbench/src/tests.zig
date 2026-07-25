@@ -416,10 +416,63 @@ test "a live pty session flows through the <terminal> element: output, typing, r
     } });
     try testing.expectEqualStrings("ls\t", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
 
+    // Entering the live terminal is still traversal for the WHOLE
+    // physical Shift+Tab: neither an auto-repeat nor the matching
+    // release may leak into the pty (kitty reports releases, so this
+    // covers the otherwise-invisible orphan-release case too).
+    try h.app_state.effects.feedPtyOutput(app.shell_effect_key, "\x1b[>11u");
+    try h.frame();
+    const layout = try h.harness.runtime.canvasWidgetLayout(1, app.canvas_label);
+    var terminal_id: canvas.ObjectId = 0;
+    var divider_id: canvas.ObjectId = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .terminal) terminal_id = node.widget.id;
+        if (node.widget.kind == .split_divider) divider_id = node.widget.id;
+    }
+    try testing.expect(terminal_id != 0);
+    try testing.expect(divider_id != 0);
+    const view_index = h.harness.runtime.findViewIndex(1, app.canvas_label) orelse return error.TestUnexpectedResult;
+    h.harness.runtime.views[view_index].canvas_widget_focused_id = divider_id;
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .key_down,
+        .key = "tab",
+        .modifiers = .{ .shift = true },
+    } });
+    try testing.expectEqual(terminal_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .key_down,
+        .key = "tab",
+        .modifiers = .{ .shift = true },
+    } });
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .key_up,
+        .key = "tab",
+        .modifiers = .{ .shift = true },
+    } });
+    try testing.expectEqualStrings("ls\t", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
+
     // The session ends exactly once and the app notes it.
     try h.app_state.effects.feedPtyExit(app.shell_effect_key, 0, 0, .exited, 0);
     try h.frame();
     try testing.expect(h.app_state.model.shell_exited);
     try testing.expect(!h.app_state.model.shell_live);
     try testing.expect(!(try h.grid()).running);
+
+    // The binding remains the nonzero model-owned effect key after
+    // exit, but the grid is no longer running. Tab therefore leaves
+    // the terminal instead of becoming a dead-session focus trap.
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .key_down,
+        .key = "tab",
+    } });
+    try testing.expectEqual(divider_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
+    try testing.expectEqualStrings("", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
 }

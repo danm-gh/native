@@ -159,6 +159,12 @@ pub fn clearImeGraceOnViewBlur(runtime: anytype, view: *RuntimeView) void {
     // otherwise leave the carry armed to swallow the refocused view's
     // first unrelated commit.
     view.canvas_widget_claimed_key_grace = .none;
+    // A Tab that entered a live terminal suppresses its repeats and
+    // release until the physical key comes up. If the view blurs first,
+    // that release may never arrive here; retire the latch with the
+    // other view-local input graces so a later Tab is never mistaken
+    // for the tail of the old gesture.
+    view.canvas_widget_terminal_focus_entry_tab_held = false;
     if ((runtime.targetless_ime_preedit_len > 0 or
         runtime.targetless_ime_commit_grace) and
         runtime.targetless_ime_preedit_window == view.window_id and
@@ -525,6 +531,12 @@ pub const RuntimeView = struct {
     /// one is still held, on hosts that emit input-method text before
     /// its key_down) flows instead of being eaten by a stale latch.
     canvas_widget_claimed_key_grace: CanvasWidgetClaimedKeyGrace = .none,
+    /// A physical Tab whose first key-down moved focus INTO a live
+    /// terminal. Its auto-repeats and eventual release still belong to
+    /// focus traversal, not the newly focused pty; the gpu-input pass
+    /// suppresses those transitions and clears this on key-up (or view
+    /// blur through `clearImeGraceOnViewBlur`).
+    canvas_widget_terminal_focus_entry_tab_held: bool = false,
     canvas_widget_focus_visible_id: canvas.ObjectId = 0,
     /// True when `canvas_widget_focus_visible_id` was written by the
     /// KEYBOARD focus contract (`setCanvasWidgetFocusFromKeyboard`) —

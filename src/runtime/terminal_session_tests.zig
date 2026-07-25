@@ -94,6 +94,80 @@ test "binding a pty key publishes a live grid that carries fed output as real ce
     try testing.expectApproxEqAbs(tokens.colors.destructive.r, red_cell.fg.r, 0.2);
 }
 
+test "pointer gestures select terminal cells words and lines for clipboard copy" {
+    if (comptime !terminal_session.enabled) return error.SkipZigTest;
+    var store = TerminalSessions.init(testing.allocator);
+    defer store.deinit();
+    var gw = TestGateway{ .gpa = testing.allocator };
+    defer gw.deinit();
+    store.setGateway(gw.gateway());
+    store.beginBuild(.{});
+    _ = store.reconcile(8, 0, 20, 4) orelse return error.TestExpectedState;
+    feedOutput(&store, 8, "alpha beta\r\ngamma delta");
+    _ = resolveGrid(&store, 8) orelse return error.TestExpectedGrid;
+
+    // Default tokens resolve to 8x18 cells. A primary drag from the
+    // first cell through the fifth selects "alpha".
+    _ = store.pointerSelection(8, .{
+        .phase = .down,
+        .x = 2,
+        .y = 5,
+        .width = 160,
+        .height = 72,
+    });
+    const drag = store.pointerSelection(8, .{
+        .phase = .move,
+        .x = 39,
+        .y = 5,
+        .width = 160,
+        .height = 72,
+    });
+    try testing.expect(drag.changed);
+    try testing.expect(drag.selection_active);
+    const release = store.pointerSelection(8, .{
+        .phase = .up,
+        .x = 39,
+        .y = 5,
+        .width = 160,
+        .height = 72,
+    });
+    try testing.expect(release.selection_active);
+    var grid = resolveGrid(&store, 8) orelse return error.TestExpectedGrid;
+    try testing.expectEqualStrings("alpha", grid.selection_text);
+    try testing.expectEqualDeep(@as(?[2]u16, .{ 0, 4 }), grid.rows[0].selection);
+
+    // The runtime's journaled click count chooses Ghostty's standard
+    // word and line behaviors without a second click clock.
+    _ = store.pointerSelection(8, .{
+        .phase = .down,
+        .x = 60,
+        .y = 5,
+        .width = 160,
+        .height = 72,
+        .click_count = 2,
+    });
+    grid = resolveGrid(&store, 8) orelse return error.TestExpectedGrid;
+    try testing.expectEqualStrings("beta", grid.selection_text);
+
+    _ = store.pointerSelection(8, .{
+        .phase = .down,
+        .x = 18,
+        .y = 5,
+        .width = 160,
+        .height = 72,
+        .click_count = 3,
+    });
+    grid = resolveGrid(&store, 8) orelse return error.TestExpectedGrid;
+    try testing.expectEqualStrings("alpha beta", grid.selection_text);
+
+    // Input sent to the child dismisses the live selection. Cmd/Ctrl+C
+    // is intercepted by the app loop before it reaches this path.
+    try testing.expect(store.textInput(8, "x"));
+    grid = resolveGrid(&store, 8) orelse return error.TestExpectedGrid;
+    try testing.expect(!grid.selection_active);
+    try testing.expectEqualStrings("", grid.selection_text);
+}
+
 test "committed text and encoded keys reach the pty through the gateway in stdin order" {
     if (comptime !terminal_session.enabled) return error.SkipZigTest;
     var store = TerminalSessions.init(testing.allocator);

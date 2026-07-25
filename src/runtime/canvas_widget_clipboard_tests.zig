@@ -168,6 +168,46 @@ test "keyboard-only selection (shift+arrows) feeds copy" {
     try std.testing.expectEqualStrings("ry", try harness.runtime.readClipboard(&clipboard_buffer));
 }
 
+test "a focused terminal copies its emulator selection" {
+    var app_state: ClipboardTestApp = .{};
+    const app = app_state.app();
+    const harness = try createClipboardHarness(app);
+    defer harness.destroy(std.testing.allocator);
+
+    var grid = canvas.TerminalGrid{
+        .background = canvas.Color.rgba(0, 0, 0, 1),
+        .foreground = canvas.Color.rgba(1, 1, 1, 1),
+        .cursor_color = canvas.Color.rgba(1, 1, 1, 1),
+        .selection_color = canvas.Color.rgba(0, 0.5, 1, 1),
+        .screen_text = "alpha beta",
+        .selection_text = "beta",
+        .selection_active = true,
+    };
+    const terminal = canvas.Widget{
+        .id = 2,
+        .kind = .terminal,
+        .frame = geometry.RectF.init(12, 16, 200, 80),
+        .terminal = .{ .pty = 7, .grid = &grid },
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{terminal} }, geometry.RectF.init(0, 0, 320, 200), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_down, 40, 40));
+    try harness.runtime.dispatchPlatformEvent(app, keyInput("c", cmd));
+
+    var clipboard_buffer: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("beta", try harness.runtime.readClipboard(&clipboard_buffer));
+
+    // An active whitespace-only selection owns Copy too: its trimmed
+    // text is empty, so it clears rather than falling through to some
+    // unrelated selection in the view.
+    grid.selection_text = "";
+    try harness.runtime.writeClipboard("stale");
+    try harness.runtime.dispatchPlatformEvent(app, keyInput("c", cmd));
+    try std.testing.expectEqualStrings("", try harness.runtime.readClipboard(&clipboard_buffer));
+}
+
 test "a multi-line paste into a single-line field strips line breaks; a textarea keeps them" {
     var app_state: ClipboardTestApp = .{};
     const app = app_state.app();

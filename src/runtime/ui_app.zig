@@ -4448,6 +4448,55 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             return map(chrome);
         }
 
+        /// Route primary pointer selection into a bound terminal before
+        /// ordinary press dispatch. The layout query supplies the
+        /// terminal's resolved frame; coordinates are translated into
+        /// the same padded content box the painter and size reconcile
+        /// use, then Ghostty owns cell snapping and tracked selection
+        /// pins. Returns whether an active selection should suppress a
+        /// release-time `on_press`.
+        fn handleTerminalPointer(self: *Self, runtime: *Runtime, pointer_event: core.CanvasWidgetPointerEvent) anyerror!bool {
+            if (comptime !terminal_session.enabled) return false;
+            switch (pointer_event.pointer.phase) {
+                .down, .move, .up, .cancel => {},
+                .hover, .wheel => return false,
+            }
+            if (pointer_event.pointer.phase == .down and pointer_event.pointer.button != 0) return false;
+            const target = pointer_event.target orelse return false;
+            const layout = runtime.canvasWidgetLayout(pointer_event.window_id, pointer_event.view_label) catch return false;
+            var terminal_node: ?canvas.WidgetLayoutNode = null;
+            for (layout.nodes) |node| {
+                if (node.widget.id != target.id) continue;
+                if (node.widget.kind != .terminal or node.widget.terminal.pty == 0) return false;
+                terminal_node = node;
+                break;
+            }
+            const node = terminal_node orelse return false;
+            if (!self.terminal_sessions.hasSession(node.widget.terminal.pty)) return false;
+
+            const frame = node.frame.normalized();
+            const padding = node.widget.layout.padding;
+            const declared = padding.left + padding.top + padding.right + padding.bottom > 0;
+            const inset: geometry.InsetsF = if (declared) padding else geometry.InsetsF.all(8);
+            const content = geometry.RectF.init(
+                frame.x + inset.left,
+                frame.y + inset.top,
+                @max(0, frame.width - inset.left - inset.right),
+                @max(0, frame.height - inset.top - inset.bottom),
+            );
+            if (content.isEmpty()) return false;
+            const result = self.terminal_sessions.pointerSelection(node.widget.terminal.pty, .{
+                .phase = pointer_event.pointer.phase,
+                .x = pointer_event.pointer.point.x - content.x,
+                .y = pointer_event.pointer.point.y - content.y,
+                .width = content.width,
+                .height = content.height,
+                .click_count = pointer_event.pointer.click_count,
+            });
+            if (result.changed) try self.repaintTerminals(runtime, pointer_event.window_id);
+            return pointer_event.pointer.phase == .up and result.selection_active;
+        }
+
         /// Typed press dispatch resolves through the press target — the
         /// deepest widget on the hit path that claims presses — so a press
         /// on a pressable row's plain text children lands on the row's
@@ -4458,6 +4507,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         /// Msg), and any release/cancel disarms it.
         fn handlePointer(self: *Self, runtime: *Runtime, pointer_event: core.CanvasWidgetPointerEvent) anyerror!void {
             const tree = self.treeForViewLabel(pointer_event.view_label) orelse return;
+            const terminal_selected = try self.handleTerminalPointer(runtime, pointer_event);
             switch (pointer_event.pointer.phase) {
                 .down => {
                     self.disarmHold(runtime);
@@ -4495,6 +4545,9 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                     }
                 }
             }
+            // A selection gesture owns the release the way a static
+            // text drag does: keep its highlight and dispatch no press.
+            if (terminal_selected) return;
             const target = pointer_event.press_target orelse return;
             // A released press on a synthesized fallback menu item is a
             // context-menu selection, not an ordinary press: it resolves
@@ -5306,6 +5359,20 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                         // session declines, and the key falls through
                         // (an app may bind a restart chord).
                         if (widget.kind == .terminal and widget.terminal.pty != 0) {
+                            // The runtime clipboard pass already copied
+                            // this emulator selection. Do not forward the
+                            // same Cmd/Ctrl+C chord to the child (where
+                            // Ctrl+C would be an interrupt).
+                            const copy_chord = (keyboard_event.keyboard.phase == .key_down or keyboard_event.keyboard.phase == .key_up) and
+                                keyboard_event.keyboard.modifiers.hasCommandModifier() and
+                                !keyboard_event.keyboard.modifiers.alt and
+                                !keyboard_event.keyboard.modifiers.shift and
+                                std.ascii.eqlIgnoreCase(keyboard_event.keyboard.key, "c");
+                            if (copy_chord) {
+                                if (widget.terminal.grid) |grid| {
+                                    if (grid.selection_active) return;
+                                }
+                            }
                             if (self.terminal_sessions.keyEvent(widget.terminal.pty, keyboard_event.keyboard)) {
                                 try self.repaintTerminals(runtime, keyboard_event.window_id);
                                 return;

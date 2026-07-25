@@ -81,10 +81,11 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
 
         /// The press target a routed pointer event dispatches to, with the
         /// press-vs-drag disambiguation applied: a release that ends a
-        /// static-text selection drag is a selection gesture, not a click,
-        /// so it presses no one (the selection it made stays live for
-        /// copy). A plain click collapses the selection on `.down`, so it
-        /// reaches `.up` collapsed and the press lands normally.
+        /// static-text or terminal selection drag is a selection
+        /// gesture, not a click, so it presses no one (the selection it
+        /// made stays live for copy). A plain click collapses the
+        /// selection on `.down`, so it reaches `.up` collapsed and the
+        /// press lands normally.
         fn canvasWidgetPressTargetForRoute(
             self: *const Runtime,
             view_index: usize,
@@ -94,6 +95,12 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             const press_target = route.press_target orelse return null;
             if (pointer.phase != .up) return press_target;
             const raw = route.target orelse return press_target;
+            if (raw.kind == .terminal) {
+                const node = self.views[view_index].widgetLayoutTree().findById(raw.id) orelse return press_target;
+                const grid = node.widget.terminal.grid orelse return press_target;
+                if (grid.selection_active) return null;
+                return press_target;
+            }
             if (raw.kind != .text) return press_target;
             if (self.views[view_index].canvas_widget_selected_text_id != raw.id) return press_target;
             const node = self.views[view_index].widgetLayoutTree().findById(raw.id) orelse return press_target;

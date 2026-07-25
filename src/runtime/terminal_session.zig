@@ -54,6 +54,24 @@ pub const PtyGateway = struct {
     resize: *const fn (context: *anyopaque, key: u64, cols: u16, rows: u16) void,
 };
 
+/// One pointer event already translated into the terminal's padded
+/// content box. Coordinates remain unclamped so a captured drag beyond
+/// an edge extends to that edge; the session maps them onto its live
+/// emulator grid using the same cell metrics the snapshot painter uses.
+pub const PointerSelectionEvent = struct {
+    phase: canvas.WidgetPointerPhase,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    click_count: u8 = 1,
+};
+
+pub const PointerSelectionResult = struct {
+    changed: bool = false,
+    selection_active: bool = false,
+};
+
 pub const TerminalSessions = if (enabled) EnabledStore else DisabledStore;
 
 /// The stub-build store: every entry point compiles against the same
@@ -105,6 +123,12 @@ const DisabledStore = struct {
         _ = pty;
         _ = delta_y;
         return false;
+    }
+    pub fn pointerSelection(self: *DisabledStore, pty: u64, event: PointerSelectionEvent) PointerSelectionResult {
+        _ = self;
+        _ = pty;
+        _ = event;
+        return .{};
     }
     pub fn reconcile(self: *DisabledStore, pty: u64, bound_scrollback: u32, cols: u16, rows: u16) ?canvas.TerminalState {
         _ = self;
@@ -279,6 +303,7 @@ const EnabledStore = struct {
         if (!session.acceptsInput()) return false;
         const action: KeyAction = if (keyboard.phase == .key_up) .release else .press;
         if (keyboard.phase != .key_up and keyboard.phase != .key_down) return false;
+        session.clearSelectionForInput();
         session.encodeKeyEvent(self.gateway, pty, keyboard, action);
         return true;
     }
@@ -289,6 +314,7 @@ const EnabledStore = struct {
         const session = self.find(pty) orelse return false;
         if (!session.acceptsInput()) return false;
         if (text.len == 0) return true;
+        session.clearSelectionForInput();
         // Typing snaps the viewport to the live screen (every terminal's
         // rule); the cells only change when the echo comes back, so the
         // snapshot re-resolves only when the viewport actually moved.
@@ -319,6 +345,16 @@ const EnabledStore = struct {
         // scroll (the source-wins compare in `reconcile`).
         session.last_bound_scrollback = session.currentState().scrollback;
         return true;
+    }
+
+    /// Primary-pointer terminal selection. The emulator owns the
+    /// tracked pins and selection serialization; the canvas runtime
+    /// supplies only the gesture and the content-box geometry.
+    pub fn pointerSelection(self: *EnabledStore, pty: u64, event: PointerSelectionEvent) PointerSelectionResult {
+        const session = self.find(pty) orelse return .{};
+        const result = session.pointerSelection(event);
+        if (result.changed) session.snapshot_dirty = true;
+        return result;
     }
 
     /// The per-build view-state reconcile the app loop runs against the
@@ -452,7 +488,13 @@ const Session = if (enabled) struct {
     cells_buf: []canvas.TerminalCell = &.{},
     cluster_buf: []u8 = &.{},
     screen_text: []const u8 = &.{},
+    selection_text: ?[:0]const u8 = null,
     snapshot_dirty: bool = true,
+
+    /// Ghostty's gesture owns a tracked press pin across output and
+    /// viewport movement, so a drag continues selecting the same text
+    /// even when the page list shifts underneath it.
+    selection_gesture: vt.SelectionGesture = .init,
 
     /// Session lifecycle: exactly one exit ends every spawn; output on
     /// an ended session is a new spawn reusing the key.
@@ -463,7 +505,9 @@ const Session = if (enabled) struct {
     last_bound_scrollback: u32 = 0,
     last_reported: ?canvas.TerminalState = null,
     wheel_accum: f32 = 0,
-    /// Cell height at the last snapshot's tokens, for wheel-delta-to-rows.
+    /// Cell metrics at the last snapshot's tokens, shared by wheel
+    /// delta-to-rows and pointer-to-cell selection.
+    cell_width: f32 = 8,
     cell_height: f32 = 18,
 
     /// Query-answer buffer's initial size and growth ceiling — the
@@ -528,6 +572,7 @@ const Session = if (enabled) struct {
 
     fn destroy(session: *Session) void {
         const gpa = session.gpa;
+        session.selection_gesture.deinit(&session.term);
         session.render.deinit(gpa);
         session.stream.deinit();
         session.term.deinit(gpa);
@@ -536,6 +581,7 @@ const Session = if (enabled) struct {
         if (session.cells_buf.len > 0) gpa.free(session.cells_buf);
         if (session.cluster_buf.len > 0) gpa.free(session.cluster_buf);
         if (session.screen_text.len > 0) gpa.free(session.screen_text);
+        if (session.selection_text) |text| gpa.free(text);
         gpa.destroy(session);
     }
 
@@ -547,6 +593,9 @@ const Session = if (enabled) struct {
     /// scrollback, modes, palette overrides, and — by rebuilding the
     /// stream — any partial escape sequence left mid-parse.
     fn resetForRespawn(session: *Session) void {
+        // Drop the tracked gesture pin before the RIS recycles the
+        // screen/page list it belongs to.
+        session.selection_gesture.reset(&session.term);
         session.term.fullReset();
         // A RIS leaves the OSC color state alone: overrides from the
         // ended shell must not tint the new one.
@@ -721,6 +770,137 @@ const Session = if (enabled) struct {
 
     fn scrollbarState(session: *Session) vt.PageList.Scrollbar {
         return session.term.screens.active.pages.scrollbar();
+    }
+
+    // ------------------------------------------------ pointer selection
+
+    /// Default terminal word boundaries, matching Ghostty's standard
+    /// selection gesture. Kept local because the pinned vt module
+    /// exports SelectionGesture but not its codepoint-policy module.
+    const word_boundaries = [_]u21{
+        0,   ' ', '\t', '\'', '"',
+        '│',
+        '`', '|', ':',  ';',  ',',
+        '(', ')', '[',  ']',  '{',
+        '}', '<', '>',  '$',
+    };
+
+    fn pointerSelection(session: *Session, event: PointerSelectionEvent) PointerSelectionResult {
+        if (!std.math.isFinite(event.x) or !std.math.isFinite(event.y) or
+            !std.math.isFinite(event.width) or !std.math.isFinite(event.height) or
+            session.cell_width <= 0 or session.cell_height <= 0)
+        {
+            return .{};
+        }
+
+        const screen = session.term.screens.active;
+        switch (event.phase) {
+            .down => {
+                const pin = session.pointerPin(event) orelse return .{};
+                session.selection_gesture.reset(&session.term);
+                const behavior: vt.SelectionGesture.Behavior = if (event.click_count >= 3)
+                    .line
+                else if (event.click_count == 2)
+                    .word
+                else
+                    .cell;
+                // The runtime already derives and journals click_count.
+                // Force all gesture slots to that behavior and omit a
+                // timestamp, avoiding a second, divergent click clock
+                // inside the emulator.
+                const behaviors = [3]vt.SelectionGesture.Behavior{ behavior, behavior, behavior };
+                const selected = session.selection_gesture.press(&session.term, .{
+                    .time = null,
+                    .pin = pin,
+                    .xpos = event.x,
+                    .ypos = event.y,
+                    .max_distance = @max(1, session.cell_width),
+                    .repeat_interval = 0,
+                    .word_boundary_codepoints = &word_boundaries,
+                    .behaviors = &behaviors,
+                }) catch {
+                    screen.clearSelection();
+                    return .{ .changed = true };
+                };
+                if (selected) |selection| {
+                    screen.select(selection) catch screen.clearSelection();
+                } else {
+                    // A plain press collapses the previous selection;
+                    // crossing the drag threshold establishes the new
+                    // range on the following move/up.
+                    screen.clearSelection();
+                }
+                return .{
+                    .changed = true,
+                    .selection_active = screen.selection != null,
+                };
+            },
+            .move => {
+                const changed = session.applyPointerDrag(event);
+                return .{
+                    .changed = changed,
+                    .selection_active = screen.selection != null,
+                };
+            },
+            .up => {
+                const pin = session.pointerPin(event);
+                const changed = session.applyPointerDrag(event);
+                session.selection_gesture.release(&session.term, .{ .pin = pin });
+                return .{
+                    .changed = changed,
+                    .selection_active = screen.selection != null,
+                };
+            },
+            .cancel => {
+                session.selection_gesture.reset(&session.term);
+                return .{ .selection_active = screen.selection != null };
+            },
+            .hover, .wheel => return .{ .selection_active = screen.selection != null },
+        }
+    }
+
+    fn applyPointerDrag(session: *Session, event: PointerSelectionEvent) bool {
+        const pin = session.pointerPin(event) orelse return false;
+        const selection = session.selection_gesture.drag(&session.term, .{
+            .pin = pin,
+            .xpos = event.x,
+            .ypos = event.y,
+            .rectangle = false,
+            .word_boundary_codepoints = &word_boundaries,
+            .geometry = .{
+                .columns = session.cols(),
+                .cell_width = @intFromFloat(@max(1, @round(session.cell_width))),
+                .padding_left = 0,
+                .screen_height = @intFromFloat(@max(1, @round(event.height))),
+            },
+        }) orelse return false;
+        session.term.screens.active.select(selection) catch return false;
+        return true;
+    }
+
+    fn pointerPin(session: *Session, event: PointerSelectionEvent) ?vt.Pin {
+        const cols_count = session.cols();
+        const rows_count = session.rows();
+        if (cols_count == 0 or rows_count == 0) return null;
+        const max_x = @as(f32, @floatFromInt(cols_count - 1));
+        const max_y = @as(f32, @floatFromInt(rows_count - 1));
+        const cell_x = std.math.clamp(@floor(event.x / session.cell_width), 0, max_x);
+        const cell_y = std.math.clamp(@floor(event.y / session.cell_height), 0, max_y);
+        return session.term.screens.active.pages.pin(.{ .viewport = .{
+            .x = @intFromFloat(cell_x),
+            .y = @intFromFloat(cell_y),
+        } });
+    }
+
+    /// Any input sent to the child dismisses the pointer selection,
+    /// matching terminal convention. Cmd/Ctrl+C is intercepted before
+    /// `keyEvent` while a selection exists, so copy never reaches this
+    /// clearing path.
+    fn clearSelectionForInput(session: *Session) void {
+        session.selection_gesture.reset(&session.term);
+        if (session.term.screens.active.selection == null) return;
+        session.term.screens.active.clearSelection();
+        session.snapshot_dirty = true;
     }
 
     /// Scroll to an offset-from-bottom (the `TerminalState.scrollback`
@@ -939,7 +1119,9 @@ const Session = if (enabled) struct {
         session.term.colors.foreground.default = themeRgb(tokens.colors.text);
         session.term.colors.background.default = themeRgb(tokens.colors.background);
         session.term.colors.cursor.default = themeRgb(tokens.colors.accent);
-        session.cell_height = @round(tokens.typography.label_size * 1.4);
+        const metrics = canvas.terminalCellMetrics(tokens);
+        session.cell_width = metrics.width;
+        session.cell_height = metrics.height;
 
         try session.render.update(gpa, &session.term);
         const rs = &session.render;
@@ -1026,7 +1208,10 @@ const Session = if (enabled) struct {
             }
             session.rows_buf[y] = .{
                 .cells = session.cells_buf[row_start..cell_index],
-                .selection = null,
+                .selection = if (row.selection) |selection| .{
+                    @intCast(selection[0]),
+                    @intCast(selection[1]),
+                } else null,
             };
         }
 
@@ -1038,6 +1223,18 @@ const Session = if (enabled) struct {
         };
         if (session.screen_text.len > 0) gpa.free(session.screen_text);
         session.screen_text = text orelse &.{};
+
+        // Clipboard text comes from the emulator's selection formatter,
+        // not byte offsets into `screen_text`: this preserves soft-wrap,
+        // wide-cell, word, and line semantics exactly.
+        if (session.selection_text) |selection| gpa.free(selection);
+        session.selection_text = if (session.term.screens.active.selection) |selection|
+            session.term.screens.active.selectionString(gpa, .{
+                .sel = selection,
+                .trim = true,
+            }) catch null
+        else
+            null;
 
         const bar = session.scrollbarState();
         session.grid = .{
@@ -1066,6 +1263,8 @@ const Session = if (enabled) struct {
                 .total = @intCast(bar.total),
             },
             .screen_text = session.screen_text,
+            .selection_text = if (session.selection_text) |selection| selection else "",
+            .selection_active = session.term.screens.active.selection != null,
         };
         session.snapshot_dirty = false;
     }

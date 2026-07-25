@@ -226,10 +226,19 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
         }
 
         /// The text a copy shortcut should place on the clipboard: the
-        /// focused editable widget's selection when it has one, else the
-        /// view's static text selection.
+        /// focused editable widget's selection or focused terminal's
+        /// emulator selection when it has one, else the view's static
+        /// text selection.
         pub fn canvasWidgetCopyText(self: *const RuntimeView) ?[]const u8 {
             if (self.canvas_widget_focused_id != 0) {
+                if (self.canvasWidgetNodeIndexById(self.canvas_widget_focused_id)) |index| {
+                    const focused = self.widget_layout_nodes[index].widget;
+                    if (!focused.state.disabled and focused.kind == .terminal) {
+                        if (focused.terminal.grid) |grid| {
+                            if (grid.selection_active) return grid.selection_text;
+                        }
+                    }
+                }
                 if (canvasWidgetSelectionSliceById(self, self.canvas_widget_focused_id, true)) |slice| return slice;
             }
             if (self.canvas_widget_selected_text_id != 0) {

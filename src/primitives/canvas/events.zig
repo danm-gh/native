@@ -63,6 +63,10 @@ pub const WidgetPointerEvent = struct {
     /// never ride a mouse's proof. Desktop hosts with one pointer leave
     /// it 0.
     pointer_id: u64 = 0,
+    /// Platform button number for down/up events (0 = primary). Motion
+    /// may leave this at 0; gesture owners use the initiating down to
+    /// decide whether to capture.
+    button: i32 = 0,
 };
 
 pub const WidgetKeyboardPhase = enum {

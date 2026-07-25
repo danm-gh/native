@@ -150,6 +150,17 @@ pub const TerminalGrid = struct {
     /// whole-cell-state hash. Empty means "unknown", never "same as
     /// before".
     screen_text: []const u8 = "",
+    /// The emulator-serialized pointer selection, ready for the
+    /// platform clipboard. Empty means no copyable selection. This is
+    /// deliberately separate from `screen_text`: terminal selections
+    /// follow cell pins (including soft wraps and wide cells), so byte
+    /// offsets into the accessibility string are not an honest
+    /// selection model.
+    selection_text: []const u8 = "",
+    /// Whether the emulator currently owns a selection, including a
+    /// whitespace-only range whose trimmed `selection_text` is empty.
+    /// Pointer release uses this to distinguish select-drag from click.
+    selection_active: bool = false,
 };
 
 /// The app-visible terminal view state: the payload `on-terminal`

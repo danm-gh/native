@@ -547,6 +547,10 @@ const Session = if (enabled) struct {
     /// delta-to-rows and pointer-to-cell selection.
     cell_width: f32 = 8,
     cell_height: f32 = 18,
+    /// Physical macOS natural-editing keys whose press bypassed kitty
+    /// reporting as legacy shell bytes. Their matching release must be
+    /// swallowed by key identity even if Command/Option came up first.
+    macos_natural_keys_held: u8 = 0,
 
     /// Query-answer buffer's initial size and growth ceiling — the
     /// example tier's bounds verbatim (the ceiling matches the ring:
@@ -650,6 +654,7 @@ const Session = if (enabled) struct {
         session.outbound_len = 0;
         session.outbound_dropped = 0;
         session.wheel_accum = 0;
+        session.macos_natural_keys_held = 0;
         session.ended = false;
         session.grid.running = true;
         session.snapshot_dirty = true;
@@ -1008,12 +1013,26 @@ const Session = if (enabled) struct {
     /// (C0 chords, CSI-u exceptions, application cursor-key modes, kitty
     /// event reporting for releases).
     fn encodeKeyEvent(session: *Session, gateway: ?PtyGateway, pty_key: u64, event: canvas.WidgetKeyboardEvent, action: vt.input.KeyAction) void {
+        const natural_key_mask = macosNaturalTextKeyMask(event.key);
+        if (action == .release and natural_key_mask != 0 and
+            (session.macos_natural_keys_held & natural_key_mask) != 0)
+        {
+            session.macos_natural_keys_held &= ~natural_key_mask;
+            return;
+        }
+        // A fresh press supersedes any stale held bit (focus loss or a
+        // host-generated press with no matching release). A natural
+        // press below immediately re-arms it, including auto-repeat.
+        if (action == .press and natural_key_mask != 0) {
+            session.macos_natural_keys_held &= ~natural_key_mask;
+        }
         if (macosNaturalTextSequence(event)) |sequence| {
             // Natural-text bindings consume the whole gesture. In
             // particular, a child using kitty event reporting must not
             // receive a release for a modified arrow whose press arrived
             // as legacy editing bytes.
             if (action == .release) return;
+            session.macos_natural_keys_held |= natural_key_mask;
             const before = session.scrollbarState().offset;
             session.scrollToBottom();
             if (session.scrollbarState().offset != before) session.snapshot_dirty = true;
@@ -1055,6 +1074,14 @@ const Session = if (enabled) struct {
         session.scrollToBottom();
         if (session.scrollbarState().offset != before) session.snapshot_dirty = true;
         session.enqueueTransient(gateway, pty_key, buffer[0..writer.end]);
+    }
+
+    fn macosNaturalTextKeyMask(key: []const u8) u8 {
+        if (comptime builtin.os.tag != .macos) return 0;
+        if (std.ascii.eqlIgnoreCase(key, "arrowleft")) return 1 << 0;
+        if (std.ascii.eqlIgnoreCase(key, "arrowright")) return 1 << 1;
+        if (std.ascii.eqlIgnoreCase(key, "backspace")) return 1 << 2;
+        return 0;
     }
 
     /// Match macOS terminals' "natural text editing" bindings. These are

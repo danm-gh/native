@@ -210,9 +210,17 @@ test "committed text and encoded keys reach the pty through the gateway in stdin
             .modifiers = .{ .alt = true },
         }));
         try testing.expect(store.keyEvent(3, .{
+            .phase = .key_up,
+            .key = "arrowleft",
+        }));
+        try testing.expect(store.keyEvent(3, .{
             .phase = .key_down,
             .key = "arrowright",
             .modifiers = .{ .alt = true },
+        }));
+        try testing.expect(store.keyEvent(3, .{
+            .phase = .key_up,
+            .key = "arrowright",
         }));
         try testing.expect(store.keyEvent(3, .{
             .phase = .key_down,
@@ -220,9 +228,17 @@ test "committed text and encoded keys reach the pty through the gateway in stdin
             .modifiers = .{ .super = true },
         }));
         try testing.expect(store.keyEvent(3, .{
+            .phase = .key_up,
+            .key = "arrowleft",
+        }));
+        try testing.expect(store.keyEvent(3, .{
             .phase = .key_down,
             .key = "arrowright",
             .modifiers = .{ .super = true },
+        }));
+        try testing.expect(store.keyEvent(3, .{
+            .phase = .key_up,
+            .key = "arrowright",
         }));
         try testing.expect(store.keyEvent(3, .{
             .phase = .key_down,
@@ -232,7 +248,6 @@ test "committed text and encoded keys reach the pty through the gateway in stdin
         try testing.expect(store.keyEvent(3, .{
             .phase = .key_up,
             .key = "backspace",
-            .modifiers = .{ .super = true },
         }));
         try testing.expectEqualStrings("\x1bb\x1bf\x01\x05\x15", gw.written.items);
     }

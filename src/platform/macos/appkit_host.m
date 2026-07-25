@@ -60,6 +60,7 @@ static NSArray<NSString *> *NativeSdkPolicyListFromBytes(const char *bytes, size
 static NSString *NativeSdkOriginForURL(NSURL *url);
 static BOOL NativeSdkPolicyListMatches(NSArray<NSString *> *values, NSURL *url);
 static NSString *NativeSdkShortcutKeyForEvent(NSEvent *event);
+static BOOL NativeSdkTextNavigationNeedsRawKeyEvent(NSEvent *event);
 static BOOL NativeSdkShortcutUsesImplicitShift(NSString *key, NSEvent *event);
 static BOOL NativeSdkShortcutModifiersMatch(uint32_t shortcutModifiers, NSEventModifierFlags eventModifiers, BOOL allowImplicitShift);
 static NSEventModifierFlags NativeSdkMenuModifierFlags(uint32_t modifiers);
@@ -6149,6 +6150,17 @@ static BOOL NativeSdkCompositeBlurWriteRegion(NSDictionary *command, CGFloat sca
 
 - (void)keyDown:(NSEvent *)event {
     if ([self focusedTextAccessibilityElement]) {
+        // The shared canvas editor already maps Command/Option+Left/Right
+        // (including Shift variants) onto line/word navigation. Preserve
+        // those physical keys instead of letting interpretKeyEvents turn
+        // Command+Left/Right into modifier-less Home/End selectors. A
+        // focused terminal needs the modifiers even more: its emulator
+        // translates the natural macOS gestures to shell bindings, and
+        // negotiated key protocols must see every other combined chord.
+        if (NativeSdkTextNavigationNeedsRawKeyEvent(event)) {
+            [self emitInputEventWithKind:NATIVE_SDK_APPKIT_GPU_INPUT_KEY_DOWN event:event button:0 deltaX:0 deltaY:0];
+            return;
+        }
         self.interpretedKeyEventEmittedInput = NO;
         [self interpretKeyEvents:@[event]];
         if (!self.interpretedKeyEventEmittedInput) {
@@ -11246,6 +11258,14 @@ static NSString *NativeSdkShortcutKeyForEvent(NSEvent *event) {
         case '~': return @"`";
         default: return characters.lowercaseString;
     }
+}
+
+static BOOL NativeSdkTextNavigationNeedsRawKeyEvent(NSEvent *event) {
+    if (!event) return NO;
+    NSEventModifierFlags flags = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+    if ((flags & (NSEventModifierFlagCommand | NSEventModifierFlagOption)) == 0) return NO;
+    NSString *key = NativeSdkShortcutKeyForEvent(event);
+    return [key isEqualToString:@"arrowleft"] || [key isEqualToString:@"arrowright"];
 }
 
 static BOOL NativeSdkShortcutUsesImplicitShift(NSString *key, NSEvent *event) {

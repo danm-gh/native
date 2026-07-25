@@ -352,17 +352,24 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
             // reinterpret them against the newly focused terminal.
             const terminal_focus_entry_tab_suppressed =
                 CanvasWidgetEventMethods().consumeCanvasWidgetTerminalFocusEntryTab(self, input_event);
-            const keyboard_dismissed_id = if (targetless_composition_owns_keys or terminal_focus_entry_tab_suppressed)
+            // Terminal Paste owns its matching physical V release even
+            // when Command/Ctrl came up first. Classify it before focus,
+            // routing, or app fallbacks can reinterpret the orphan.
+            const terminal_paste_release_suppressed =
+                CanvasWidgetEventMethods().consumeCanvasWidgetTerminalPasteKeyLifetime(self, input_event);
+            const terminal_key_lifetime_suppressed =
+                terminal_focus_entry_tab_suppressed or terminal_paste_release_suppressed;
+            const keyboard_dismissed_id = if (targetless_composition_owns_keys or terminal_key_lifetime_suppressed)
                 0
             else
                 try CanvasWidgetEventMethods().dismissCanvasWidgetSurfaceFromKeyboardInput(self, input_event);
             if (keyboard_dismissed_id != 0) dismissed_surface_id = keyboard_dismissed_id;
             const widget_surface_dismissed = keyboard_dismissed_id != 0;
-            const widget_focus_moved = if (widget_surface_dismissed or targetless_composition_owns_keys or terminal_focus_entry_tab_suppressed)
+            const widget_focus_moved = if (widget_surface_dismissed or targetless_composition_owns_keys or terminal_key_lifetime_suppressed)
                 false
             else
                 try CanvasWidgetEventMethods().updateCanvasWidgetFocusFromKeyboardInput(self, input_event);
-            var widget_keyboard_event = if (widget_surface_dismissed or targetless_composition_owns_keys or terminal_focus_entry_tab_suppressed)
+            var widget_keyboard_event = if (widget_surface_dismissed or targetless_composition_owns_keys or terminal_key_lifetime_suppressed)
                 null
             else
                 CanvasWidgetEventMethods().routeCanvasWidgetKeyboardInput(self, input_event, &self.widget_event_route_entries) catch |err| switch (err) {
@@ -624,7 +631,7 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                 try CanvasWidgetEventMethods().dispatchCanvasWidgetCommandFromKeyboard(self, app, keyboard_event);
                 try self.dispatchEvent(app, .{ .canvas_widget_keyboard = keyboard_event });
             } else if ((input_event.kind == .key_down or input_event.kind == .key_up) and
-                !widget_surface_dismissed and !terminal_focus_entry_tab_suppressed)
+                !widget_surface_dismissed and !terminal_key_lifetime_suppressed)
             {
                 // No focused widget routed this key (nothing is
                 // focused, or the focused id is gone from the tree): the
@@ -806,21 +813,23 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                             // above): a focused terminal resolves its
                             // typing channel from it.
                             const focused_id = self.views[index].canvas_widget_focused_id;
-                            try self.dispatchEvent(app, .{ .canvas_widget_keyboard = .{
-                                .window_id = input_event.window_id,
-                                .view_label = self.views[index].label,
-                                .keyboard = .{
-                                    .phase = .text_input,
-                                    .focused_id = if (focused_id != 0) focused_id else null,
-                                    .key = input_event.key,
-                                    .text = text,
-                                    // Mark it committed so the ui-app
-                                    // `on_text` gate (insert_text only)
-                                    // delivers it.
-                                    .edit = .{ .insert_text = text },
-                                    .modifiers = canvas_frame_helpers.canvasWidgetKeyboardModifiers(input_event.modifiers),
+                            try self.dispatchEvent(app, .{
+                                .canvas_widget_keyboard = .{
+                                    .window_id = input_event.window_id,
+                                    .view_label = self.views[index].label,
+                                    .keyboard = .{
+                                        .phase = .text_input,
+                                        .focused_id = if (focused_id != 0) focused_id else null,
+                                        .key = input_event.key,
+                                        .text = text,
+                                        // Mark it committed so the ui-app
+                                        // `on_text` gate (insert_text only)
+                                        // delivers it.
+                                        .edit = .{ .insert_text = text },
+                                        .modifiers = canvas_frame_helpers.canvasWidgetKeyboardModifiers(input_event.modifiers),
+                                    },
                                 },
-                            } });
+                            });
                         }
                     }
                 }

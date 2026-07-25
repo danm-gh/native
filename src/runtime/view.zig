@@ -165,6 +165,11 @@ pub fn clearImeGraceOnViewBlur(runtime: anytype, view: *RuntimeView) void {
     // other view-local input graces so a later Tab is never mistaken
     // for the tail of the old gesture.
     view.canvas_widget_terminal_focus_entry_tab_held = false;
+    // Same physical-lifetime rule for terminal Paste: a native menu can
+    // synthesize only the key-down, and a real Cmd/Ctrl+V may release its
+    // modifier before V. Blur retires either incomplete gesture so no
+    // later plain V release can inherit it.
+    view.canvas_widget_terminal_paste_v_held = false;
     if ((runtime.targetless_ime_preedit_len > 0 or
         runtime.targetless_ime_commit_grace) and
         runtime.targetless_ime_preedit_window == view.window_id and
@@ -537,6 +542,12 @@ pub const RuntimeView = struct {
     /// suppresses those transitions and clears this on key-up (or view
     /// blur through `clearImeGraceOnViewBlur`).
     canvas_widget_terminal_focus_entry_tab_held: bool = false,
+    /// A Cmd/Ctrl+V key-down the clipboard pass converted into terminal
+    /// paste input. Its physical V release belongs to that paste even if
+    /// the modifier came up first; the raw gpu-input pass consumes it
+    /// and clears this latch. A fresh V key-down clears a stale native-
+    /// menu latch before the clipboard pass may arm it again.
+    canvas_widget_terminal_paste_v_held: bool = false,
     canvas_widget_focus_visible_id: canvas.ObjectId = 0,
     /// True when `canvas_widget_focus_visible_id` was written by the
     /// KEYBOARD focus contract (`setCanvasWidgetFocusFromKeyboard`) —

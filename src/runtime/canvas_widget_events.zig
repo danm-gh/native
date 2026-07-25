@@ -1978,6 +1978,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                         const focused_id = event.keyboard.focused_id;
                         event.keyboard = .{ .phase = .text_input, .focused_id = focused_id };
                         event.terminal_paste = true;
+                        self.views[index].canvas_widget_terminal_paste_v_held = true;
 
                         // Mark the shortcut as consumed before touching
                         // the clipboard. An unavailable/empty clipboard
@@ -2326,6 +2327,24 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 self.views[index].canvas_widget_terminal_focus_entry_tab_held = false;
             }
             return true;
+        }
+
+        /// Consume the physical V release paired with a terminal Paste
+        /// shortcut. Modifier flags describe the release instant, not
+        /// the original key-down: Command/Ctrl may already be up, so the
+        /// key-down classification is latched on the view instead of
+        /// reconstructed here. A fresh V down retires a stale latch
+        /// first (native menu Paste synthesizes a down with no release);
+        /// the clipboard pass later in this input cycle re-arms it when
+        /// that fresh down is another terminal Paste.
+        pub fn consumeCanvasWidgetTerminalPasteKeyLifetime(self: *Runtime, input_event: GpuSurfaceInputEvent) bool {
+            if (input_event.kind != .key_down and input_event.kind != .key_up) return false;
+            if (!std.ascii.eqlIgnoreCase(input_event.key, "v")) return false;
+            const index = runtimeFindViewIndex(self, input_event.window_id, input_event.label) orelse return false;
+            if (self.views[index].kind != .gpu_surface) return false;
+            if (!self.views[index].canvas_widget_terminal_paste_v_held) return false;
+            self.views[index].canvas_widget_terminal_paste_v_held = false;
+            return input_event.kind == .key_up;
         }
 
         /// Returns true when the key moved keyboard focus to a DIFFERENT

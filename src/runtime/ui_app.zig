@@ -5381,17 +5381,11 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                             // this emulator selection. Do not forward the
                             // same Cmd/Ctrl+C chord to the child (where
                             // Ctrl+C would be an interrupt).
-                            const clipboard_chord = (keyboard_event.keyboard.phase == .key_down or keyboard_event.keyboard.phase == .key_up) and
+                            const copy_chord = (keyboard_event.keyboard.phase == .key_down or keyboard_event.keyboard.phase == .key_up) and
                                 keyboard_event.keyboard.modifiers.hasCommandModifier() and
                                 !keyboard_event.keyboard.modifiers.alt and
-                                !keyboard_event.keyboard.modifiers.shift;
-                            // Cmd/Ctrl+V's key-down was rewritten to a
-                            // provenance-tagged text_input by the runtime
-                            // clipboard pass. Consume its physical key-up
-                            // too, or kitty event reporting would receive
-                            // an orphan modified-V release.
-                            if (clipboard_chord and std.ascii.eqlIgnoreCase(keyboard_event.keyboard.key, "v")) return;
-                            const copy_chord = clipboard_chord and std.ascii.eqlIgnoreCase(keyboard_event.keyboard.key, "c");
+                                !keyboard_event.keyboard.modifiers.shift and
+                                std.ascii.eqlIgnoreCase(keyboard_event.keyboard.key, "c");
                             if (copy_chord) {
                                 if (widget.terminal.grid) |grid| {
                                     if (grid.selection_active) return;

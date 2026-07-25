@@ -14,7 +14,6 @@ const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
 const testing = std.testing;
 
-
 fn createSession(cols: u16, rows: u16) !*grid.Session {
     return grid.Session.create(std.heap.page_allocator, testing.io, cols, rows);
 }
@@ -650,12 +649,14 @@ test "IME: a preedit is provisional; only the commit reaches the pty" {
     const app_iface = app_state.app();
 
     // Compose Japanese: the preedit must NOT reach the pty (provisional).
-    try harness.runtime.dispatchPlatformEvent(app_iface, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = "terminal-canvas",
-        .kind = .ime_set_composition,
-        .text = "\xe3\x81\x8b", // か
-    } });
+    try harness.runtime.dispatchPlatformEvent(app_iface, .{
+        .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .ime_set_composition,
+            .text = "\xe3\x81\x8b", // か
+        },
+    });
     try testing.expectEqualStrings("", app_state.effects.ptyWrittenBytes(1));
 
     // The host commits the marked text UNCHANGED — an empty commit; the
@@ -1001,9 +1002,21 @@ test "macOS natural text arrow gestures use shell editing bindings" {
         .{
             .window_id = 1,
             .label = "terminal-canvas",
+            .kind = .key_up,
+            .key = "arrowleft",
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
             .kind = .key_down,
             .key = "arrowright",
             .modifiers = .{ .option = true },
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .key_up,
+            .key = "arrowright",
         },
         .{
             .window_id = 1,
@@ -1015,9 +1028,21 @@ test "macOS natural text arrow gestures use shell editing bindings" {
         .{
             .window_id = 1,
             .label = "terminal-canvas",
+            .kind = .key_up,
+            .key = "arrowleft",
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
             .kind = .key_down,
             .key = "arrowright",
             .modifiers = .{ .primary = true, .command = true },
+        },
+        .{
+            .window_id = 1,
+            .label = "terminal-canvas",
+            .kind = .key_up,
+            .key = "arrowright",
         },
         .{
             .window_id = 1,
@@ -1031,7 +1056,6 @@ test "macOS natural text arrow gestures use shell editing bindings" {
             .label = "terminal-canvas",
             .kind = .key_up,
             .key = "backspace",
-            .modifiers = .{ .primary = true, .command = true },
         },
     };
     for (events) |event| {

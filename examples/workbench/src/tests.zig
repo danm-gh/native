@@ -557,7 +557,6 @@ test "terminal Paste shortcuts and context menus use VT encoding and revalidate 
         .label = app.canvas_label,
         .kind = .key_up,
         .key = "v",
-        .modifiers = .{ .primary = true, .command = true },
     } });
     try testing.expectEqualStrings(
         "\x1b[200~echo one\n [201~echo two \x1b[201~",

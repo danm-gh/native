@@ -1191,6 +1191,11 @@ pub fn build(b: *std.Build) void {
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "- (void)selectAll:(id)sender" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "@selector(selectAll:)" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "emitSyntheticKeyDownWithKey:@\"a\" modifiers:(NativeSdkShortcutModifierPrimary | NativeSdkShortcutModifierCommand)" },
+        // Modified horizontal navigation must bypass AppKit's selector
+        // rewrite: the shared editor consumes the raw modifiers, and a
+        // terminal translates them to its shell/protocol bindings.
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "NativeSdkTextNavigationNeedsRawKeyEvent(event)" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "NSEventModifierFlagCommand | NSEventModifierFlagOption" },
     });
     addFileContainsCheckStep(b, file_contains_checker, test_step, "test-appkit-appearance-bridge", "Verify AppKit reports system light and dark appearance changes", &.{
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "effectiveAppearance" },

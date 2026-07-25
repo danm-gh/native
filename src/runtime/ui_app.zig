@@ -5444,6 +5444,21 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                             if (widget.kind == .terminal and widget.terminal.pty != 0) {
                                 const edit = keyboard_event.keyboard.textEditEvent() orelse return;
                                 if (edit != .insert_text) return;
+                                if (keyboard_event.terminal_paste) {
+                                    // Context-menu paste is provenance-
+                                    // sensitive terminal input: the
+                                    // session must apply bracketed-paste
+                                    // framing and paste sanitization.
+                                    // Consume it even when the session
+                                    // ended between presentation and
+                                    // dispatch; clipboard bytes addressed
+                                    // to a terminal must never leak to the
+                                    // app-level `on_text` fallback.
+                                    if (self.terminal_sessions.pasteInput(widget.terminal.pty, edit.insert_text)) {
+                                        try self.repaintTerminals(runtime, keyboard_event.window_id);
+                                    }
+                                    return;
+                                }
                                 if (self.terminal_sessions.textInput(widget.terminal.pty, edit.insert_text)) {
                                     try self.repaintTerminals(runtime, keyboard_event.window_id);
                                     return;

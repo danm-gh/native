@@ -79,6 +79,12 @@ pub const CanvasWidgetKeyboardEvent = struct {
     keyboard: canvas.WidgetKeyboardEvent,
     target: ?canvas.WidgetFocusTarget = null,
     route: []const canvas.WidgetEventRouteEntry = &.{},
+    /// This committed-text payload came from the terminal context
+    /// menu's Paste action, not ordinary typing or IME input. UiApp
+    /// routes it through the emulator's paste encoder (bracketed-paste
+    /// framing, newline normalization, and unsafe-control stripping)
+    /// before writing it to the pty.
+    terminal_paste: bool = false,
     /// True when this event is dispatched OUTSIDE a gpu-surface input
     /// cycle — the accessibility selection edits and the default
     /// context-menu cut/paste/select-all, which have no terminal

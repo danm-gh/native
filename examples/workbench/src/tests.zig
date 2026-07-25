@@ -374,6 +374,26 @@ const Harness = struct {
         } });
     }
 
+    fn rightClick(self: *Harness, x: f32, y: f32) !void {
+        try self.harness.runtime.dispatchPlatformEvent(self.app_iface, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = app.canvas_label,
+            .kind = .pointer_down,
+            .button = 1,
+            .x = x,
+            .y = y,
+        } });
+    }
+
+    fn contextMenuAction(self: *Harness, token: u64, item_id: u32) !void {
+        try self.harness.runtime.dispatchPlatformEvent(self.app_iface, .{ .context_menu_action = .{
+            .window_id = 1,
+            .view_label = app.canvas_label,
+            .token = token,
+            .item_id = item_id,
+        } });
+    }
+
     fn typeText(self: *Harness, text: []const u8) !void {
         try self.harness.runtime.dispatchPlatformEvent(self.app_iface, .{ .gpu_surface_input = .{
             .window_id = 1,
@@ -490,6 +510,53 @@ test "a live pty session flows through the <terminal> element: output, typing, r
     } });
     try testing.expectEqual(divider_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
     try testing.expectEqualStrings("", h.app_state.effects.ptyWrittenBytes(app.shell_effect_key));
+}
+
+test "terminal context-menu Paste uses VT paste encoding and revalidates a pending session" {
+    if (comptime !native_sdk.runtime.terminal_sessions_enabled) return error.SkipZigTest;
+    var h = try Harness.create();
+    defer h.destroy();
+
+    // Mode 2004 is emulator state derived from child output. Context
+    // Paste must observe it rather than treating clipboard bytes as an
+    // ordinary multi-character typing commit.
+    try h.app_state.effects.feedPtyOutput(app.shell_effect_key, "demo$ \x1b[?2004h");
+    try h.frame();
+    const pasted = "echo one\n\x1b[201~echo two\x03";
+    try h.harness.runtime.writeClipboard(pasted);
+    const before = h.app_state.effects.ptyWrittenBytes(app.shell_effect_key).len;
+
+    try h.rightClick(200, 400);
+    const items = h.harness.null_platform.contextMenuItems();
+    try testing.expectEqual(@as(usize, 2), items.len);
+    try testing.expect(items[1].enabled);
+    try h.contextMenuAction(h.harness.null_platform.context_menu_token, 3);
+
+    // The encoder supplies bracketed-paste fenceposts and strips ESC /
+    // VINTR from the clipboard payload. The embedded LF stays inside
+    // the bracket instead of becoming an immediately executed command.
+    const written = h.app_state.effects.ptyWrittenBytes(app.shell_effect_key);
+    try testing.expectEqualStrings(
+        "\x1b[200~echo one\n [201~echo two \x1b[201~",
+        written[before..],
+    );
+
+    // Open another live menu, then let the child exit before the native
+    // action resolves (GTK's asynchronous shape). The stale Paste is a
+    // no-op, and a fresh ended-session menu disables it up front.
+    try h.rightClick(200, 400);
+    const pending_token = h.harness.null_platform.context_menu_token;
+    try h.app_state.effects.feedPtyExit(app.shell_effect_key, 0, 0, .exited, 0);
+    try h.frame();
+    const before_stale_action = h.app_state.effects.ptyWrittenBytes(app.shell_effect_key).len;
+    try h.contextMenuAction(pending_token, 3);
+    try testing.expectEqual(
+        before_stale_action,
+        h.app_state.effects.ptyWrittenBytes(app.shell_effect_key).len,
+    );
+
+    try h.rightClick(200, 400);
+    try testing.expect(!h.harness.null_platform.contextMenuItems()[1].enabled);
 }
 
 test "the terminal cursor follows app and key-window keyboard ownership" {

@@ -118,6 +118,12 @@ const DisabledStore = struct {
         _ = text;
         return false;
     }
+    pub fn pasteInput(self: *DisabledStore, pty: u64, text: []const u8) bool {
+        _ = self;
+        _ = pty;
+        _ = text;
+        return false;
+    }
     pub fn wheel(self: *DisabledStore, pty: u64, delta_y: f32) bool {
         _ = self;
         _ = pty;
@@ -322,6 +328,38 @@ const EnabledStore = struct {
         session.scrollToBottom();
         if (session.scrollbarState().offset != before) session.snapshot_dirty = true;
         session.sendCommittedText(self.gateway, pty, text);
+        return true;
+    }
+
+    /// Clipboard paste is terminal input with distinct protocol
+    /// semantics, never just a multi-byte typing commit. Encode against
+    /// the emulator's live bracketed-paste mode, normalize unbracketed
+    /// newlines like xterm, and strip control bytes that could inject
+    /// terminal commands. Returns whether a live session consumed the
+    /// paste; an ended or unknown session declines without writing.
+    pub fn pasteInput(self: *EnabledStore, pty: u64, text: []const u8) bool {
+        const session = self.find(pty) orelse return false;
+        if (!session.acceptsInput()) return false;
+        if (text.len == 0) return true;
+        session.clearSelectionForInput();
+        const before = session.scrollbarState().offset;
+        session.scrollToBottom();
+        if (session.scrollbarState().offset != before) session.snapshot_dirty = true;
+
+        const options: vt.input.PasteOptions = .fromTerminal(&session.term);
+        var mutable: ?[]u8 = null;
+        const encoded = vt.input.encodePaste(text, options) catch |err| switch (err) {
+            error.MutableRequired => encoded: {
+                const copy = session.gpa.dupe(u8, text) catch {
+                    session.outbound_dropped += text.len;
+                    return true;
+                };
+                mutable = copy;
+                break :encoded vt.input.encodePaste(copy, options);
+            },
+        };
+        defer if (mutable) |copy| session.gpa.free(copy);
+        session.enqueueTransientSlices(self.gateway, pty, &encoded);
         return true;
     }
 
@@ -714,6 +752,41 @@ const Session = if (enabled) struct {
         if (!session.enqueueOutbound(gateway, key, bytes)) {
             session.outbound_dropped += bytes.len;
         }
+    }
+
+    /// Paste encoding is a vector (optional bracket, payload, optional
+    /// bracket) but admission is atomic: never enqueue an opening
+    /// bracket without its payload and closing bracket when a
+    /// back-pressured child has nearly filled the ring.
+    fn enqueueTransientSlices(session: *Session, gateway: ?PtyGateway, key: u64, slices: []const []const u8) void {
+        session.moveResponsesToOutbound(gateway, key);
+        var total: usize = 0;
+        for (slices) |bytes| total += bytes.len;
+        if (session.response_len > 0) {
+            session.outbound_dropped += total;
+            return;
+        }
+
+        const cap = session.outbound_buffer.len;
+        if (total > cap) {
+            session.outbound_dropped += total;
+            return;
+        }
+        if (total > cap - session.outbound_len) session.flushOutbound(gateway, key);
+        if (total > cap - session.outbound_len) {
+            session.outbound_dropped += total;
+            return;
+        }
+
+        var offset = session.outbound_len;
+        for (slices) |bytes| {
+            for (bytes) |byte| {
+                session.outbound_buffer[(session.outbound_head + offset) % cap] = byte;
+                offset += 1;
+            }
+        }
+        session.outbound_len += total;
+        session.flushOutbound(gateway, key);
     }
 
     /// Push as much pending outbound as the pty's stdin FIFO will

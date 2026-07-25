@@ -212,8 +212,9 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                     if (!has_presenter) return;
                     try CanvasWidgetEventMethods().updateCanvasWidgetFocusFromPointer(self, pointer_event);
                     const has_selection = if (widget.terminal.grid) |grid| grid.selection_active else false;
+                    const can_paste = if (widget.terminal.grid) |grid| widget.terminal.pty != 0 and grid.running else false;
                     items[0] = .{ .id = default_item_copy, .label = "Copy", .enabled = has_selection };
-                    items[1] = .{ .id = default_item_paste, .label = "Paste", .enabled = widget.terminal.pty != 0 };
+                    items[1] = .{ .id = default_item_paste, .label = "Paste", .enabled = can_paste };
                     _ = try showMenu(self, app, index, .{
                         .window_id = input_event.window_id,
                         .target_id = target.id,
@@ -456,14 +457,23 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                 },
                 default_item_paste => {
                     if (widget.terminal.pty == 0) return;
+                    const grid = widget.terminal.grid orelse return;
+                    // The native menu resolves asynchronously on GTK:
+                    // a session that was live when the menu opened may
+                    // have exited before Paste is chosen. Revalidate at
+                    // action time so dead-session input cannot fall
+                    // through to UiApp's app-level `on_text` seam.
+                    if (!grid.running) return;
                     var paste_buffer: [platform.max_clipboard_data_bytes]u8 = undefined;
                     const text = self.readClipboard(&paste_buffer) catch return;
                     if (text.len == 0) return;
                     // Terminals deliberately stay outside the TextBuffer
-                    // editor pipeline. Send clipboard bytes through the
-                    // same committed-text event UiApp routes to the
-                    // focused emulator session, preserving multiline
-                    // input and avoiding text-field sanitization.
+                    // editor pipeline. Mark this committed payload as a
+                    // PASTE so UiApp routes it through the emulator's
+                    // dedicated paste encoder, not the ordinary typing
+                    // path: bracketed-paste framing, newline conversion,
+                    // and unsafe-control stripping are all provenance-
+                    // sensitive terminal behavior.
                     try self.dispatchEvent(app, .{ .canvas_widget_keyboard = .{
                         .window_id = self.views[view_index].window_id,
                         .view_label = self.views[view_index].label,
@@ -473,6 +483,7 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                             .text = text,
                             .edit = .{ .insert_text = text },
                         },
+                        .terminal_paste = true,
                         .standalone = true,
                     } });
                 },

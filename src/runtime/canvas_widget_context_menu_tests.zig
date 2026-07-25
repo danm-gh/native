@@ -35,8 +35,10 @@ const MenuTestApp = struct {
     last_request_point: geometry.PointF = .{},
     last_edit_insert: [64]u8 = undefined,
     last_edit_insert_len: usize = 0,
+    keyboard_count: u32 = 0,
     last_keyboard_phase: canvas.WidgetKeyboardPhase = .key_down,
     last_keyboard_focused_id: ?canvas.ObjectId = null,
+    last_keyboard_terminal_paste: bool = false,
     last_keyboard_standalone: bool = false,
     saw_truncated: bool = false,
     dismissed_count: u32 = 0,
@@ -101,8 +103,10 @@ const MenuTestApp = struct {
                 if (self.dismissal_error) |err| return err;
             },
             .canvas_widget_keyboard => |keyboard_event| {
+                self.keyboard_count += 1;
                 self.last_keyboard_phase = keyboard_event.keyboard.phase;
                 self.last_keyboard_focused_id = keyboard_event.keyboard.focused_id;
+                self.last_keyboard_terminal_paste = keyboard_event.terminal_paste;
                 self.last_keyboard_standalone = keyboard_event.standalone;
                 if (keyboard_event.keyboard.edit_truncated) self.saw_truncated = true;
                 if (keyboard_event.keyboard.edit) |edit| switch (edit) {
@@ -518,8 +522,52 @@ test "right click on a terminal presents Copy and Paste wired to selection and c
     try harness.runtime.dispatchPlatformEvent(app, menuAction(harness.null_platform.context_menu_token, 3));
     try std.testing.expectEqual(canvas.WidgetKeyboardPhase.text_input, app_state.last_keyboard_phase);
     try std.testing.expectEqual(@as(?canvas.ObjectId, 2), app_state.last_keyboard_focused_id);
+    try std.testing.expect(app_state.last_keyboard_terminal_paste);
     try std.testing.expect(app_state.last_keyboard_standalone);
     try std.testing.expectEqualStrings(paste, app_state.last_edit_insert[0..app_state.last_edit_insert_len]);
+}
+
+test "terminal Paste disables after exit and a pending live menu revalidates before dispatch" {
+    var app_state: MenuTestApp = .{};
+    const app = app_state.app();
+    const harness = try createMenuHarness(app);
+    defer harness.destroy(std.testing.allocator);
+
+    var grid = canvas.TerminalGrid{
+        .background = canvas.Color.rgba(0, 0, 0, 1),
+        .foreground = canvas.Color.rgba(1, 1, 1, 1),
+        .cursor_color = canvas.Color.rgba(1, 1, 1, 1),
+        .selection_color = canvas.Color.rgba(0, 0.5, 1, 1),
+    };
+    const terminal = canvas.Widget{
+        .id = 2,
+        .kind = .terminal,
+        .frame = geometry.RectF.init(12, 16, 280, 120),
+        .terminal = .{ .pty = 7, .grid = &grid },
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{terminal} }, geometry.RectF.init(0, 0, 320, 200), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    try harness.runtime.writeClipboard("must-not-escape");
+    try harness.runtime.dispatchPlatformEvent(app, rightClick(100, 40));
+    const live_token = harness.null_platform.context_menu_token;
+    try std.testing.expect(harness.null_platform.contextMenuItems()[1].enabled);
+
+    // GTK resolves menus asynchronously: the pty can exit while its
+    // live menu remains open. The action-time guard must swallow that
+    // stale Paste instead of emitting terminal input that could fall
+    // through to an app-level text handler.
+    grid.running = false;
+    try harness.runtime.dispatchPlatformEvent(app, menuAction(live_token, 3));
+    try std.testing.expectEqual(@as(u32, 0), app_state.keyboard_count);
+
+    // A new menu on the ended terminal describes the same truth up
+    // front: Copy remains selection-dependent, Paste is disabled.
+    try harness.runtime.dispatchPlatformEvent(app, rightClick(100, 40));
+    const ended_items = harness.null_platform.contextMenuItems();
+    try std.testing.expectEqual(@as(usize, 2), ended_items.len);
+    try std.testing.expect(!ended_items[1].enabled);
 }
 
 test "right click on selected static text presents a copy-only menu" {

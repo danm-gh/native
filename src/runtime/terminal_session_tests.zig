@@ -198,6 +198,36 @@ test "committed text and encoded keys reach the pty through the gateway in stdin
     try testing.expectEqualStrings("", gw.written.items);
 }
 
+test "clipboard paste uses terminal paste encoding and ended sessions refuse it" {
+    if (comptime !terminal_session.enabled) return error.SkipZigTest;
+    var store = TerminalSessions.init(testing.allocator);
+    defer store.deinit();
+    var gw = TestGateway{ .gpa = testing.allocator };
+    defer gw.deinit();
+    store.setGateway(gw.gateway());
+    store.beginBuild(.{});
+    _ = resolveGrid(&store, 3) orelse return error.TestExpectedGrid;
+
+    // Unbracketed paste follows xterm: LF becomes CR and dangerous
+    // control bytes are spaces, never injected verbatim.
+    try testing.expect(store.pasteInput(3, "echo one\necho two\x03\x1b"));
+    try testing.expectEqualStrings("echo one\recho two  ", gw.written.items);
+
+    // The child enables mode 2004. The next paste is framed against
+    // that live emulator mode, with its multiline payload preserved.
+    gw.written.clearRetainingCapacity();
+    feedOutput(&store, 3, "\x1b[?2004h");
+    try testing.expect(store.pasteInput(3, "alpha\nbeta"));
+    try testing.expectEqualStrings("\x1b[200~alpha\nbeta\x1b[201~", gw.written.items);
+
+    // A parked session is no longer an input target. In particular,
+    // the clipboard payload does not escape through any fallback.
+    gw.written.clearRetainingCapacity();
+    feedExit(&store, 3);
+    try testing.expect(!store.pasteInput(3, "late"));
+    try testing.expectEqualStrings("", gw.written.items);
+}
+
 test "a refused write is retained in the ring and drains on the frame flush" {
     if (comptime !terminal_session.enabled) return error.SkipZigTest;
     var store = TerminalSessions.init(testing.allocator);

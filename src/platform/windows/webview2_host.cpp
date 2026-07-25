@@ -1214,6 +1214,18 @@ static std::string extractHtmlClipboardFragment(const std::string &payload) {
 
 static UINT dpiForWindow(HWND hwnd);
 
+/* A Win32 top-level window keeps keyboard ownership while focus lives
+ * in any of its native child views. GetFocus() returns the CHILD HWND in
+ * that case (GPU surfaces and hosted controls alike), so direct equality
+ * with window.hwnd falsely reports the owning window blurred exactly
+ * while its child is receiving keyboard input. Walking to GA_ROOT makes
+ * the window-level flag match Win32's active focus tree. */
+static bool windowOwnsKeyboardFocus(const Window &window) {
+    if (!window.hwnd) return false;
+    HWND focused = GetFocus();
+    return focused && GetAncestor(focused, GA_ROOT) == window.hwnd;
+}
+
 static void emit(Host *host, const Window &window, EventKind kind) {
     if (!host || !host->callback) return;
     RECT rect = {};
@@ -1232,7 +1244,7 @@ static void emit(Host *host, const Window &window, EventKind kind) {
     event.x = window.x;
     event.y = window.y;
     event.open = window.hwnd != nullptr;
-    event.focused = window.hwnd && GetFocus() == window.hwnd;
+    event.focused = windowOwnsKeyboardFocus(window);
     event.hidden = window.policy_hidden ? 1 : 0;
     event.label = window.label.c_str();
     event.label_len = window.label.size();
@@ -5072,6 +5084,18 @@ static LRESULT CALLBACK windowProc(HWND hwnd, UINT message, WPARAM wparam, LPARA
             return 0;
         case WM_SETFOCUS:
         case WM_KILLFOCUS:
+            if (host) {
+                /* Native child views own Win32 focus directly. Project
+                 * their focus edges onto the owning top-level window so
+                 * runtime key-window state follows child-to-child and
+                 * cross-window focus moves, not only the rare edges
+                 * delivered to the top-level HWND itself. */
+                HWND root = GetAncestor(hwnd, GA_ROOT);
+                for (auto &entry : host->windows) {
+                    if (entry.second.hwnd == root) emit(host, entry.second, kWindowFrame);
+                }
+            }
+            return 0;
         case WM_MOVE:
             if (host) {
                 for (auto &entry : host->windows) {

@@ -1839,6 +1839,25 @@ test "windows WM_CLOSE hide consults the live tray state and downgrades to a rea
     try std.testing.expect(std.mem.indexOf(u8, close_hook, "downgraded to a real close") != null);
 }
 
+test "windows window focus includes focused native child views" {
+    // This predicate lives in the C++ host, where the real HWND tree is
+    // available. Pin the two parts of its contract textually: focus is
+    // resolved through GA_ROOT, and every emitted window frame uses
+    // that shared answer. Cross-target host builds compile the code;
+    // the Windows canvas smoke supplies the live child-focus exercise.
+    const host_source = @embedFile("webview2_host.cpp");
+    const predicate_at = std.mem.indexOf(u8, host_source, "static bool windowOwnsKeyboardFocus(const Window &window)");
+    try std.testing.expect(predicate_at != null);
+    const predicate = host_source[predicate_at.?..];
+    try std.testing.expect(std.mem.indexOf(u8, predicate, "GetAncestor(focused, GA_ROOT) == window.hwnd") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "event.focused = windowOwnsKeyboardFocus(window);") != null);
+    const focus_edge_at = std.mem.indexOf(u8, host_source, "case WM_SETFOCUS:");
+    try std.testing.expect(focus_edge_at != null);
+    const focus_edge = host_source[focus_edge_at.?..];
+    try std.testing.expect(std.mem.indexOf(u8, focus_edge, "HWND root = GetAncestor(hwnd, GA_ROOT);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, focus_edge, "entry.second.hwnd == root") != null);
+}
+
 test "windows audio event maps kinds and payload" {
     var event = std.mem.zeroes(WindowsEvent);
     event.audio_kind = 1;

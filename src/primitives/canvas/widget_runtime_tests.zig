@@ -639,6 +639,18 @@ test "widget render state dirty bounds tracks terminal logical focus" {
         ),
     );
 
+    // A static/baked focused state is the source of truth when neither
+    // render state carries a focus id. The keyboard gate still hollows
+    // that cursor, so the no-id path must report its frame dirty too.
+    var baked_terminal = terminal;
+    baked_terminal.state.focused = true;
+    var baked_nodes: [1]WidgetLayoutNode = undefined;
+    const baked_layout = try layoutWidgetTree(baked_terminal, baked_terminal.frame, &baked_nodes);
+    try expectRect(
+        baked_terminal.frame,
+        baked_layout.renderStateDirtyBounds(.{}, .{ .keyboard_active = false }),
+    );
+
     // An ended cursor is hollow in both states: logical focus no longer
     // changes pixels, so no damage is reported.
     grid.running = false;

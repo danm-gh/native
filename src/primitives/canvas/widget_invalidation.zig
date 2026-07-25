@@ -372,6 +372,26 @@ pub fn widgetRenderStateDirtyBounds(layout: anytype, previous: WidgetRenderState
         if (widgetStatesEqual(previous_widget.state, next_widget.state)) continue;
         bounds = unionOptionalBounds(bounds, widgetClippedDirtyBounds(layout, index, widgetRenderStatePaintChangeBounds(previous_widget, next_widget, tokens)));
     }
+    // With no runtime focus ids, baked `WidgetState.focused` is the
+    // renderer's source of truth. A keyboard-active transition still
+    // changes a baked-focused terminal cursor, but the targeted id list
+    // above is empty in exactly that state. Walk the layout only for
+    // this rare window/app activity edge so the dirty-bounds API mirrors
+    // the pixels without taxing ordinary hover/press/focus changes.
+    if (previous.keyboard_active != next.keyboard_active and
+        renderStateUsesBakedFocus(previous) and
+        renderStateUsesBakedFocus(next))
+    {
+        for (layout.nodes, 0..) |node, index| {
+            const base = widgetWithFrame(node.widget, node.frame);
+            if (!terminalLogicalFocusPaintChanged(base, previous, next)) continue;
+            bounds = unionOptionalBounds(bounds, widgetClippedDirtyBounds(
+                layout,
+                index,
+                widgetFullPaintBoundsWithTransform(node, widgetAccumulatedTransform(layout, index), tokens),
+            ));
+        }
+    }
     // Focus-within chrome: an `.input_group` ancestor wears the focus
     // ring FOR its focused descendant, so a focus-visible change dirties
     // the group's ring region too — the group's own id never appears in
@@ -408,6 +428,10 @@ fn widgetHasLogicalFocus(widget: Widget, state: WidgetRenderState) bool {
         return widget.id != 0 and widget.id == focused_id;
     }
     return widget.state.focused;
+}
+
+fn renderStateUsesBakedFocus(state: WidgetRenderState) bool {
+    return state.focused_id == null and state.focus_visible_id == null;
 }
 
 fn optionalPointsEqual(a: ?geometry.PointF, b: ?geometry.PointF) bool {

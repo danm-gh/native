@@ -186,7 +186,8 @@ function isDigit(b: number): boolean {
 function parseUnsigned(text: Bytes): number | null {
   if (text.length === 0) return null;
   let value = 0;
-  for (const b of text) {
+  for (let i = 0; i < text.length; i++) {
+    const b = text[i];
     if (!isDigit(b)) return null;
     value = value * 10 + (b - 0x30);
   }
@@ -214,8 +215,8 @@ function parseTenths(text: Bytes): number | null {
   if (whole === null) return null;
   const frac = text.subarray(dot + 1);
   if (frac.length === 0) return null;
-  for (const b of frac) {
-    if (!isDigit(b)) return null;
+  for (let i = 0; i < frac.length; i++) {
+    if (!isDigit(frac[i])) return null;
   }
   let out = whole * 10 + (frac[0] - 0x30);
   if (frac.length > 1 && frac[1] >= 0x35) out += 1;
@@ -355,6 +356,26 @@ function parsePsLine(line: Bytes): ParsedPsLine | null {
   };
 }
 
+/// Stable descending order by %cpu tenths: a straight insertion sort,
+/// which keeps equal CPUs in their parsed order (the ties rule the
+/// top-K cut below depends on).
+function sortedByCpuDescending(rows: readonly ParsedProcess[]): ParsedProcess[] {
+  const out: ParsedProcess[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    out.push(rows[i]!);
+  }
+  for (let i = 1; i < out.length; i++) {
+    const row = out[i]!;
+    let at = i;
+    while (at > 0 && out[at - 1]!.cpuTenths < row.cpuTenths) {
+      out[at] = out[at - 1]!;
+      at -= 1;
+    }
+    out[at] = row;
+  }
+  return out;
+}
+
 /// Parse whole `ps axo pid=,pcpu=,pmem=,rss=,etime=,comm=` output.
 export function parsePs(bytes: Bytes): PsSample {
   const all: ParsedProcess[] = [];
@@ -386,7 +407,7 @@ export function parsePs(bytes: Bytes): PsSample {
   // The exact top-K: a STABLE descending sort keeps the earliest of equal
   // CPUs first (the Zig min-replacement keeps first-encountered on ties),
   // then the cut.
-  const top = all.toSorted((a, b) => b.cpuTenths - a.cpuTenths).slice(0, MAX_ROWS);
+  const top = sortedByCpuDescending(all).slice(0, MAX_ROWS);
   return {
     processCount: processCount,
     processCountFloat: processCountFloat,

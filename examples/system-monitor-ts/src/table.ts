@@ -43,6 +43,25 @@ export function rowOrder(sortKey: SortKey, descending: boolean, a: ParsedProcess
   return descending ? -tied : tied;
 }
 
+/// The `rowOrder` sequence as a straight insertion sort: stable, so rows
+/// the ordering calls equal keep the order they arrived in.
+function sortedInOrder(rows: readonly ParsedProcess[], key: SortKey, descending: boolean): ParsedProcess[] {
+  const out: ParsedProcess[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    out.push(rows[i]!);
+  }
+  for (let i = 1; i < out.length; i++) {
+    const row = out[i]!;
+    let at = i;
+    while (at > 0 && rowOrder(key, descending, out[at - 1]!, row) > 0) {
+      out[at] = out[at - 1]!;
+      at -= 1;
+    }
+    out[at] = row;
+  }
+  return out;
+}
+
 /// Table rows from the kept sample rows: search-filtered, sorted by the
 /// active key/direction, cut to MAX_TABLE_ROWS, formatted for the cells.
 export function tableRows(
@@ -55,7 +74,7 @@ export function tableRows(
   for (const row of rows) {
     if (rowMatches(row, query)) matches.push(row);
   }
-  const sorted = matches.toSorted((a, b) => rowOrder(key, descending, a, b));
+  const sorted = sortedInOrder(matches, key, descending);
   const out: TableRow[] = [];
   for (const row of sorted) {
     if (out.length >= MAX_TABLE_ROWS) break;

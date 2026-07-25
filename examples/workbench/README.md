@@ -14,7 +14,7 @@ zig build test -Dplatform=null   # the markup shape, the history, the live sessi
 ## What to try
 
 - Type in the terminal — a real interactive shell, with scrollback on the wheel.
-- Drag the divider: the terminal re-grids (the pty is resized to the new cols/rows) and the web page reflows in the same frame.
+- Drag the divider: the terminal re-grids (the pty is resized to the new cols/rows — `stty size` reports the new geometry) and the web page reflows in the same frame. The divider is a focusable control, so the drag leaves the keyboard on it; click the terminal to hand the shell the keyboard again.
 - Enter an address (a bare host gets `https://`), then walk it with back and forward; the buttons disable at the ends of history.
 
 ## How it fits together

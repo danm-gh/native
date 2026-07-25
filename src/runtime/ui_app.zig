@@ -1153,6 +1153,12 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         terminal_state_pending: [terminal_session.max_sessions]PendingTerminalState = @splat(.{}),
         terminal_state_pending_count: usize = 0,
         terminal_state_draining: bool = false,
+        /// The bound terminal a pointer press armed a text selection on
+        /// (0 = none). The drag stays with it until the release even
+        /// once the pointer leaves the element's frame, which is what
+        /// lets a selection run to the edge of the grid the way it does
+        /// in every terminal.
+        terminal_select_pty: u64 = 0,
         /// Live model-declared secondary windows (`Options.windows_fn`),
         /// keyed by window label.
         window_slots: [max_ui_windows]WindowSlot,
@@ -4457,6 +4463,11 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         /// a fired hold suppresses the release's press (one gesture, one
         /// Msg), and any release/cancel disarms it.
         fn handlePointer(self: *Self, runtime: *Runtime, pointer_event: core.CanvasWidgetPointerEvent) anyerror!void {
+            // Text selection over a bound terminal runs ahead of widget
+            // dispatch and never consumes the gesture: the press still
+            // arms a hold and the release still resolves `on-press`, the
+            // way dragging a selection across static text does.
+            try self.handleTerminalSelection(runtime, pointer_event);
             const tree = self.treeForViewLabel(pointer_event.view_label) orelse return;
             switch (pointer_event.pointer.phase) {
                 .down => {
@@ -5306,6 +5317,12 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                         // session declines, and the key falls through
                         // (an app may bind a restart chord).
                         if (widget.kind == .terminal and widget.terminal.pty != 0) {
+                            // Copy runs BEFORE the encoder, and only
+                            // over a live selection: with nothing
+                            // selected the same chord is still the
+                            // child's interrupt on hosts whose primary
+                            // modifier is Ctrl.
+                            if (self.copyTerminalSelection(runtime, widget.terminal.pty, keyboard_event.keyboard)) return;
                             if (self.terminal_sessions.keyEvent(widget.terminal.pty, keyboard_event.keyboard)) {
                                 try self.repaintTerminals(runtime, keyboard_event.window_id);
                                 return;
@@ -5458,6 +5475,144 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             // Over a bound terminal the gesture is the terminal's even
             // when the viewport is already pinned — the app wheel seam
             // must not double-consume it.
+            return true;
+        }
+
+        /// Pointer text selection over a bound terminal: the press
+        /// anchors, drags extend, and the release leaves the range live
+        /// for a copy. The runtime's click count picks the granularity
+        /// — single drags cells, double whole words, triple whole lines
+        /// — so the gesture reads the way it does in every terminal.
+        ///
+        /// The pointer-to-cell mapping mirrors the widget painter's own
+        /// inset rule, so the washed cells are exactly the ones under
+        /// the pointer; the pty armed at the press keeps the drag even
+        /// once the pointer leaves the frame, and coordinates clamp to
+        /// the grid, which is what lets a selection run to its edges.
+        fn handleTerminalSelection(self: *Self, runtime: *Runtime, pointer_event: core.CanvasWidgetPointerEvent) anyerror!void {
+            if (comptime !terminal_session.enabled) return;
+            const phase = pointer_event.pointer.phase;
+            switch (phase) {
+                .down, .move, .up, .cancel => {},
+                .hover, .wheel => return,
+            }
+            const point = pointer_event.pointer.point;
+            const layout = runtime.canvasWidgetLayout(pointer_event.window_id, pointer_event.view_label) catch {
+                self.terminal_select_pty = 0;
+                return;
+            };
+            var target: ?canvas.WidgetLayoutNode = null;
+            if (phase == .down) {
+                // A press starts a new gesture wherever it lands: the
+                // TOPMOST bound terminal under the pointer, or none.
+                self.terminal_select_pty = 0;
+                for (layout.nodes) |node| {
+                    if (node.widget.kind != .terminal) continue;
+                    if (node.widget.terminal.pty == 0) continue;
+                    if (!node.frame.normalized().containsPoint(point)) continue;
+                    target = node;
+                }
+            } else if (self.terminal_select_pty != 0) {
+                for (layout.nodes) |node| {
+                    if (node.widget.kind != .terminal) continue;
+                    if (node.widget.terminal.pty != self.terminal_select_pty) continue;
+                    target = node;
+                }
+            }
+            const node = target orelse {
+                // The armed element left the tree mid-drag: the gesture
+                // has nothing to extend.
+                if (phase != .down) self.terminal_select_pty = 0;
+                return;
+            };
+            const pty = node.widget.terminal.pty;
+            if (!self.terminal_sessions.hasSession(pty)) return;
+            const cell = self.terminalCellAtPoint(runtime, node, point) orelse return;
+            var changed = false;
+            switch (phase) {
+                .down => {
+                    self.terminal_select_pty = pty;
+                    const grain: terminal_session.SelectGranularity = switch (pointer_event.pointer.click_count) {
+                        0, 1 => .cell,
+                        2 => .word,
+                        else => .line,
+                    };
+                    changed = self.terminal_sessions.selectionPress(pty, cell.pos, cell.x_frac, grain);
+                },
+                .move => changed = self.terminal_sessions.selectionDrag(pty, cell.pos, cell.x_frac),
+                .up => {
+                    changed = self.terminal_sessions.selectionDrag(pty, cell.pos, cell.x_frac);
+                    self.terminal_sessions.selectionRelease(pty);
+                    self.terminal_select_pty = 0;
+                },
+                // A cancelled gesture made no selection the user can
+                // see the end of: drop it rather than leave a range
+                // nobody finished drawing.
+                .cancel => {
+                    changed = self.terminal_sessions.clearSelection(pty);
+                    self.terminal_select_pty = 0;
+                },
+                .hover, .wheel => {},
+            }
+            if (changed) try self.repaintTerminals(runtime, pointer_event.window_id);
+        }
+
+        /// A point in view coordinates as a terminal cell plus the
+        /// pointer's position WITHIN that column (0..1) — the fraction
+        /// the selection edge flips on. Null when the element has no
+        /// paintable grid.
+        fn terminalCellAtPoint(self: *Self, runtime: *Runtime, node: canvas.WidgetLayoutNode, point: geometry.PointF) ?TerminalPointerCell {
+            const frame = node.frame.normalized();
+            if (frame.width <= 0 or frame.height <= 0) return null;
+            // The grid text region sits inside the widget's own padding
+            // (the house inset when none is declared) — the painter's
+            // rule and the layout reconcile's, so the mapped cell is the
+            // one the pointer is over.
+            const padding = node.widget.layout.padding;
+            const declared = padding.left + padding.top + padding.right + padding.bottom > 0;
+            const inset: geometry.InsetsF = if (declared) padding else geometry.InsetsF.all(8);
+            const content_width = @max(0, frame.width - inset.left - inset.right);
+            const content_height = @max(0, frame.height - inset.top - inset.bottom);
+            const metrics = canvas.terminalCellMetrics(runtime.tokensWithTextMeasure(self.effectiveTokens()));
+            if (metrics.width <= 0 or metrics.height <= 0) return null;
+            // The same derivation the view-state reconcile applies, so
+            // the clamp bounds are the emulator's actual grid.
+            const grid = canvas.clampTerminalGrid(
+                @intFromFloat(@max(2, @floor(content_width / metrics.width))),
+                @intFromFloat(@max(2, @floor(content_height / metrics.height))),
+            );
+            const local_x = (point.x - (frame.x + inset.left)) / metrics.width;
+            const local_y = (point.y - (frame.y + inset.top)) / metrics.height;
+            const last_col: f32 = @floatFromInt(grid.x - 1);
+            const last_row: f32 = @floatFromInt(grid.y - 1);
+            const col = std.math.clamp(@floor(local_x), 0, last_col);
+            const row = std.math.clamp(@floor(local_y), 0, last_row);
+            return .{
+                .pos = .{ .x = @intFromFloat(col), .y = @intFromFloat(row) },
+                // Past the grid on either side reads as fully past that
+                // edge cell, so a drag off the end selects through it.
+                .x_frac = std.math.clamp(local_x - col, 0, 1),
+            };
+        }
+
+        const TerminalPointerCell = struct {
+            pos: canvas.TerminalCellPos,
+            x_frac: f32,
+        };
+
+        /// The primary+C copy over a focused bound terminal. Answers
+        /// false unless the chord is exactly the platform copy chord AND
+        /// a selection is live — an unselected terminal keeps Ctrl+C for
+        /// the child's interrupt, which is the whole reason this runs
+        /// ahead of the key encoder.
+        fn copyTerminalSelection(self: *Self, runtime: *Runtime, pty: u64, keyboard: canvas.WidgetKeyboardEvent) bool {
+            if (comptime !terminal_session.enabled) return false;
+            const action = canvas.widgetKeyboardClipboardAction(keyboard) orelse return false;
+            if (action != .copy) return false;
+            if (!self.terminal_sessions.selectionActive(pty)) return false;
+            const text = self.terminal_sessions.selectionText(pty, self.backing) orelse return false;
+            defer self.backing.free(text);
+            runtime.writeClipboard(text) catch return false;
             return true;
         }
 

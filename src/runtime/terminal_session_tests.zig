@@ -289,3 +289,99 @@ test "the wide-cell spacer extends its primary's background in the published sna
     try testing.expect(row.cells[1].bg != null);
     try testing.expectEqual(row.cells[0].bg.?.r, row.cells[1].bg.?.r);
 }
+
+test "a pointer drag selects the cells it crosses and copies them out" {
+    if (comptime !terminal_session.enabled) return error.SkipZigTest;
+    var store = TerminalSessions.init(testing.allocator);
+    defer store.deinit();
+    store.beginBuild(.{});
+    _ = resolveGrid(&store, 11) orelse return error.TestExpectedGrid;
+    feedOutput(&store, 11, "hello world");
+
+    // Press inside the left half of 'h' and drag into the right half of
+    // the 'o' at column 4: both endpoints fall inside the range.
+    _ = store.selectionPress(11, .{ .x = 0, .y = 0 }, 0.1, .cell);
+    try testing.expect(store.selectionDrag(11, .{ .x = 4, .y = 0 }, 0.9));
+    try testing.expect(store.selectionActive(11));
+
+    // The wash the painter draws comes from the emulator's own
+    // per-row resolution, republished through the snapshot.
+    const grid = resolveGrid(&store, 11) orelse return error.TestExpectedGrid;
+    const range = grid.rows[0].selection orelse return error.TestExpectedSelection;
+    try testing.expectEqual(@as(u16, 0), range[0]);
+    try testing.expectEqual(@as(u16, 4), range[1]);
+
+    // The release keeps the range live: it is what a copy reads.
+    store.selectionRelease(11);
+    try testing.expect(store.selectionActive(11));
+    const text = store.selectionText(11, testing.allocator) orelse return error.TestExpectedSelection;
+    defer testing.allocator.free(text);
+    try testing.expectEqualStrings("hello", text);
+}
+
+test "a press that never crosses a cell edge selects nothing" {
+    if (comptime !terminal_session.enabled) return error.SkipZigTest;
+    var store = TerminalSessions.init(testing.allocator);
+    defer store.deinit();
+    store.beginBuild(.{});
+    _ = resolveGrid(&store, 12) orelse return error.TestExpectedGrid;
+    feedOutput(&store, 12, "hello world");
+
+    // A click with a pixel of jitter inside one cell: no selection.
+    _ = store.selectionPress(12, .{ .x = 3, .y = 0 }, 0.2, .cell);
+    try testing.expect(!store.selectionDrag(12, .{ .x = 3, .y = 0 }, 0.3));
+    try testing.expect(!store.selectionActive(12));
+    const grid = resolveGrid(&store, 12) orelse return error.TestExpectedGrid;
+    try testing.expect(grid.rows[0].selection == null);
+}
+
+test "double- and triple-click grains select the word and the line" {
+    if (comptime !terminal_session.enabled) return error.SkipZigTest;
+    var store = TerminalSessions.init(testing.allocator);
+    defer store.deinit();
+    store.beginBuild(.{});
+    _ = resolveGrid(&store, 13) orelse return error.TestExpectedGrid;
+    feedOutput(&store, 13, "alpha beta");
+
+    try testing.expect(store.selectionPress(13, .{ .x = 7, .y = 0 }, 0.5, .word));
+    {
+        const word = store.selectionText(13, testing.allocator) orelse return error.TestExpectedSelection;
+        defer testing.allocator.free(word);
+        try testing.expectEqualStrings("beta", word);
+    }
+    store.selectionRelease(13);
+
+    try testing.expect(store.selectionPress(13, .{ .x = 7, .y = 0 }, 0.5, .line));
+    {
+        const line = store.selectionText(13, testing.allocator) orelse return error.TestExpectedSelection;
+        defer testing.allocator.free(line);
+        try testing.expectEqualStrings("alpha beta", line);
+    }
+}
+
+test "a plain press deselects, and a respawn drops the selection entirely" {
+    if (comptime !terminal_session.enabled) return error.SkipZigTest;
+    var store = TerminalSessions.init(testing.allocator);
+    defer store.deinit();
+    store.beginBuild(.{});
+    _ = resolveGrid(&store, 14) orelse return error.TestExpectedGrid;
+    feedOutput(&store, 14, "alpha beta");
+
+    try testing.expect(store.selectionPress(14, .{ .x = 1, .y = 0 }, 0.5, .word));
+    try testing.expect(store.selectionActive(14));
+    // A new press replaces the range; at cell grain that means the
+    // click deselects and waits for a drag.
+    try testing.expect(store.selectionPress(14, .{ .x = 1, .y = 0 }, 0.5, .cell));
+    try testing.expect(!store.selectionActive(14));
+    try testing.expect(store.selectionText(14, testing.allocator) == null);
+
+    // A selection that survived into a respawn would name text the new
+    // shell never wrote.
+    try testing.expect(store.selectionDrag(14, .{ .x = 5, .y = 0 }, 0.9));
+    try testing.expect(store.selectionActive(14));
+    feedExit(&store, 14);
+    feedOutput(&store, 14, "$ ");
+    try testing.expect(!store.selectionActive(14));
+    const grid = resolveGrid(&store, 14) orelse return error.TestExpectedGrid;
+    try testing.expect(grid.rows[0].selection == null);
+}

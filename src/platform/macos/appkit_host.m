@@ -320,6 +320,7 @@ static NSMutableDictionary *NativeSdkCredentialQuery(NSString *service, NSString
 @property(nonatomic, strong) NSArray<NSValue *> *coveredMouseRects;
 @property(nonatomic, assign) NativeSdkAppKitHost *host;
 @property(nonatomic, assign) uint64_t windowId;
+@property(nonatomic, strong) NSString *viewLabel;
 @end
 
 @interface NativeSdkBridgeScriptHandler : NSObject <WKScriptMessageHandler>
@@ -893,6 +894,7 @@ static NSMutableDictionary *NativeSdkCredentialQuery(NSString *service, NSString
 @property(nonatomic, assign) BOOL observesAppearanceChanges;
 @property(nonatomic, assign) NSInteger bridgeFrameKeepalive;
 @property(nonatomic, strong) id shortcutEventMonitor;
+@property(nonatomic, strong) id viewFocusEventMonitor;
 @property(nonatomic, strong) id willTerminateObserver;
 @property(nonatomic, strong) dispatch_source_t sigtermSource;
 @property(nonatomic, strong) NSArray<NativeSdkShortcut *> *shortcuts;
@@ -7300,6 +7302,10 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
         [NSEvent removeMonitor:self.shortcutEventMonitor];
         self.shortcutEventMonitor = nil;
     }
+    if (self.viewFocusEventMonitor) {
+        [NSEvent removeMonitor:self.viewFocusEventMonitor];
+        self.viewFocusEventMonitor = nil;
+    }
     [self removeAllChildBridgeHandlers];
     for (WKWebView *webView in self.webViews.allValues) {
         [webView.configuration.userContentController removeScriptMessageHandlerForName:@"nativeSdkBridge"];
@@ -7518,6 +7524,7 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
     WKWebView *webView = [[NativeSdkWebView alloc] initWithFrame:container.bounds configuration:configuration];
     ((NativeSdkWebView *)webView).host = self;
     ((NativeSdkWebView *)webView).windowId = windowId;
+    ((NativeSdkWebView *)webView).viewLabel = @"main";
     [webView registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     webView.wantsLayer = YES;
     webView.layer.zPosition = 0;
@@ -8200,6 +8207,7 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
     WKWebView *webview = [[NativeSdkWebView alloc] initWithFrame:[self webViewFrameForWindow:window x:x y:y width:width height:height] configuration:configuration];
     ((NativeSdkWebView *)webview).host = self;
     ((NativeSdkWebView *)webview).windowId = windowId;
+    ((NativeSdkWebView *)webview).viewLabel = label;
     [webview registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
     webview.wantsLayer = YES;
     webview.layer.zPosition = layer;
@@ -8995,6 +9003,31 @@ static void NativeSdkApplyProcessDisplayName(NSString *displayName) {
             return event;
         }];
     }
+    if (!self.viewFocusEventMonitor) {
+        __weak NativeSdkAppKitHost *weakSelf = self;
+        self.viewFocusEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:
+            (NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown)
+            handler:^NSEvent *(NSEvent *event) {
+                NativeSdkAppKitHost *strongSelf = weakSelf;
+                NSView *content = event.window.contentView;
+                if (!strongSelf || !content) return event;
+                NSPoint point = [content convertPoint:event.locationInWindow fromView:nil];
+                NSView *hit = [content hitTest:point];
+                while (hit && ![hit isKindOfClass:[NativeSdkWebView class]]) {
+                    hit = hit.superview;
+                }
+                if (![hit isKindOfClass:[NativeSdkWebView class]]) return event;
+                NativeSdkWebView *webView = (NativeSdkWebView *)hit;
+                const char *label = webView.viewLabel.UTF8String ?: "";
+                [strongSelf emitEvent:(native_sdk_appkit_event_t){
+                    .kind = NATIVE_SDK_APPKIT_EVENT_VIEW_FOCUSED,
+                    .window_id = webView.windowId,
+                    .view_label = label,
+                    .view_label_len = strlen(label),
+                }];
+                return event;
+            }];
+    }
 
     [self startApplicationActivationObservers];
     [self startAppearanceObservers];
@@ -9085,6 +9118,10 @@ static void NativeSdkApplyProcessDisplayName(NSString *displayName) {
     if (self.shortcutEventMonitor) {
         [NSEvent removeMonitor:self.shortcutEventMonitor];
         self.shortcutEventMonitor = nil;
+    }
+    if (self.viewFocusEventMonitor) {
+        [NSEvent removeMonitor:self.viewFocusEventMonitor];
+        self.viewFocusEventMonitor = nil;
     }
     [self stopAppearanceObservers];
     [self stopApplicationActivationObservers];

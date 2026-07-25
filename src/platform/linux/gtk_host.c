@@ -2859,6 +2859,46 @@ static void native_sdk_register_zero_scheme(native_sdk_gtk_host_t *host, WebKitW
     host->scheme_registered = 1;
 }
 
+/* WebKit owns its pointer stream, so a press never reaches the runtime's
+ * gpu_surface input seam. Observe without claiming the gesture and report
+ * which WebView the press will focus; the runtime can then blur its canvas
+ * sibling before WebKit receives the same event. */
+static void native_sdk_webview_pointer_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
+    (void)n_press;
+    (void)x;
+    (void)y;
+    native_sdk_gtk_window_t *win = data;
+    if (!win || !win->host) return;
+    GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    const char *label = NULL;
+    if (win->web_view && widget == GTK_WIDGET(win->web_view)) {
+        label = "main";
+    } else {
+        for (int i = 0; i < win->webview_count; i++) {
+            if (win->webviews[i].web_view && widget == GTK_WIDGET(win->webviews[i].web_view)) {
+                label = win->webviews[i].label;
+                break;
+            }
+        }
+    }
+    if (!label) return;
+    native_sdk_emit(win->host, (native_sdk_gtk_event_t){
+        .kind = NATIVE_SDK_GTK_EVENT_VIEW_FOCUSED,
+        .window_id = win->id,
+        .view_label = label,
+        .view_label_len = strlen(label),
+    });
+}
+
+static void native_sdk_watch_webview_pointer_focus(native_sdk_gtk_window_t *win, WebKitWebView *web_view) {
+    if (!win || !web_view) return;
+    GtkGesture *click = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click), GTK_PHASE_CAPTURE);
+    g_signal_connect(click, "pressed", G_CALLBACK(native_sdk_webview_pointer_pressed), win);
+    gtk_widget_add_controller(GTK_WIDGET(web_view), GTK_EVENT_CONTROLLER(click));
+}
+
 /* Create-on-first-use for a window's main WebView (the AppKit host's
  * ensureMainWebViewForWindowId:). Pure peek reads (event emission,
  * bridge completion echoes, reorder passes, focus) keep checking
@@ -2881,6 +2921,7 @@ static WebKitWebView *native_sdk_ensure_main_webview(native_sdk_gtk_window_t *wi
     native_sdk_register_zero_scheme(win->host, wv);
     native_sdk_setup_bridge(win);
     g_signal_connect(wv, "decide-policy", G_CALLBACK(on_decide_policy), win);
+    native_sdk_watch_webview_pointer_focus(win, wv);
 
     /* The overlay's main-child slot, where the eager create used to put
      * it: the overlay allocates its main child the full stack area on the
@@ -4360,6 +4401,7 @@ int native_sdk_gtk_create_webview(native_sdk_gtk_host_t *host, uint64_t window_i
     webview->transparent = transparent != 0;
     webview->bridge_enabled = bridge_enabled != 0;
     webview->content_manager = manager;
+    native_sdk_watch_webview_pointer_focus(win, web_view);
     native_sdk_apply_webview_frame(webview);
     gtk_overlay_add_overlay(GTK_OVERLAY(win->stack_root), GTK_WIDGET(web_view));
     if (transparent) {

@@ -33,6 +33,7 @@ typedef enum {
     NATIVE_SDK_APPKIT_EVENT_CONTEXT_MENU_ACTION = 19,
     NATIVE_SDK_APPKIT_EVENT_AUDIO = 20,
     NATIVE_SDK_APPKIT_EVENT_VIDEO = 21,
+    NATIVE_SDK_APPKIT_EVENT_VIEW_FOCUSED = 22,
 } native_sdk_appkit_event_kind_t;
 
 /* Audio player reports (EVENT_AUDIO payloads). LOADED acknowledges a

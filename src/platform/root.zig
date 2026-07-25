@@ -104,6 +104,7 @@ pub const ViewInfo = types.ViewInfo;
 pub const AppInfo = types.AppInfo;
 pub const Surface = types.Surface;
 pub const BridgeMessage = types.BridgeMessage;
+pub const ViewFocusEvent = types.ViewFocusEvent;
 pub const max_dialog_path_bytes = types.max_dialog_path_bytes;
 pub const max_dialog_paths_bytes = types.max_dialog_paths_bytes;
 pub const max_dialog_title_bytes = types.max_dialog_title_bytes;

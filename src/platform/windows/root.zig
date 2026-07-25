@@ -35,6 +35,7 @@ const WindowsEventKind = enum(c_int) {
     appearance = 17,
     audio = 18,
     context_menu_action = 19,
+    view_focused = 20,
 };
 
 const WindowsEvent = extern struct {
@@ -586,6 +587,10 @@ fn windowsCallback(context: ?*anyopaque, event: *const WindowsEvent) callconv(.c
                 .hidden = event.hidden != 0,
             } });
         },
+        .view_focused => state.emit(.{ .view_focused = .{
+            .window_id = event.window_id,
+            .label = event.view_label[0..event.view_label_len],
+        } }),
         .shortcut => state.emit(.{ .shortcut = .{
             .id = event.shortcut_id[0..event.shortcut_id_len],
             .key = event.shortcut_key[0..event.shortcut_key_len],
@@ -1856,6 +1861,16 @@ test "windows window focus includes focused native child views" {
     const focus_edge = host_source[focus_edge_at.?..];
     try std.testing.expect(std.mem.indexOf(u8, focus_edge, "HWND root = GetAncestor(hwnd, GA_ROOT);") != null);
     try std.testing.expect(std.mem.indexOf(u8, focus_edge, "entry.second.hwnd == root") != null);
+}
+
+test "windows webview focus reports the focused child label" {
+    // WebView2 owns the page HWND and its input; GotFocus is the
+    // controller-level edge that mirrors keyboard ownership back into
+    // the runtime's per-view register.
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "add_GotFocus(Callback<ICoreWebView2FocusChangedEventHandler>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "event.kind = kViewFocused;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "event.view_label = focused->second.label.c_str();") != null);
 }
 
 test "windows audio event maps kinds and payload" {

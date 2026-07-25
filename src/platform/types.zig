@@ -2187,6 +2187,15 @@ pub const Appearance = struct {
     high_contrast: bool = false,
 };
 
+/// A platform child view gained keyboard focus through native input.
+/// Canvas/GPU input reports its own focus edge with the input event;
+/// native webviews and controls need this explicit inverse edge because
+/// their pointer stream never crosses the runtime.
+pub const ViewFocusEvent = struct {
+    window_id: WindowId = 1,
+    label: []const u8,
+};
+
 pub const Event = union(enum) {
     app_start,
     app_activated,
@@ -2197,6 +2206,7 @@ pub const Event = union(enum) {
     surface_resized: Surface,
     window_frame_changed: WindowState,
     window_focused: WindowId,
+    view_focused: ViewFocusEvent,
     bridge_message: BridgeMessage,
     tray_action: TrayItemId,
     shortcut: ShortcutEvent,
@@ -2233,6 +2243,7 @@ pub const Event = union(enum) {
             .surface_resized => "surface_resized",
             .window_frame_changed => "window_frame_changed",
             .window_focused => "window_focused",
+            .view_focused => "view_focused",
             .bridge_message => "bridge_message",
             .tray_action => "tray_action",
             .shortcut => "shortcut",

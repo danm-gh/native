@@ -178,6 +178,7 @@ fn formatLayoutDescription(comptime epoch: u32) []const u8 {
             "surface_resized=" ++ layout_fingerprint.describe(platform.Surface) ++ "\n" ++
             "window_frame_changed=" ++ layout_fingerprint.describe(platform.WindowState) ++ "\n" ++
             "window_focused=" ++ layout_fingerprint.describe(platform.WindowId) ++ "\n" ++
+            "view_focused=" ++ layout_fingerprint.describe(platform.ViewFocusEvent) ++ "\n" ++
             "bridge_message=" ++ layout_fingerprint.describe(platform.BridgeMessage) ++ "\n" ++
             "tray_action=" ++ layout_fingerprint.describe(platform.TrayItemId) ++ "\n" ++
             "shortcut=" ++ layout_fingerprint.describe(platform.ShortcutEvent) ++ "\n" ++
@@ -462,6 +463,7 @@ const EventTag = enum(u8) {
     widget_accessibility_action = 23,
     audio = 24,
     video = 25,
+    view_focused = 26,
 };
 
 // The bit assignments below are hand-written wire layout: they are
@@ -568,6 +570,11 @@ pub fn encodeEvent(event: platform.Event, buffer: []u8) JournalError![]const u8 
         .window_focused => |window_id| {
             try cursor.writeEnum(EventTag.window_focused);
             try cursor.writeInt(u64, window_id);
+        },
+        .view_focused => |focus| {
+            try cursor.writeEnum(EventTag.view_focused);
+            try cursor.writeInt(u64, focus.window_id);
+            try cursor.writeStr(focus.label);
         },
         .bridge_message => |message| {
             try cursor.writeEnum(EventTag.bridge_message);
@@ -779,6 +786,10 @@ pub fn decodeEvent(bytes: []const u8, storage: *EventDecodeStorage) JournalError
             } };
         },
         .window_focused => .{ .window_focused = try cursor.readInt(u64) },
+        .view_focused => .{ .view_focused = .{
+            .window_id = try cursor.readInt(u64),
+            .label = try cursor.readStr(),
+        } },
         .bridge_message => blk: {
             const message_bytes = try cursor.readStr();
             const origin = try cursor.readStr();
@@ -1577,6 +1588,11 @@ test "event codec round-trips every payload variant" {
     {
         const decoded = try roundTripEvent(.{ .window_focused = 4 });
         try testing.expectEqual(@as(u64, 4), decoded.window_focused);
+    }
+    {
+        const decoded = try roundTripEvent(.{ .view_focused = .{ .window_id = 4, .label = "preview" } });
+        try testing.expectEqual(@as(u64, 4), decoded.view_focused.window_id);
+        try testing.expectEqualStrings("preview", decoded.view_focused.label);
     }
     {
         const decoded = try roundTripEvent(.{ .gpu_surface_resized = .{

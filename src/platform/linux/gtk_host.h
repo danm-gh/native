@@ -30,6 +30,7 @@ typedef enum {
     NATIVE_SDK_GTK_EVENT_APPEARANCE = 16,
     NATIVE_SDK_GTK_EVENT_AUDIO = 17,
     NATIVE_SDK_GTK_EVENT_CONTEXT_MENU_ACTION = 18,
+    NATIVE_SDK_GTK_EVENT_VIEW_FOCUSED = 19,
 } native_sdk_gtk_event_kind_t;
 
 typedef struct {

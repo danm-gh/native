@@ -581,7 +581,7 @@ test "terminal Paste shortcuts and context menus use VT encoding and revalidate 
     try testing.expect(!h.harness.null_platform.contextMenuItems()[1].enabled);
 }
 
-test "the terminal cursor follows app and key-window keyboard ownership" {
+test "terminal and address focus yield to the webview and recover on canvas click" {
     if (comptime !native_sdk.runtime.terminal_sessions_enabled) return error.SkipZigTest;
     var h = try Harness.create();
     defer h.destroy();
@@ -592,11 +592,49 @@ test "the terminal cursor follows app and key-window keyboard ownership" {
 
     const layout = try h.harness.runtime.canvasWidgetLayout(1, app.canvas_label);
     var terminal_id: canvas.ObjectId = 0;
+    var address_id: canvas.ObjectId = 0;
     for (layout.nodes) |node| {
         if (node.widget.kind == .terminal) terminal_id = node.widget.id;
+        if (std.mem.eql(u8, node.widget.semantics.label, "Address")) address_id = node.widget.id;
     }
     try testing.expect(terminal_id != 0);
+    try testing.expect(address_id != 0);
     const view_index = h.harness.runtime.findViewIndex(1, app.canvas_label) orelse return error.TestUnexpectedResult;
+    var webview_index: ?usize = null;
+    for (h.harness.runtime.webviews[0..h.harness.runtime.webview_count], 0..) |webview, index| {
+        if (webview.window_id == 1 and std.mem.eql(u8, webview.label, app.web_view_label)) {
+            webview_index = index;
+            break;
+        }
+    }
+    const web_index = webview_index orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(terminal_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
+    try expectTerminalCursorPaint(h.harness, terminal_id, .filled);
+
+    // The toolbar is still canvas content: clicking its address field
+    // moves widget focus within the canvas and hollows the terminal.
+    try h.click(900, 24);
+    try testing.expectEqual(address_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
+    try testing.expect(h.harness.runtime.views[view_index].focused);
+    try expectTerminalCursorPaint(h.harness, terminal_id, .hollow);
+
+    // The embedded page owns its pointer stream, so its host focus edge
+    // names the webview directly. The canvas retains the address id as
+    // focus memory but no longer paints or reports it as keyboard focus.
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .view_focused = .{
+        .window_id = 1,
+        .label = app.web_view_label,
+    } });
+    try testing.expect(!h.harness.runtime.views[view_index].focused);
+    try testing.expect(h.harness.runtime.webviews[web_index].focused);
+    try testing.expectEqual(address_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
+    try expectTerminalCursorPaint(h.harness, terminal_id, .hollow);
+
+    // A canvas click is the symmetric edge: the canvas view retakes
+    // keyboard ownership and normal hit-testing moves widget focus.
+    try h.click(200, 400);
+    try testing.expect(h.harness.runtime.views[view_index].focused);
+    try testing.expect(!h.harness.runtime.webviews[web_index].focused);
     try testing.expectEqual(terminal_id, h.harness.runtime.views[view_index].canvas_widget_focused_id);
     try expectTerminalCursorPaint(h.harness, terminal_id, .filled);
 

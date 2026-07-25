@@ -342,6 +342,17 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                     if (WindowViewMethods().findWindowIndexById(self, window_id)) |index| try WindowViewMethods().setFocusedIndex(self, index);
                     self.invalidated = true;
                 },
+                .view_focused => |focus| {
+                    // Native children (notably embedded webviews) own
+                    // their pointer stream, so the host reports the
+                    // focus edge explicitly. Keep the canvas widget id
+                    // as per-view focus memory while its view blurs:
+                    // inactive terminal/text carets paint honestly, and
+                    // clicking back into the canvas resumes its normal
+                    // pointer-driven widget focus path.
+                    try WindowViewMethods().setFocusedView(self, focus.window_id, focus.label);
+                    self.invalidated = true;
+                },
                 .frame_requested => try frame(self, app),
                 .bridge_message => |message| try handleBridgeMessage(self, app, message),
                 .tray_action => |item_id| {

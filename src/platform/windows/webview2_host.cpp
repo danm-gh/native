@@ -131,6 +131,7 @@ enum EventKind {
     kAppearance = 17,
     kAudio = 18,
     kContextMenuAction = 19,
+    kViewFocused = 20,
 };
 
 constexpr uint32_t kShortcutModifierPrimary = 1u << 0;
@@ -4268,6 +4269,7 @@ static const GUID kNativeSdkIID_EnvironmentCompletedHandler = {0x4e8a3389, 0xc9d
 static const GUID kNativeSdkIID_ControllerCompletedHandler = {0x6c4819f3, 0xc9b7, 0x4260, {0x81, 0x27, 0xc9, 0xf5, 0xbd, 0xe7, 0xf6, 0x8c}};
 static const GUID kNativeSdkIID_WebMessageReceivedHandler = {0x57213f19, 0x00e6, 0x49fa, {0x8e, 0x07, 0x89, 0x8e, 0xa0, 0x1e, 0xcb, 0xd2}};
 static const GUID kNativeSdkIID_AcceleratorKeyPressedHandler = {0xb29c7e28, 0xfa79, 0x41a8, {0x8e, 0x44, 0x65, 0x81, 0x1c, 0x76, 0xdc, 0xb2}};
+static const GUID kNativeSdkIID_FocusChangedHandler = {0x05ea24bd, 0x6452, 0x4926, {0x90, 0x14, 0x4b, 0x82, 0xb4, 0x98, 0x13, 0x5d}};
 static const GUID kNativeSdkIID_WebResourceRequestedHandler = {0xab00b74c, 0x15f1, 0x4646, {0x80, 0xe8, 0xe7, 0x63, 0x41, 0xd2, 0x5d, 0x71}};
 static const GUID kNativeSdkIID_NavigationStartingHandler = {0x9adbe429, 0xf36d, 0x432b, {0x9d, 0xdc, 0xf8, 0x88, 0x1f, 0xbd, 0x76, 0xe3}};
 
@@ -4283,6 +4285,9 @@ template <> struct WebView2HandlerIid<ICoreWebView2WebMessageReceivedEventHandle
 };
 template <> struct WebView2HandlerIid<ICoreWebView2AcceleratorKeyPressedEventHandler> {
     static const GUID &value() { return kNativeSdkIID_AcceleratorKeyPressedHandler; }
+};
+template <> struct WebView2HandlerIid<ICoreWebView2FocusChangedEventHandler> {
+    static const GUID &value() { return kNativeSdkIID_FocusChangedHandler; }
 };
 template <> struct WebView2HandlerIid<ICoreWebView2WebResourceRequestedEventHandler> {
     static const GUID &value() { return kNativeSdkIID_WebResourceRequestedHandler; }
@@ -4622,6 +4627,23 @@ static bool createChildWebView(Host *host, const std::string &key) {
                     controller->put_Bounds(bounds);
                     controller->put_ZoomFactor(found->second.zoom);
                     controller->put_IsVisible(TRUE);
+                    EventRegistrationToken focus_token = {};
+                    controller->add_GotFocus(Callback<ICoreWebView2FocusChangedEventHandler>(
+                        [host, key, lifetime](ICoreWebView2Controller *, IUnknown *) -> HRESULT {
+                            auto token = lifetime.lock();
+                            if (!token) return S_OK;
+                            std::lock_guard<std::recursive_mutex> guard(token->mutex);
+                            if (!token->alive || !host->callback) return S_OK;
+                            auto focused = host->webviews.find(key);
+                            if (focused == host->webviews.end()) return S_OK;
+                            WindowsEvent event = {};
+                            event.kind = kViewFocused;
+                            event.window_id = focused->second.window_id;
+                            event.view_label = focused->second.label.c_str();
+                            event.view_label_len = focused->second.label.size();
+                            host->callback(host->callback_context, &event);
+                            return S_OK;
+                        }).Get(), &focus_token);
                     if (found->second.webview) {
                         if (found->second.bridge_enabled) {
                             found->second.webview->AddScriptToExecuteOnDocumentCreated(nativeSdkBridgeScript(), nullptr);

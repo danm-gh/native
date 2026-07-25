@@ -40,6 +40,7 @@ const AppKitEventKind = enum(c_int) {
     context_menu_action = 19,
     audio = 20,
     video = 21,
+    view_focused = 22,
 };
 
 const AppKitEvent = extern struct {
@@ -910,6 +911,10 @@ fn appkitCallback(context: ?*anyopaque, event: *const AppKitEvent) callconv(.c) 
                 .hidden = event.hidden != 0,
             } });
         },
+        .view_focused => state.emit(.{ .view_focused = .{
+            .window_id = event.window_id,
+            .label = event.view_label[0..event.view_label_len],
+        } }),
         .shortcut => state.emit(.{ .shortcut = .{
             .id = event.shortcut_id[0..event.shortcut_id_len],
             .key = event.shortcut_key[0..event.shortcut_key_len],
@@ -2406,6 +2411,16 @@ fn flattenFilters(filters: []const platform_mod.FileFilter, buffer: []u8) []cons
 
 test "mac platform module exports type" {
     _ = MacPlatform;
+}
+
+test "mac webview presses report the focused child label" {
+    // WKWebView owns the page's pointer stream, so the AppKit host
+    // observes the down before dispatch and emits the explicit inverse
+    // edge that blurs a sibling canvas view.
+    const host_source = @embedFile("appkit_host.m");
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "NSEventMaskLeftMouseDown | NSEventMaskRightMouseDown | NSEventMaskOtherMouseDown") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, ".kind = NATIVE_SDK_APPKIT_EVENT_VIEW_FOCUSED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, ".view_label = label") != null);
 }
 
 test "mac dock icon fallback renders the embedded toolkit default" {

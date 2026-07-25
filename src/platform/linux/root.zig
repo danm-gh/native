@@ -34,6 +34,7 @@ const GtkEventKind = enum(c_int) {
     appearance = 16,
     audio = 17,
     context_menu_action = 18,
+    view_focused = 19,
 };
 
 const GtkEvent = extern struct {
@@ -571,6 +572,10 @@ fn gtkCallback(context: ?*anyopaque, event: *const GtkEvent) callconv(.c) void {
                 .focused = event.focused != 0,
             } });
         },
+        .view_focused => state.emit(.{ .view_focused = .{
+            .window_id = event.window_id,
+            .label = event.view_label[0..event.view_label_len],
+        } }),
         .shortcut => state.emit(.{ .shortcut = .{
             .id = event.shortcut_id[0..event.shortcut_id_len],
             .key = event.shortcut_key[0..event.shortcut_key_len],
@@ -1832,6 +1837,16 @@ fn viewKindInt(kind: platform_mod.ViewKind) c_int {
 
 test "linux platform module exports type" {
     _ = LinuxPlatform;
+}
+
+test "linux webview presses report the focused child label" {
+    // The capture-phase observer watches without claiming WebKit's
+    // gesture; it exists solely to mirror the focus edge into runtime
+    // state before the page handles the same press.
+    const host_source = @embedFile("gtk_host.c");
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click), GTK_PHASE_CAPTURE)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, ".kind = NATIVE_SDK_GTK_EVENT_VIEW_FOCUSED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, host_source, "native_sdk_watch_webview_pointer_focus(win, web_view);") != null);
 }
 
 test "linux refuses a .hide main window at platform init instead of a silent quit-on-close" {

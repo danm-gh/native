@@ -13,10 +13,13 @@
 //!    `ElementOptions.context_menu` (app-declared, Msg-mapped items),
 //! 2. an editable text target: the standard Cut / Copy / Paste /
 //!    Select All menu wired to the existing clipboard actions,
-//! 3. the view's live static-text selection: a Copy-only menu.
-//! The zero-code defaults (2 and 3) are presenter-only: without a native
-//! menu they degrade to the keyboard clipboard paths, never a synthesized
-//! surface (there are no app-declared items to mount).
+//! 3. a terminal target: the standard Copy / Paste menu wired to its
+//!    emulator selection and committed-input channel,
+//! 4. the view's live static-text selection: a Copy-only menu.
+//! The zero-code defaults (2 through 4) are presenter-only: without a
+//! native menu they present no synthesized surface (there are no
+//! app-declared items to mount), while their available keyboard paths
+//! remain unchanged.
 //!
 //! Presentation is asynchronous (macOS `popUpMenuPositioningItem` runs a
 //! nested tracking loop): the platform emits a `context_menu_action`
@@ -73,6 +76,7 @@ pub const PendingCanvasWidgetContextMenu = struct {
     pub const Kind = enum {
         app,
         edit_text,
+        terminal,
         static_copy,
     };
 };
@@ -180,9 +184,10 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                 return;
             }
 
-            // 2. Editable text target: the standard edit menu, wired to
-            // the existing clipboard actions. Focus the field first so
-            // paste lands where the user clicked (macOS behavior).
+            // 2/3. Editable text and terminal targets: standard menus
+            // wired to the existing clipboard and committed-input
+            // paths. Focus the target first so paste lands where the
+            // user clicked (macOS behavior).
             if (pointer_event.target) |target| {
                 const node_index = self.views[index].canvasWidgetNodeIndexById(target.id) orelse return;
                 const widget = self.views[index].widget_layout_nodes[node_index].widget;
@@ -203,7 +208,21 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                     return;
                 }
 
-                // 3. Static text with a live selection: Copy only.
+                if (widget.kind == .terminal and !widget.state.disabled) {
+                    if (!has_presenter) return;
+                    try CanvasWidgetEventMethods().updateCanvasWidgetFocusFromPointer(self, pointer_event);
+                    const has_selection = if (widget.terminal.grid) |grid| grid.selection_active else false;
+                    items[0] = .{ .id = default_item_copy, .label = "Copy", .enabled = has_selection };
+                    items[1] = .{ .id = default_item_paste, .label = "Paste", .enabled = widget.terminal.pty != 0 };
+                    _ = try showMenu(self, app, index, .{
+                        .window_id = input_event.window_id,
+                        .target_id = target.id,
+                        .kind = .terminal,
+                    }, point, items[0..2]);
+                    return;
+                }
+
+                // 4. Static text with a live selection: Copy only.
                 const selected_id = self.views[index].canvas_widget_selected_text_id;
                 if (selected_id != 0 and selected_id == target.id) {
                     if (!has_presenter) return;
@@ -217,7 +236,7 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                 }
             }
 
-            // 4. No menu anywhere on the route: the press-and-hold
+            // 5. No menu anywhere on the route: the press-and-hold
             // alternative. Deliver the context press so `UiApp` can
             // dispatch the press target's `on_hold` Msg.
             try self.dispatchEvent(app, .{ .canvas_widget_context_press = .{
@@ -354,16 +373,19 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
             const index = runtimeFindViewIndex(self, event.window_id, event.view_label) orelse return;
 
             switch (pending.kind) {
-                .app => try self.dispatchEvent(app, .{ .canvas_widget_context_menu = .{
-                    .window_id = event.window_id,
-                    .view_label = self.views[index].label,
-                    .target_id = pending.target_id,
-                    .item_index = event.item_id - 1,
-                    // The shown snapshot's key: UiApp resolves the
-                    // selection from what was presented under this token.
-                    .token = pending.token,
-                } }),
+                .app => try self.dispatchEvent(app, .{
+                    .canvas_widget_context_menu = .{
+                        .window_id = event.window_id,
+                        .view_label = self.views[index].label,
+                        .target_id = pending.target_id,
+                        .item_index = event.item_id - 1,
+                        // The shown snapshot's key: UiApp resolves the
+                        // selection from what was presented under this token.
+                        .token = pending.token,
+                    },
+                }),
                 .edit_text => try applyDefaultEditAction(self, app, index, pending.target_id, event.item_id),
+                .terminal => try applyDefaultTerminalAction(self, app, index, pending.target_id, event.item_id),
                 .static_copy => {
                     if (event.item_id != default_item_copy) return;
                     const text = self.views[index].canvasWidgetCopyText() orelse return;
@@ -416,6 +438,43 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                     keyboard_event.keyboard.key = "a";
                     keyboard_event.keyboard.modifiers = .{ .super = true };
                     try applyEditKeyboardEvent(self, app, keyboard_event);
+                },
+                else => {},
+            }
+        }
+
+        fn applyDefaultTerminalAction(self: *Runtime, app: runtime_api.App(Runtime), view_index: usize, target_id: canvas.ObjectId, item_id: u32) anyerror!void {
+            const node_index = self.views[view_index].canvasWidgetNodeIndexById(target_id) orelse return;
+            const widget = self.views[view_index].widget_layout_nodes[node_index].widget;
+            if (widget.kind != .terminal or widget.state.disabled) return;
+
+            switch (item_id) {
+                default_item_copy => {
+                    const grid = widget.terminal.grid orelse return;
+                    if (!grid.selection_active) return;
+                    self.writeClipboard(grid.selection_text) catch return;
+                },
+                default_item_paste => {
+                    if (widget.terminal.pty == 0) return;
+                    var paste_buffer: [platform.max_clipboard_data_bytes]u8 = undefined;
+                    const text = self.readClipboard(&paste_buffer) catch return;
+                    if (text.len == 0) return;
+                    // Terminals deliberately stay outside the TextBuffer
+                    // editor pipeline. Send clipboard bytes through the
+                    // same committed-text event UiApp routes to the
+                    // focused emulator session, preserving multiline
+                    // input and avoiding text-field sanitization.
+                    try self.dispatchEvent(app, .{ .canvas_widget_keyboard = .{
+                        .window_id = self.views[view_index].window_id,
+                        .view_label = self.views[view_index].label,
+                        .keyboard = .{
+                            .phase = .text_input,
+                            .focused_id = target_id,
+                            .text = text,
+                            .edit = .{ .insert_text = text },
+                        },
+                        .standalone = true,
+                    } });
                 },
                 else => {},
             }

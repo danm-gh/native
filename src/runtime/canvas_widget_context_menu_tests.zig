@@ -3,7 +3,8 @@
 //! platform's `context_menu_action` event resolves to a
 //! `.canvas_widget_context_menu` runtime event for app-declared menus,
 //! and the zero-code defaults (editable-text Cut/Copy/Paste/Select All,
-//! static-selection Copy) drive the existing clipboard actions.
+//! terminal Copy/Paste, static-selection Copy) drive the existing
+//! clipboard and committed-input actions.
 
 const support = @import("test_support.zig");
 const std = support.std;
@@ -34,6 +35,9 @@ const MenuTestApp = struct {
     last_request_point: geometry.PointF = .{},
     last_edit_insert: [64]u8 = undefined,
     last_edit_insert_len: usize = 0,
+    last_keyboard_phase: canvas.WidgetKeyboardPhase = .key_down,
+    last_keyboard_focused_id: ?canvas.ObjectId = null,
+    last_keyboard_standalone: bool = false,
     saw_truncated: bool = false,
     dismissed_count: u32 = 0,
     last_dismissed_token: u64 = 0,
@@ -97,6 +101,9 @@ const MenuTestApp = struct {
                 if (self.dismissal_error) |err| return err;
             },
             .canvas_widget_keyboard => |keyboard_event| {
+                self.last_keyboard_phase = keyboard_event.keyboard.phase;
+                self.last_keyboard_focused_id = keyboard_event.keyboard.focused_id;
+                self.last_keyboard_standalone = keyboard_event.standalone;
                 if (keyboard_event.keyboard.edit_truncated) self.saw_truncated = true;
                 if (keyboard_event.keyboard.edit) |edit| switch (edit) {
                     .insert_text => |text| {
@@ -459,6 +466,60 @@ test "a near-capacity multi-line context-menu paste sanitizes before it clamps" 
     try std.testing.expectEqualStrings("abc", text[text.len - 3 ..]);
     try std.testing.expectEqualStrings("abc", app_state.last_edit_insert[0..app_state.last_edit_insert_len]);
     try std.testing.expect(!app_state.saw_truncated);
+}
+
+test "right click on a terminal presents Copy and Paste wired to selection and committed input" {
+    var app_state: MenuTestApp = .{};
+    const app = app_state.app();
+    const harness = try createMenuHarness(app);
+    defer harness.destroy(std.testing.allocator);
+
+    var grid = canvas.TerminalGrid{
+        .background = canvas.Color.rgba(0, 0, 0, 1),
+        .foreground = canvas.Color.rgba(1, 1, 1, 1),
+        .cursor_color = canvas.Color.rgba(1, 1, 1, 1),
+        .selection_color = canvas.Color.rgba(0, 0.5, 1, 1),
+        .screen_text = "alpha beta",
+        .selection_text = "beta",
+        .selection_active = true,
+    };
+    const terminal = canvas.Widget{
+        .id = 2,
+        .kind = .terminal,
+        .frame = geometry.RectF.init(12, 16, 280, 120),
+        .terminal = .{ .pty = 7, .grid = &grid },
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{terminal} }, geometry.RectF.init(0, 0, 320, 200), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    try harness.runtime.dispatchPlatformEvent(app, rightClick(100, 40));
+
+    try std.testing.expectEqual(@as(usize, 1), harness.null_platform.context_menu_request_count);
+    const recorded = harness.null_platform.contextMenuItems();
+    try std.testing.expectEqual(@as(usize, 2), recorded.len);
+    try std.testing.expectEqual(@as(u32, 2), recorded[0].id);
+    try std.testing.expectEqualStrings("Copy", recorded[0].label);
+    try std.testing.expect(recorded[0].enabled);
+    try std.testing.expectEqual(@as(u32, 3), recorded[1].id);
+    try std.testing.expectEqualStrings("Paste", recorded[1].label);
+    try std.testing.expect(recorded[1].enabled);
+    // Secondary-click focus ensures the eventual paste addresses this
+    // terminal even when another editor previously owned focus.
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_focused_id);
+
+    try harness.runtime.dispatchPlatformEvent(app, menuAction(harness.null_platform.context_menu_token, 2));
+    var clipboard_buffer: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("beta", try harness.runtime.readClipboard(&clipboard_buffer));
+
+    const paste = "printf 'ready'\n";
+    try harness.runtime.writeClipboard(paste);
+    try harness.runtime.dispatchPlatformEvent(app, rightClick(100, 40));
+    try harness.runtime.dispatchPlatformEvent(app, menuAction(harness.null_platform.context_menu_token, 3));
+    try std.testing.expectEqual(canvas.WidgetKeyboardPhase.text_input, app_state.last_keyboard_phase);
+    try std.testing.expectEqual(@as(?canvas.ObjectId, 2), app_state.last_keyboard_focused_id);
+    try std.testing.expect(app_state.last_keyboard_standalone);
+    try std.testing.expectEqualStrings(paste, app_state.last_edit_insert[0..app_state.last_edit_insert_len]);
 }
 
 test "right click on selected static text presents a copy-only menu" {

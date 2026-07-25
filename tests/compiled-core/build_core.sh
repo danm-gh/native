@@ -95,6 +95,30 @@ done
 # fixture calls it, and its Uint8Array augmentation collides with the
 # toolchain's own node ambient typings.
 cp "$repo/tests/compiled-core/sdk_core_static.ts" "$work/sdk/core.ts"
+# Transform 4, duplicate-alias dedupe: a tabled type's member order must
+# derive from one declaration site, and some fixtures declare their own
+# copy of an effect-state alias the SDK also exports (identical member
+# order, no import between them). The staged SDK copy drops any alias the
+# staged author sources declare, so the one surviving site is the
+# author's.
+author_aliases=""
+for src in $sources; do
+  more="$(awk '/^export type [A-Za-z0-9_]+ =/ { print $3 }' "$work/$(basename "$src")" | tr '\n' ' ')"
+  author_aliases="$author_aliases $more"
+done
+awk -v names="$author_aliases" '
+  BEGIN { n = split(names, arr, " "); for (i = 1; i <= n; i++) drop[arr[i]] = 1 }
+  {
+    if (skip) { if ($0 ~ /;[ \t]*$/) skip = 0; next }
+    if ($0 ~ /^export type [A-Za-z0-9_]+ =/ && ($3 in drop)) {
+      if ($0 ~ /;[ \t]*$/) next
+      skip = 1
+      next
+    }
+    print
+  }
+' "$work/sdk/core.ts" > "$work/sdk/core.deduped.ts"
+mv "$work/sdk/core.deduped.ts" "$work/sdk/core.ts"
 cp "$repo/tests/compiled-core/wire.ts" "$work/wire.ts"
 cp "$repo/tests/compiled-core/adapters/$adapter" "$work/core_adapter.ts"
 cp "$repo/tests/compiled-core/profiles/$fixture.profile.json" "$work/profile.json"

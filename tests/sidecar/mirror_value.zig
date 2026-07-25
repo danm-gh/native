@@ -10,6 +10,10 @@ const std = @import("std");
 /// field/arm/member NAME, normalizing numeric classes and reference
 /// storage (pointers deref on read, re-materialize on write).
 pub fn convertValue(comptime Target: type, value: anytype, allocator: std.mem.Allocator) !Target {
+    // The walk is a comptime recursion over a whole model or message
+    // type; the corpus's widest ones (dozens of fields, a fifty-arm
+    // union) run past the default branch budget.
+    @setEvalBranchQuota(200_000);
     const Source = @TypeOf(value);
     if (@typeInfo(Source) == .pointer and @typeInfo(Source).pointer.size == .one) {
         return convertValue(Target, value.*, allocator);

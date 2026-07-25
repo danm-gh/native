@@ -193,10 +193,10 @@ export function initialModel(): [Model, Cmd<Msg>] {
   ];
 }
 
-export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "toggle":
-      return { ...model, polling: !model.polling };
+      return [{ ...model, polling: !model.polling }, Cmd.none];
     case "refresh":
       return [model, Cmd.request("status.read", model.status, { key: "status", ok: "loaded", err: "failed" })];
     case "abort":
@@ -206,13 +206,13 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "note":
       return [model, Cmd.host("blob.put", asciiBytes("hi"))];
     case "loaded":
-      return { ...model, status: msg.body };
+      return [{ ...model, status: msg.body }, Cmd.none];
     case "failed":
-      return { ...model, failures: model.failures + 1, lastErr: msg.why };
+      return [{ ...model, failures: model.failures + 1, lastErr: msg.why }, Cmd.none];
     case "tick":
-      return { ...model, ticks: model.ticks + 1, lastTickAt: msg.at };
+      return [{ ...model, ticks: model.ticks + 1, lastTickAt: msg.at }, Cmd.none];
     case "stamped":
-      return { ...model, stampMs: msg.at };
+      return [{ ...model, stampMs: msg.at }, Cmd.none];
     case "save":
       // The e2e suite runs with the repo root as cwd; the store lives
       // under the zig cache like every tmp-dir test artifact.
@@ -220,7 +220,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "load":
       return [model, Cmd.readFile(asciiBytes(".zig-cache/tmp/ts-core-e2e/store.bin"), { key: "file", ok: "loaded", err: "failed" })];
     case "wrote":
-      return { ...model, saved: model.saved + 1 };
+      return [{ ...model, saved: model.saved + 1 }, Cmd.none];
     case "get":
       return [
         model,
@@ -230,7 +230,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         ),
       ];
     case "fetched":
-      return { ...model, code: msg.status, status: msg.body };
+      return [{ ...model, code: msg.status, status: msg.body }, Cmd.none];
     case "share":
       return [model, Cmd.clipboardWrite(model.status)];
     case "paste":
@@ -240,7 +240,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "halt":
       return [model, Cmd.cancel("boom")];
     case "boomed":
-      return { ...model, firedAt: msg.at };
+      return [{ ...model, firedAt: msg.at }, Cmd.none];
     case "run":
       // A real, hermetic child: two stdout lines, then a clean exit.
       return [model, Cmd.spawn([asciiBytes("/bin/sh"), asciiBytes("-c"), asciiBytes("printf 'one\\ntwo\\n'")], { key: "job", line: "lined", exit: "ended", err: "failed" })];
@@ -250,9 +250,9 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "kill":
       return [model, Cmd.cancel("job")];
     case "lined":
-      return { ...model, lines: model.lines + 1, lastLine: msg.text };
+      return [{ ...model, lines: model.lines + 1, lastLine: msg.text }, Cmd.none];
     case "ended":
-      return { ...model, exitCode: msg.code };
+      return [{ ...model, exitCode: msg.code }, Cmd.none];
     case "play":
       return [model, Cmd.audioPlay("track", { path: asciiBytes("music/track.mp3") }, { event: "audio_evt" })];
     case "pause_music":
@@ -266,7 +266,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "stop_music":
       return [model, Cmd.audioStop("track")];
     case "audio_evt":
-      return {
+      return [{
         ...model,
         audioState: msg.state,
         posMs: msg.positionMs,
@@ -274,7 +274,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         playing: msg.playing,
         bands: msg.bands,
         audioEvents: model.audioEvents + 1,
-      };
+      }, Cmd.none];
     case "play_clip":
       // The media-surface id a video widget would bind: the decoded
       // frames feed that texture channel platform-side; only the
@@ -285,7 +285,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "stop_clip":
       return [model, Cmd.videoStop("clip")];
     case "video_evt":
-      return {
+      return [{
         ...model,
         videoState: msg.state,
         vPosMs: msg.positionMs,
@@ -294,7 +294,7 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
         vW: msg.width,
         vH: msg.height,
         videoEvents: model.videoEvents + 1,
-      };
+      }, Cmd.none];
     case "show_cover":
       // The runtime ImageId the views bind; the model only adopts it
       // on a loaded result (the store-the-id-on-success discipline).
@@ -393,10 +393,10 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // The echoed id IS the adopted id — the store-the-id-on-success
       // discipline reads it off the result instead of hardcoding it.
       if (msg.state === "loaded")
-        return { ...model, cover: msg.id, coverW: msg.width, coverH: msg.height, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id };
+        return [{ ...model, cover: msg.id, coverW: msg.width, coverH: msg.height, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id }, Cmd.none];
       if (msg.state === "rejected")
-        return { ...model, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id, rejectSeq: model.rejectSeq + 1, imgRejectAt: model.rejectSeq + 1 };
-      return { ...model, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id };
+        return [{ ...model, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id, rejectSeq: model.rejectSeq + 1, imgRejectAt: model.rejectSeq + 1 }, Cmd.none];
+      return [{ ...model, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id }, Cmd.none];
     case "watch":
       return [model, Cmd.channelOpen(41, { event: "chan_evt" })];
     case "mix_reject":
@@ -417,8 +417,8 @@ export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       ])];
     case "chan_evt":
       if (msg.state === "rejected")
-        return { ...model, chanState: msg.state, chanEvents: model.chanEvents + 1, rejectSeq: model.rejectSeq + 1, chanRejectAt: model.rejectSeq + 1 };
-      return { ...model, chanState: msg.state, chanEvents: model.chanEvents + 1 };
+        return [{ ...model, chanState: msg.state, chanEvents: model.chanEvents + 1, rejectSeq: model.rejectSeq + 1, chanRejectAt: model.rejectSeq + 1 }, Cmd.none];
+      return [{ ...model, chanState: msg.state, chanEvents: model.chanEvents + 1 }, Cmd.none];
   }
 }
 

@@ -44,6 +44,11 @@ pub const enabled = term_vt.enabled;
 /// One session per pty slot: the effects engine's own table bound.
 pub const max_sessions: usize = effects.max_effect_ptys;
 
+/// What one press selects. The runtime's click count picks it — single
+/// drags cells, double drags whole words, triple drags whole lines —
+/// the selection granularity every terminal shares.
+pub const SelectGranularity = enum { cell, word, line };
+
 /// The journaled pty verbs the store drives, type-erased so this module
 /// never names the Msg-generic engine: the app loop wraps its engine.
 /// `write` is `Effects.ptyWrite` (all-or-nothing, verdict-journaling);
@@ -105,6 +110,41 @@ const DisabledStore = struct {
         _ = pty;
         _ = delta_y;
         return false;
+    }
+    pub fn selectionPress(self: *DisabledStore, pty: u64, cell: canvas.TerminalCellPos, x_frac: f32, grain: SelectGranularity) bool {
+        _ = self;
+        _ = pty;
+        _ = cell;
+        _ = x_frac;
+        _ = grain;
+        return false;
+    }
+    pub fn selectionDrag(self: *DisabledStore, pty: u64, cell: canvas.TerminalCellPos, x_frac: f32) bool {
+        _ = self;
+        _ = pty;
+        _ = cell;
+        _ = x_frac;
+        return false;
+    }
+    pub fn selectionRelease(self: *DisabledStore, pty: u64) void {
+        _ = self;
+        _ = pty;
+    }
+    pub fn clearSelection(self: *DisabledStore, pty: u64) bool {
+        _ = self;
+        _ = pty;
+        return false;
+    }
+    pub fn selectionActive(self: *DisabledStore, pty: u64) bool {
+        _ = self;
+        _ = pty;
+        return false;
+    }
+    pub fn selectionText(self: *DisabledStore, pty: u64, gpa: std.mem.Allocator) ?[:0]const u8 {
+        _ = self;
+        _ = pty;
+        _ = gpa;
+        return null;
     }
     pub fn reconcile(self: *DisabledStore, pty: u64, bound_scrollback: u32, cols: u16, rows: u16) ?canvas.TerminalState {
         _ = self;
@@ -321,6 +361,48 @@ const EnabledStore = struct {
         return true;
     }
 
+    /// Pointer selection over a bound terminal. `cell` is the viewport
+    /// cell under the pointer and `x_frac` the pointer's position WITHIN
+    /// that column (0..1, the edge the range flips on); `grain` comes
+    /// from the runtime's click count. Returns whether the published
+    /// snapshot changed — the caller's repaint trigger.
+    pub fn selectionPress(self: *EnabledStore, pty: u64, cell: canvas.TerminalCellPos, x_frac: f32, grain: SelectGranularity) bool {
+        const session = self.find(pty) orelse return false;
+        return session.selectionPress(cell, x_frac, grain);
+    }
+
+    /// Extend the live pointer selection to the cell under the pointer.
+    /// A no-op unless a press armed the drag.
+    pub fn selectionDrag(self: *EnabledStore, pty: u64, cell: canvas.TerminalCellPos, x_frac: f32) bool {
+        const session = self.find(pty) orelse return false;
+        return session.selectionDrag(cell, x_frac);
+    }
+
+    /// End the drag. The selection STAYS (it is what a copy reads); only
+    /// the anchor is released.
+    pub fn selectionRelease(self: *EnabledStore, pty: u64) void {
+        const session = self.find(pty) orelse return;
+        session.selectionRelease();
+    }
+
+    /// Drop the selection entirely. Returns whether anything changed.
+    pub fn clearSelection(self: *EnabledStore, pty: u64) bool {
+        const session = self.find(pty) orelse return false;
+        return session.clearSelection();
+    }
+
+    pub fn selectionActive(self: *EnabledStore, pty: u64) bool {
+        const session = self.find(pty) orelse return false;
+        return session.selectionActive();
+    }
+
+    /// The selected text, caller-owned (freed with its sentinel). Null
+    /// means nothing is selected.
+    pub fn selectionText(self: *EnabledStore, pty: u64, gpa: std.mem.Allocator) ?[:0]const u8 {
+        const session = self.find(pty) orelse return null;
+        return session.selectionText(gpa);
+    }
+
     /// The per-build view-state reconcile the app loop runs against the
     /// element's laid-out extent: applies a CHANGED declared scrollback
     /// (source wins), resizes the emulator and pushes `ptyResize` when
@@ -466,6 +548,20 @@ const Session = if (enabled) struct {
     /// Cell height at the last snapshot's tokens, for wheel-delta-to-rows.
     cell_height: f32 = 18,
 
+    /// Pointer selection. The press anchor is a TRACKED pin so text
+    /// moving under a live drag — output scrolling the screen, the wheel
+    /// walking history — carries the anchor with the characters it named
+    /// instead of leaving it on whatever cell now sits at that viewport
+    /// coordinate. The screen key and generation it was taken against
+    /// validate it: an app entering the alt screen mid-drag invalidates
+    /// the anchor rather than selecting through to unrelated text.
+    select_anchor: ?*vt.Pin = null,
+    select_screen: vt.ScreenSet.Key = .primary,
+    select_generation: usize = 0,
+    select_grain: SelectGranularity = .cell,
+    select_anchor_frac: f32 = 0,
+    select_dragging: bool = false,
+
     /// Query-answer buffer's initial size and growth ceiling — the
     /// example tier's bounds verbatim (the ceiling matches the ring:
     /// replies past it could never enqueue whole anyway).
@@ -528,6 +624,7 @@ const Session = if (enabled) struct {
 
     fn destroy(session: *Session) void {
         const gpa = session.gpa;
+        session.releaseAnchor();
         session.render.deinit(gpa);
         session.stream.deinit();
         session.term.deinit(gpa);
@@ -547,6 +644,10 @@ const Session = if (enabled) struct {
     /// scrollback, modes, palette overrides, and — by rebuilding the
     /// stream — any partial escape sequence left mid-parse.
     fn resetForRespawn(session: *Session) void {
+        // Before the reset: the anchor pin lives in the page pool the
+        // reset rebuilds, and the range names text the new shell never
+        // wrote.
+        _ = session.clearSelection();
         session.term.fullReset();
         // A RIS leaves the OSC color state alone: overrides from the
         // ended shell must not tint the new one.
@@ -745,6 +846,189 @@ const Session = if (enabled) struct {
             .cols = session.cols(),
             .rows = session.rows(),
         };
+    }
+
+    // -------------------------------------------------------- selection
+
+    /// Word boundaries for a double-click drag: the emulator's own
+    /// default set, restated here because the `terminal_vt` seam
+    /// exports the selection primitives but not that table.
+    const word_boundaries = [_]u21{
+        0,   ' ', '\t', '\'', '"',
+        '│',
+        '`', '|', ':',  ';',  ',',
+        '(', ')', '[',  ']',  '{',
+        '}', '<', '>',  '$',
+    };
+
+    /// Half a column: where within a cell the range edge flips from
+    /// "before this character" to "after it". A press past the midpoint
+    /// starts at the NEXT cell — the terminal feel, and what keeps a
+    /// click with a pixel of jitter from selecting a character nobody
+    /// dragged across.
+    const cell_threshold: f32 = 0.5;
+
+    fn selectionActive(session: *Session) bool {
+        return session.term.screens.active.selection != null;
+    }
+
+    /// The anchor, valid only while the screen it was taken on is still
+    /// active and has not been rebuilt underneath it.
+    fn validAnchor(session: *Session) ?*vt.Pin {
+        const anchor = session.select_anchor orelse return null;
+        const screens = &session.term.screens;
+        if (screens.active_key != session.select_screen) return null;
+        if (screens.generation(session.select_screen) != session.select_generation) return null;
+        return anchor;
+    }
+
+    fn releaseAnchor(session: *Session) void {
+        const anchor = session.select_anchor orelse return;
+        session.select_anchor = null;
+        const screens = &session.term.screens;
+        // A bumped generation means the pool that held the pin is gone
+        // and it went with it: dropping the pointer IS the release.
+        if (screens.generation(session.select_screen) != session.select_generation) return;
+        const owner = screens.get(session.select_screen) orelse return;
+        owner.pages.untrackPin(anchor);
+    }
+
+    /// Drop any live selection and disarm the drag. Returns whether the
+    /// painted state changed.
+    fn clearSelection(session: *Session) bool {
+        session.releaseAnchor();
+        session.select_dragging = false;
+        const screen = session.term.screens.active;
+        if (screen.selection == null) return false;
+        screen.clearSelection();
+        session.snapshot_dirty = true;
+        return true;
+    }
+
+    /// Begin a pointer selection at a viewport cell.
+    fn selectionPress(session: *Session, cell: canvas.TerminalCellPos, x_frac: f32, grain: SelectGranularity) bool {
+        // A new press replaces whatever was selected, so a plain click
+        // over a live selection deselects — every terminal's rule.
+        var changed = session.clearSelection();
+        const screens = &session.term.screens;
+        const screen = screens.active;
+        const pin = screen.pages.pin(.{ .viewport = .{ .x = cell.x, .y = cell.y } }) orelse return changed;
+        const tracked = screen.pages.trackPin(pin) catch return changed;
+        session.select_anchor = tracked;
+        session.select_screen = screens.active_key;
+        session.select_generation = screens.generation(screens.active_key);
+        session.select_grain = grain;
+        session.select_anchor_frac = x_frac;
+        session.select_dragging = true;
+        // A single click opens an EMPTY range that the drag makes real;
+        // word and line grains select under the pointer immediately, the
+        // double- and triple-click convention.
+        if (grain != .cell and session.applySelection(pin, x_frac)) changed = true;
+        return changed;
+    }
+
+    /// Extend the armed selection to the cell under the pointer.
+    fn selectionDrag(session: *Session, cell: canvas.TerminalCellPos, x_frac: f32) bool {
+        if (!session.select_dragging) return false;
+        const screen = session.term.screens.active;
+        const head = screen.pages.pin(.{ .viewport = .{ .x = cell.x, .y = cell.y } }) orelse return false;
+        return session.applySelection(head, x_frac);
+    }
+
+    /// End the drag, keeping the selected range: it is what a copy
+    /// reads. Only the anchor is released.
+    fn selectionRelease(session: *Session) void {
+        session.select_dragging = false;
+        session.releaseAnchor();
+    }
+
+    /// Resolve anchor-to-head at the current granularity and publish it.
+    /// Returns whether the emulator's range actually moved.
+    fn applySelection(session: *Session, head: vt.Pin, head_frac: f32) bool {
+        const anchor = session.validAnchor() orelse {
+            // The anchor named text this screen no longer holds: the
+            // honest state is no selection, not a range extended from a
+            // coordinate that means something else now.
+            return session.clearSelection();
+        };
+        const screen = session.term.screens.active;
+        const next: ?vt.Selection = switch (session.select_grain) {
+            .cell => cellSelection(anchor.*, head, session.select_anchor_frac, head_frac),
+            .word => wordSelection(screen, anchor.*, head),
+            .line => lineSelection(screen, anchor.*, head),
+        };
+        if (screen.selection) |live| {
+            if (next) |proposed| {
+                if (live.eql(proposed)) return false;
+            }
+        } else if (next == null) return false;
+        screen.select(next) catch screen.clearSelection();
+        session.snapshot_dirty = true;
+        return true;
+    }
+
+    /// Cell-granular drag: the range runs from the anchor to the head,
+    /// each endpoint included only once the pointer has passed that
+    /// cell's midpoint in the direction of travel.
+    fn cellSelection(anchor: vt.Pin, head: vt.Pin, anchor_frac: f32, head_frac: f32) ?vt.Selection {
+        const same_cell = anchor.eql(head);
+        const backward = if (same_cell) head_frac < anchor_frac else head.before(anchor);
+        const keep_anchor = if (backward) anchor_frac >= cell_threshold else anchor_frac < cell_threshold;
+        const keep_head = if (backward) head_frac < cell_threshold else head_frac >= cell_threshold;
+        const start: vt.Pin = if (keep_anchor)
+            anchor
+        else if (backward)
+            anchor.leftWrap(1) orelse anchor
+        else
+            anchor.rightWrap(1) orelse anchor;
+        const end: vt.Pin = if (keep_head)
+            head
+        else if (backward)
+            head.rightWrap(1) orelse head
+        else
+            head.leftWrap(1) orelse head;
+        // A press that never crossed a cell edge — and any range whose
+        // excluded endpoint swallowed the whole span — is no selection,
+        // not a stray one-cell wash.
+        if (!keep_anchor and (same_cell or end.eql(anchor))) return null;
+        if (!keep_head and start.eql(head)) return null;
+        return .init(start, end, false);
+    }
+
+    /// Word-granular drag: the range spans the whole word under the
+    /// anchor through the whole word under the head.
+    fn wordSelection(screen: *vt.Screen, anchor: vt.Pin, head: vt.Pin) ?vt.Selection {
+        const at_anchor = screen.selectWordBetween(anchor, head, &word_boundaries) orelse return null;
+        const at_head = screen.selectWordBetween(head, anchor, &word_boundaries) orelse return null;
+        return if (head.before(anchor))
+            .init(at_head.start(), at_anchor.end(), false)
+        else
+            .init(at_anchor.start(), at_head.end(), false);
+    }
+
+    /// Line-granular drag: whole logical lines, soft wraps followed.
+    fn lineSelection(screen: *vt.Screen, anchor: vt.Pin, head: vt.Pin) ?vt.Selection {
+        const at_head = screen.selectLine(.{ .pin = head }) orelse return null;
+        // A blank anchor line still selects: fall back to the untrimmed
+        // line so dragging from empty space works.
+        var sel = screen.selectLine(.{ .pin = anchor }) orelse
+            screen.selectLine(.{ .pin = anchor, .whitespace = null }) orelse return null;
+        if (head.before(anchor)) {
+            sel.startPtr().* = at_head.start();
+        } else {
+            sel.endPtr().* = at_head.end();
+        }
+        return sel;
+    }
+
+    /// The selected text, caller-owned (freed with its sentinel). Null
+    /// is "nothing is selected" — and a serialization failure over a
+    /// live range answers null too, so a copy that cannot be produced
+    /// simply does not happen.
+    fn selectionText(session: *Session, gpa: std.mem.Allocator) ?[:0]const u8 {
+        const screen = session.term.screens.active;
+        const selection = screen.selection orelse return null;
+        return screen.selectionString(gpa, .{ .sel = selection, .trim = true }) catch null;
     }
 
     // --------------------------------------------------------- keyboard
@@ -1024,9 +1308,21 @@ const Session = if (enabled) struct {
                 session.cells_buf[cell_index] = out;
                 cell_index += 1;
             }
+            // The emulator resolves the live selection into an inclusive
+            // column range per viewport row; the painter's wash reads
+            // exactly this, clamped to the columns actually published.
+            const selection: ?[2]u16 = sel: {
+                const range = row.selection orelse break :sel null;
+                if (cols_here == 0) break :sel null;
+                const last: u16 = @intCast(cols_here - 1);
+                break :sel .{
+                    @min(@as(u16, @intCast(range[0])), last),
+                    @min(@as(u16, @intCast(range[1])), last),
+                };
+            };
             session.rows_buf[y] = .{
                 .cells = session.cells_buf[row_start..cell_index],
-                .selection = null,
+                .selection = selection,
             };
         }
 

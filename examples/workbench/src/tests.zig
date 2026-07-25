@@ -87,6 +87,10 @@ test "the markup lays a terminal-left split with a browser toolbar and no tabs" 
     try testing.expectEqual(canvas.WidgetKind.terminal, terminal.kind);
     try testing.expectEqual(app.shell_effect_key, terminal.terminal.pty);
     try testing.expectEqual(@as(u32, 0), terminal.terminal.scrollback);
+    // Full-bleed terminal chrome: keyboard focus stays functional, but
+    // its ring dissolves into the pane instead of leaving only the
+    // exposed top edge visible as a stray horizontal rule.
+    try testing.expectEqualDeep((canvas.DesignTokens{}).colors.background, terminal.style.focus_ring.?);
 
     // The browser chrome is the whole toolbar: back, forward, reload,
     // address bar — and nothing else. No tabs anywhere in the tree.

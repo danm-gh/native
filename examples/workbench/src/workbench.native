@@ -17,8 +17,11 @@
            with only the lights floating over it. -->
       <row height="{titlebar_band}" window-drag="true"></row>
       <!-- Autofocused: a terminal window's keyboard belongs to the shell
-           the moment it opens, no click first. -->
-      <terminal pty="{shell_key}" scrollback="{term_scrollback}" on-terminal="term_state" autofocus="true" grow="1" label="Shell" />
+           the moment it opens, no click first. This is a full-bleed pane,
+           so dissolve its focus ring into the background; otherwise the
+           exposed top edge reads as a stray rule while the other three
+           edges disappear into the window and split boundaries. -->
+      <terminal pty="{shell_key}" scrollback="{term_scrollback}" on-terminal="term_state" autofocus="true" grow="1" focus-ring="background" label="Shell" />
     </column>
     <column min-width="420">
       <!-- The browser toolbar: navigation cluster, then the address bar

@@ -84,8 +84,17 @@ resolve_specifiers() {
 for src in $sources; do
   resolve_specifiers "$repo/$src" "$work/$(basename "$src")"
 done
+# Transform 5, event-record storage: the toolchain's sidecar emitter
+# reads a declaration's FORM as its storage class — an `interface` is a
+# by-reference node type, an object-literal `type` alias is value-stored
+# — and the host-constructed channel arms (chrome, appearance) must
+# carry value-stored records, because the host builds those records by
+# field name. The two forms are interchangeable for these shapes (no
+# declaration merging, no inheritance), so the staged SDK event/text
+# modules spell them as aliases.
 for sdk_file in text.ts events.ts; do
-  cp "$repo/packages/core/sdk/$sdk_file" "$work/sdk/$sdk_file"
+  sed -e 's|^export interface \([A-Za-z0-9_]*\) {|export type \1 = {|' \
+    "$repo/packages/core/sdk/$sdk_file" > "$work/sdk/$sdk_file"
 done
 # The stage's @native-sdk/core is the static restatement: the reference
 # module's factory VALUES verbatim, inside the toolchain's static
@@ -96,14 +105,19 @@ done
 # toolchain's own node ambient typings.
 cp "$repo/tests/compiled-core/sdk_core_static.ts" "$work/sdk/core.ts"
 # Transform 4, duplicate-alias dedupe: a tabled type's member order must
-# derive from one declaration site, and some fixtures declare their own
-# copy of an effect-state alias the SDK also exports (identical member
-# order, no import between them). The staged SDK copy drops any alias the
-# staged author sources declare, so the one surviving site is the
-# author's.
+# derive from one declaration site, and the same effect-state alias is
+# spelled in more than one place across the corpus (a fixture declares
+# its own copy, and the SDK's events subpath declares the copy the root
+# module also carries — identical member order, no import between them).
+# The staged root-module copy drops any alias another staged file
+# declares, so the one surviving site is the one the author imports.
 author_aliases=""
 for src in $sources; do
   more="$(awk '/^export type [A-Za-z0-9_]+ =/ { print $3 }' "$work/$(basename "$src")" | tr '\n' ' ')"
+  author_aliases="$author_aliases $more"
+done
+for sdk_file in text.ts events.ts; do
+  more="$(awk '/^export type [A-Za-z0-9_]+ =/ { print $3 }' "$work/sdk/$sdk_file" | tr '\n' ' ')"
   author_aliases="$author_aliases $more"
 done
 awk -v names="$author_aliases" '

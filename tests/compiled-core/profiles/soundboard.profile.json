@@ -1,6 +1,6 @@
 {
   "profile_format": 1,
-  "name": "native-sdk-soundboard-probe",
+  "name": "native-sdk-soundboard-core",
   "entry": "core_adapter.ts",
   "emission": "llvm",
   "abi": {
@@ -23,7 +23,9 @@
     { "export": "dispatch_scroll_state", "symbol": "nsc_core_dispatch_scroll_state", "params": ["u8", "f64", "f64", "f64", "f64", "f64", "f64", "f64", "f64"], "returns": "bytes" },
     { "export": "subscriptions", "symbol": "nsc_core_subscriptions", "params": [], "returns": "bytes" },
     { "export": "model_snapshot", "symbol": "nsc_core_model_snapshot", "params": [], "returns": "bytes" },
-    { "export": "helper_call", "symbol": "nsc_core_helper_call", "params": ["u32", "bytes"], "returns": "bytes" }
+    { "export": "helper_call", "symbol": "nsc_core_helper_call", "params": ["u32", "bytes"], "returns": "bytes" },
+    { "export": "abi_frame_msg", "symbol": "nsc_core_frame_msg", "params": ["f64", "f64", "f64", "f64"], "returns": "bytes" },
+    { "export": "abi_key_msg", "symbol": "nsc_core_key_msg", "params": ["bytes", "u8", "u8", "u8", "u8"], "returns": "bytes" }
   ],
   "sidecar": {
     "path": "core.contract.json",

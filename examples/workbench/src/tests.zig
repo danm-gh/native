@@ -44,6 +44,22 @@ fn countKind(widget: canvas.Widget, kind: canvas.WidgetKind) usize {
     return total;
 }
 
+/// Find a point that the text field's own hit mapper resolves to the
+/// requested byte offset. Tests can select exact URL spans without
+/// duplicating font metrics or hard-coding glyph widths.
+fn pointForTextOffset(widget: canvas.Widget, tokens: canvas.DesignTokens, target: usize) ?geometry.PointF {
+    var y: f32 = widget.frame.y + 2;
+    while (y < widget.frame.y + widget.frame.height) : (y += 4) {
+        var x: f32 = widget.frame.x + 1;
+        while (x < widget.frame.x + widget.frame.width) : (x += 0.5) {
+            const point = geometry.PointF.init(x, y);
+            const offset = canvas.textOffsetForWidgetPoint(widget, point, tokens) orelse continue;
+            if (offset == target) return point;
+        }
+    }
+    return null;
+}
+
 /// A booted model: the history seeded and the shell spawn requested,
 /// exactly as `init_fx` leaves it.
 fn bootedModel(fx: *app.Effects) Model {
@@ -410,6 +426,70 @@ const Harness = struct {
         return lookup.resolve(lookup.context, app.shell_effect_key) orelse error.TestExpectedGrid;
     }
 };
+
+test "deleting a pointer-selected address span updates the model-owned buffer" {
+    var h = try Harness.create();
+    defer h.destroy();
+
+    const url = "https://test.com";
+    h.app_state.model.address_field.set(url);
+    try h.app_state.rebuild(&h.harness.runtime, 1);
+
+    const layout = try h.harness.runtime.canvasWidgetLayout(1, app.canvas_label);
+    var address: ?canvas.Widget = null;
+    for (layout.nodes) |node| {
+        if (std.mem.eql(u8, node.widget.semantics.label, "Address")) {
+            address = node.widget;
+            break;
+        }
+    }
+    const field = address orelse return error.TestUnexpectedResult;
+    const view_index = h.harness.runtime.findViewIndex(1, app.canvas_label) orelse return error.TestUnexpectedResult;
+    const tokens = h.harness.runtime.views[view_index].widget_tokens;
+    const selection_start = pointForTextOffset(field, tokens, "https://".len) orelse return error.TestUnexpectedResult;
+    const selection_end = pointForTextOffset(field, tokens, "https://test".len) orelse return error.TestUnexpectedResult;
+
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .pointer_down,
+        .x = selection_start.x,
+        .y = selection_start.y,
+    } });
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .pointer_drag,
+        .x = selection_end.x,
+        .y = selection_end.y,
+    } });
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .pointer_up,
+        .x = selection_end.x,
+        .y = selection_end.y,
+    } });
+
+    try testing.expectEqualDeep(
+        canvas.TextSelection{ .anchor = "https://".len, .focus = "https://test".len },
+        h.app_state.model.address_field.selection,
+    );
+
+    // A MacBook's Delete key is the backward-delete key: the selected
+    // "test" span must win over the buffer's old end-of-value caret.
+    try h.harness.runtime.dispatchPlatformEvent(h.app_iface, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = app.canvas_label,
+        .kind = .key_down,
+        .key = "backspace",
+    } });
+
+    try testing.expectEqualStrings("https://.com", h.app_state.model.address());
+    const retained = try h.harness.runtime.canvasWidgetLayout(1, app.canvas_label);
+    const retained_address = retained.findById(field.id) orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("https://.com", retained_address.widget.text);
+}
 
 test "a live pty session flows through the <terminal> element: output, typing, resize" {
     if (comptime !native_sdk.runtime.terminal_sessions_enabled) return error.SkipZigTest;

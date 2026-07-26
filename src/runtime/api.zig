@@ -65,11 +65,12 @@ pub const CanvasWidgetPointerEvent = struct {
     /// cursor, and text selection stay on `target`.
     press_target: ?canvas.WidgetHit = null,
     route: []const canvas.WidgetEventRouteEntry = &.{},
-    /// A text edit this pointer gesture performed on `target` (the
-    /// search field's built-in clear affordance). The runtime already
-    /// applied it (the optimistic echo; the source tree is truth on the
-    /// next rebuild); `UiApp` maps it through the tree's handler table
-    /// to the field's `on_input` Msg so a model-owned buffer clears too.
+    /// A text edit this pointer gesture performed on `target` (an
+    /// editable field's caret/selection move, or the search field's
+    /// built-in clear affordance). The runtime already applied it (the
+    /// optimistic echo; the source tree is truth on the next rebuild);
+    /// `UiApp` maps it through the tree's handler table to the field's
+    /// `on_input` Msg so a model-owned buffer stays in lockstep too.
     edit: ?canvas.TextInputEvent = null,
 };
 

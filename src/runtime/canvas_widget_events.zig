@@ -2080,6 +2080,11 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 }
             }
             if (target_id == 0) return;
+            const target_index = self.views[index].canvasWidgetNodeIndexById(target_id) orelse return;
+            const target_widget = self.views[index].widget_layout_nodes[target_index].widget;
+            const mirrors_editable_selection =
+                canvas_widget_runtime.canvasWidgetEditableTextKind(target_widget.kind) and
+                !target_widget.state.disabled;
 
             // The search field's built-in clear affordance: a press
             // inside the trailing clear region clears through the
@@ -2098,8 +2103,29 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 pointer_event.pointer.point,
                 pointer_event.pointer.phase == .move,
                 pointer_event.pointer.click_count,
-            ) orelse return;
-            if (canvasDirtyRegionForView(self.views[index].frame, dirty)) |dirty_region| {
+            );
+            // Pointer placement lives first in the retained editor, but a
+            // controlled field's model owns the TextBuffer that the next
+            // keyboard edit will reduce. Stamp the resulting selection
+            // onto the SAME pointer event so `UiApp` delivers
+            // `.set_selection` through `on_input` before a later delete,
+            // insert, or IME edit reaches that model. Without this echo,
+            // the highlight was honest only in the runtime: selecting a
+            // middle span and pressing Backspace let the model delete at
+            // its stale end caret, and its rebuild overwrote the runtime's
+            // correct optimistic edit.
+            //
+            // Stamp even when the retained state did not change. This is
+            // the pointer counterpart of keyboard clear's resync rule: a
+            // divergent model mirror must still hear the selection the
+            // user established.
+            if (mirrors_editable_selection) {
+                const edited_widget = self.views[index].widget_layout_nodes[target_index].widget;
+                const selection = edited_widget.text_selection orelse canvas.TextSelection.collapsed(edited_widget.text.len);
+                pointer_event.edit = .{ .set_selection = selection };
+            }
+            const dirty_bounds = dirty orelse return;
+            if (canvasDirtyRegionForView(self.views[index].frame, dirty_bounds)) |dirty_region| {
                 self.invalidateFor(.state, dirty_region);
             } else {
                 self.invalidateFor(.state, self.views[index].frame);

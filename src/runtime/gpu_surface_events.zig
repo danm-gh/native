@@ -313,8 +313,8 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                 } else {
                     try CanvasWidgetEventMethods().updateCanvasWidgetControlFromPointer(self, pointer_event.*);
                     try CanvasWidgetEventMethods().updateCanvasWidgetInteractionFromPointer(self, pointer_event.*);
-                    // The text pass may stamp a clear edit onto the
-                    // event for the app dispatch below.
+                    // The text pass may stamp a caret/selection or clear
+                    // edit onto the event for the app dispatch below.
                     try CanvasWidgetEventMethods().updateCanvasWidgetTextFromPointer(self, pointer_event);
                     try CanvasWidgetEventMethods().updateCanvasWidgetScrollFromPointer(self, pointer_event.*);
                     try CanvasWidgetEventMethods().updateCanvasWidgetFocusFromPointer(self, pointer_event.*);

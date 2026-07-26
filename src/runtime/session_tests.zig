@@ -582,10 +582,11 @@ test "a recorded session replays to identical model state and fingerprints" {
     try std.testing.expect(recorded.model.stamp_ms != 0);
     try std.testing.expectEqual(@as(u32, 1), recorded.model.spectrum_count);
     try std.testing.expect(recorded.model.band_checksum != 0);
-    // The typed insert, the DERIVED Escape-clear, and the sanitized
-    // multi-line paste all reached the model's `on_input` mirror — the
-    // paste landing STRIPPED of its line breaks (single-line rule).
-    try std.testing.expectEqual(@as(u32, 3), recorded.model.query_edits);
+    // Both pointer caret placements, the typed insert, the DERIVED
+    // Escape-clear, and the sanitized multi-line paste all reached the
+    // model's `on_input` mirror — five edits total, with the paste
+    // landing STRIPPED of its line breaks (single-line rule).
+    try std.testing.expectEqual(@as(u32, 5), recorded.model.query_edits);
     try std.testing.expectEqualStrings("line oneline two", recorded.model.queryText());
     // Both pinch gestures reached the model: the raw stream's product
     // (1.25 * 0.75 = 0.9375) times the verb's exact 1.5.

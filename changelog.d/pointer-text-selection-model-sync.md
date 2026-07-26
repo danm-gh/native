@@ -1,0 +1,1 @@
+fix: **Pointer-selected text edits**: editable fields now send pointer caret and selection changes through `on-input`, so model-owned text buffers delete or replace the highlighted span instead of editing at a stale caret.

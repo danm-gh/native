@@ -2,9 +2,22 @@
 
 All notable changes to the Native SDK (formerly zero-native) will be documented in this file.
 
-## 0.6.0
+## 0.6.1
 
 <!-- release:start -->
+
+### Bug Fixes
+
+- **Layered macOS cursors**: GPU surfaces now yield their cursor regions to higher-layer embedded webviews, so links, selectable text, and canvas widgets use the correct cursor in mixed canvas/webview windows such as Workbench.
+- **Pointer-selected text edits**: editable fields now send pointer caret and selection changes through `on-input`, so model-owned text buffers delete or replace the highlighted span instead of editing at a stale caret.
+
+### Contributors
+
+- @ctate
+
+<!-- release:end -->
+
+## 0.6.0
 
 ### New Features
 
@@ -72,8 +85,6 @@ All notable changes to the Native SDK (formerly zero-native) will be documented 
 
 - @ctate
 - @startewho
-
-<!-- release:end -->
 
 ## 0.5.4
 

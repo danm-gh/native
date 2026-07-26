@@ -1,1 +1,0 @@
-fix: **Layered macOS cursors**: GPU surfaces now yield their cursor regions to higher-layer embedded webviews, so links, selectable text, and canvas widgets use the correct cursor in mixed canvas/webview windows such as Workbench.

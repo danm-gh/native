@@ -150,9 +150,21 @@ jobs:
       - run: npm --prefix packages/native-sdk run version:check
       - run: npm --prefix packages/native-sdk run scripts:check
 
-  native-examples:
-    name: Native Examples
+  native-example-shards:
+    name: Native Examples (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 1/4
+            step: test-examples-native-shard-1
+          - name: 2/4
+            step: test-examples-native-shard-2
+          - name: 3/4
+            step: test-examples-native-shard-3
+          - name: 4/4
+            step: test-examples-native-shard-4
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -164,14 +176,42 @@ jobs:
       # The TypeScript examples transpile at build time; the transpiler
       # needs its installed dependency.
       - run: npm ci --prefix packages/core
-      - name: Install GTK dependencies
-        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev
-      - run: zig build test-examples-native
+      # Every example test uses the null backend, so this lane needs no
+      # GTK/WebKitGTK packages. The root build owns the round-robin shard
+      # membership, keeping CI and the complete local group in one registry.
+      - run: zig build ${{ matrix.step }}
+
+  windows-web-layer-audit:
+    name: Windows Web Layer Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
       # Declare-to-use, proven on real Windows executables: the
       # canvas-only ui-inbox cross-compiles without the embedded WebView
       # layer (no WebView2Loader.dll reference, no loader installed) and
       # the webview example keeps it.
       - run: zig build test-windows-web-layer-audit
+
+  # Preserve the established `CI / Native Examples` required-check name
+  # while making it an aggregate receipt for every shard and the audit.
+  native-examples:
+    name: Native Examples
+    if: ${{ always() }}
+    needs:
+      - native-example-shards
+      - windows-web-layer-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm every native example lane passed
+        env:
+          EXAMPLE_SHARDS_RESULT: ${{ needs.native-example-shards.result }}
+          WINDOWS_AUDIT_RESULT: ${{ needs.windows-web-layer-audit.result }}
+        run: |
+          test "$EXAMPLE_SHARDS_RESULT" = success
+          test "$WINDOWS_AUDIT_RESULT" = success
 
   linux-canvas-smoke:
     name: Linux Canvas Smoke

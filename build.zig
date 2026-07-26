@@ -1336,10 +1336,10 @@ pub fn build(b: *std.Build) void {
     linux_web_layer_audit_step.dependOn(&audit_webview_elf.step);
 
     const frontend_examples_step = b.step("test-examples-frontends", "Run frontend example tests");
-    addExampleTestStep(b, host_cli_exe, frontend_examples_step, "test-example-next", "Run Next example tests", "examples/next", .owned);
-    addExampleTestStep(b, host_cli_exe, frontend_examples_step, "test-example-react", "Run React example tests", "examples/react", .owned);
-    addExampleTestStep(b, host_cli_exe, frontend_examples_step, "test-example-svelte", "Run Svelte example tests", "examples/svelte", .owned);
-    addExampleTestStep(b, host_cli_exe, frontend_examples_step, "test-example-vue", "Run Vue example tests", "examples/vue", .owned);
+    _ = addExampleTestStep(b, host_cli_exe, frontend_examples_step, "test-example-next", "Run Next example tests", "examples/next", .owned);
+    _ = addExampleTestStep(b, host_cli_exe, frontend_examples_step, "test-example-react", "Run React example tests", "examples/react", .owned);
+    _ = addExampleTestStep(b, host_cli_exe, frontend_examples_step, "test-example-svelte", "Run Svelte example tests", "examples/svelte", .owned);
+    _ = addExampleTestStep(b, host_cli_exe, frontend_examples_step, "test-example-vue", "Run Vue example tests", "examples/vue", .owned);
     addFileContainsCheckStep(b, file_contains_checker, frontend_examples_step, "test-example-frontend-positioning", "Verify frontend example native shell positioning", &.{
         .{ .path = "examples/next/README.md", .pattern = "opens the native app shell with WebView content." },
         .{ .path = "examples/react/README.md", .pattern = "opens the native app shell with WebView content." },
@@ -1348,34 +1348,51 @@ pub fn build(b: *std.Build) void {
     });
 
     const native_examples_step = b.step("test-examples-native", "Run native-first example tests");
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-command-app", "Run command app example tests", "examples/command-app", .owned);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-native-shell", "Run native shell example tests", "examples/native-shell", .owned);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-native-panels", "Run native panels example tests", "examples/native-panels", .owned);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-gpu-surface", "Run GPU surface example tests", "examples/gpu-surface", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-gpu-dashboard", "Run GPU dashboard example tests", "examples/gpu-dashboard", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-gpu-components", "Run GPU components example tests", "examples/gpu-components", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-ui-inbox", "Run ui builder inbox example tests", "examples/ui-inbox", .owned);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-kanban", "Run ui builder kanban example tests", "examples/kanban", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-habits", "Run markup habits example tests", "examples/habits", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-soundboard", "Run soundboard example tests", "examples/soundboard", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-video-player", "Run video player example tests", "examples/video-player", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-soundboard-ts", "Run soundboard-ts example tests", "examples/soundboard-ts", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-deck", "Run deck example tests", "examples/deck", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-markdown-viewer", "Run markdown viewer example tests", "examples/markdown-viewer", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-calculator", "Run calculator example tests", "examples/calculator", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-notes", "Run notes example tests", "examples/notes", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-split-collapse", "Run split collapse example tests", "examples/split-collapse", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-system-monitor", "Run system monitor example tests", "examples/system-monitor", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-terminal", "Run terminal example tests", "examples/terminal", .owned);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-workbench", "Run workbench example tests", "examples/workbench", .owned);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-system-monitor-ts", "Run system-monitor-ts example tests", "examples/system-monitor-ts", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-effects-probe", "Run effects probe example tests", "examples/effects-probe", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-channel-monitor", "Run channel monitor example tests", "examples/channel-monitor", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-menu-bar", "Run menu-bar lifecycle example tests", "examples/menu-bar", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-feed", "Run feed example tests", "examples/feed", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-canvas-preview", "Run canvas preview example tests", "examples/canvas-preview", .managed);
-    addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-capabilities", "Run capabilities example tests", "examples/capabilities", .owned);
-    addFileContainsCheckStep(b, file_contains_checker, native_examples_step, "test-example-capabilities-events", "Verify capabilities example event bridge names", &.{
+    const native_example_shard_steps = [_]*std.Build.Step{
+        b.step("test-examples-native-shard-1", "Run the first native-first example test shard"),
+        b.step("test-examples-native-shard-2", "Run the second native-first example test shard"),
+        b.step("test-examples-native-shard-3", "Run the third native-first example test shard"),
+        b.step("test-examples-native-shard-4", "Run the fourth native-first example test shard"),
+    };
+    const native_example_steps = [_]*std.Build.Step{
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-command-app", "Run command app example tests", "examples/command-app", .owned),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-native-shell", "Run native shell example tests", "examples/native-shell", .owned),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-native-panels", "Run native panels example tests", "examples/native-panels", .owned),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-gpu-surface", "Run GPU surface example tests", "examples/gpu-surface", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-gpu-dashboard", "Run GPU dashboard example tests", "examples/gpu-dashboard", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-gpu-components", "Run GPU components example tests", "examples/gpu-components", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-ui-inbox", "Run ui builder inbox example tests", "examples/ui-inbox", .owned),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-kanban", "Run ui builder kanban example tests", "examples/kanban", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-habits", "Run markup habits example tests", "examples/habits", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-soundboard", "Run soundboard example tests", "examples/soundboard", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-video-player", "Run video player example tests", "examples/video-player", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-soundboard-ts", "Run soundboard-ts example tests", "examples/soundboard-ts", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-deck", "Run deck example tests", "examples/deck", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-markdown-viewer", "Run markdown viewer example tests", "examples/markdown-viewer", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-calculator", "Run calculator example tests", "examples/calculator", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-notes", "Run notes example tests", "examples/notes", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-split-collapse", "Run split collapse example tests", "examples/split-collapse", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-system-monitor", "Run system monitor example tests", "examples/system-monitor", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-terminal", "Run terminal example tests", "examples/terminal", .owned),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-workbench", "Run workbench example tests", "examples/workbench", .owned),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-system-monitor-ts", "Run system-monitor-ts example tests", "examples/system-monitor-ts", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-effects-probe", "Run effects probe example tests", "examples/effects-probe", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-channel-monitor", "Run channel monitor example tests", "examples/channel-monitor", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-menu-bar", "Run menu-bar lifecycle example tests", "examples/menu-bar", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-feed", "Run feed example tests", "examples/feed", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-canvas-preview", "Run canvas preview example tests", "examples/canvas-preview", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-capabilities", "Run capabilities example tests", "examples/capabilities", .owned),
+    };
+    for (native_example_shard_steps) |shard_step| {
+        native_examples_step.dependOn(shard_step);
+    }
+    for (native_example_steps, 0..) |example_step, index| {
+        native_example_shard_steps[index % native_example_shard_steps.len].dependOn(example_step);
+    }
+    // Keep this companion check in the same shard as capabilities. The
+    // aggregate step depends on every shard, so `test-examples-native`
+    // retains exactly the same coverage as before.
+    addFileContainsCheckStep(b, file_contains_checker, native_example_shard_steps[2], "test-example-capabilities-events", "Verify capabilities example event bridge names", &.{
         .{ .path = "examples/capabilities/src/main.zig", .pattern = "native-sdk:drop:files" },
     });
 
@@ -3676,7 +3693,7 @@ fn addTestStep(b: *std.Build, name: []const u8, description: []const u8, artifac
 /// driven through plain in-dir `zig build`.
 const ExampleBuildShape = enum { managed, owned };
 
-fn addExampleTestStep(b: *std.Build, cli_exe: *std.Build.Step.Compile, group: *std.Build.Step, name: []const u8, description: []const u8, example_path: []const u8, shape: ExampleBuildShape) void {
+fn addExampleTestStep(b: *std.Build, cli_exe: *std.Build.Step.Compile, group: *std.Build.Step, name: []const u8, description: []const u8, example_path: []const u8, shape: ExampleBuildShape) *std.Build.Step {
     const run = switch (shape) {
         .owned => b.addSystemCommand(&.{ "zig", "build", "test", "-Dplatform=null" }),
         .managed => managedExampleRun(b, cli_exe, &.{ "test", "-Dplatform=null" }),
@@ -3704,6 +3721,7 @@ fn addExampleTestStep(b: *std.Build, cli_exe: *std.Build.Step.Compile, group: *s
     const step = b.step(name, description);
     step.dependOn(&run.step);
     group.dependOn(&run.step);
+    return step;
 }
 
 /// Run a `native` CLI verb (argv tail) against a managed example. The CLI

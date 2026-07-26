@@ -1119,6 +1119,13 @@ pub fn build(b: *std.Build) void {
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "NATIVE_SDK_APPKIT_GPU_INPUT_POINTER_CANCEL" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "_surfaceCursor = cursor ?: [NSCursor arrowCursor]" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "NSCursor pointingHandCursor" },
+        // A full-bounds canvas cursor rect geometrically overlaps a
+        // higher-layer webview even though hit testing does not. The
+        // workbench needs both halves: subtract the overlay from the
+        // cursor rects and refuse a direct canvas cursor set there.
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "NSMutableArray<NSValue *> *visibleCursorRects" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "surfaceView.coveredMouseRects = coveredRects" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "if (!covered && NSPointInRect(mousePoint, self.bounds)) [_surfaceCursor set]" },
     });
     addFileContainsCheckStep(b, file_contains_checker, test_step, "test-appkit-gpu-widget-accessibility-actions", "Verify AppKit GPU widget accessibility actions route to the runtime", &.{
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "accessibilityPerformPress" },

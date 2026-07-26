@@ -581,6 +581,13 @@ static NSMutableDictionary *NativeSdkCredentialQuery(NSString *service, NSString
 @property(nonatomic, assign) uint64_t lastPacketDecodeNs;
 @property(nonatomic, assign) uint64_t lastPacketDrawNs;
 @property(nonatomic, strong) NSCursor *surfaceCursor;
+/* Higher-layer sibling views covering this surface, in surface
+ * coordinates. AppKit cursor rects are geometric rather than hit-test
+ * aware: one full-bounds rect here would keep winning over an embedded
+ * WKWebView layered above the canvas (the workbench's browser pane), so
+ * resetCursorRects subtracts these occluders before registering the
+ * retained widget cursor. */
+@property(nonatomic, strong) NSArray<NSValue *> *coveredMouseRects;
 @property(nonatomic, strong) NSTrackingArea *surfaceTrackingArea;
 @property(nonatomic, copy) NSString *markedText;
 @property(nonatomic, assign) NSRange markedTextRange;
@@ -5908,13 +5915,74 @@ static BOOL NativeSdkCompositeBlurWriteRegion(NSDictionary *command, CGFloat sca
 
 - (void)resetCursorRects {
     [super resetCursorRects];
-    [self addCursorRect:self.bounds cursor:self.surfaceCursor ?: [NSCursor arrowCursor]];
+    // Cursor rects do not honor sibling occlusion. Register the canvas
+    // cursor only on the visible fragments left after higher-layer
+    // native/web views are subtracted, so an overlaid WKWebView keeps
+    // authority over its own link/text CSS cursors.
+    NSMutableArray<NSValue *> *visibleCursorRects = [NSMutableArray arrayWithObject:[NSValue valueWithRect:self.bounds]];
+    for (NSValue *coveredValue in self.coveredMouseRects) {
+        NSRect covered = coveredValue.rectValue;
+        NSMutableArray<NSValue *> *nextVisibleRects = [[NSMutableArray alloc] init];
+        for (NSValue *visibleValue in visibleCursorRects) {
+            NSRect visible = visibleValue.rectValue;
+            NSRect intersection = NSIntersectionRect(visible, covered);
+            if (NSIsEmptyRect(intersection)) {
+                [nextVisibleRects addObject:visibleValue];
+                continue;
+            }
+
+            const CGFloat visibleMinX = NSMinX(visible);
+            const CGFloat visibleMaxX = NSMaxX(visible);
+            const CGFloat visibleMinY = NSMinY(visible);
+            const CGFloat visibleMaxY = NSMaxY(visible);
+            const CGFloat coveredMinX = NSMinX(intersection);
+            const CGFloat coveredMaxX = NSMaxX(intersection);
+            const CGFloat coveredMinY = NSMinY(intersection);
+            const CGFloat coveredMaxY = NSMaxY(intersection);
+
+            if (coveredMinY > visibleMinY) {
+                [nextVisibleRects addObject:[NSValue valueWithRect:NSMakeRect(
+                    visibleMinX, visibleMinY, visible.size.width, coveredMinY - visibleMinY)]];
+            }
+            if (coveredMaxY < visibleMaxY) {
+                [nextVisibleRects addObject:[NSValue valueWithRect:NSMakeRect(
+                    visibleMinX, coveredMaxY, visible.size.width, visibleMaxY - coveredMaxY)]];
+            }
+            if (coveredMinX > visibleMinX) {
+                [nextVisibleRects addObject:[NSValue valueWithRect:NSMakeRect(
+                    visibleMinX, coveredMinY, coveredMinX - visibleMinX, intersection.size.height)]];
+            }
+            if (coveredMaxX < visibleMaxX) {
+                [nextVisibleRects addObject:[NSValue valueWithRect:NSMakeRect(
+                    coveredMaxX, coveredMinY, visibleMaxX - coveredMaxX, intersection.size.height)]];
+            }
+        }
+        visibleCursorRects = nextVisibleRects;
+    }
+
+    NSCursor *cursor = self.surfaceCursor ?: [NSCursor arrowCursor];
+    for (NSValue *visibleValue in visibleCursorRects) {
+        [self addCursorRect:visibleValue.rectValue cursor:cursor];
+    }
 }
 
 - (void)setSurfaceCursor:(NSCursor *)cursor {
     _surfaceCursor = cursor ?: [NSCursor arrowCursor];
     [self.window invalidateCursorRectsForView:self];
-    [_surfaceCursor set];
+    // The runtime changes cursor intent from mouseMoved:. Its tracking
+    // area spans the geometric surface even where a sibling webview is
+    // layered above it, so never let that immediate update clobber the
+    // higher view's cursor. The visible cursor rect takes over again as
+    // soon as the pointer returns to the canvas.
+    NSPoint mousePoint = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
+    BOOL covered = NO;
+    for (NSValue *coveredValue in self.coveredMouseRects) {
+        if (NSPointInRect(mousePoint, coveredValue.rectValue)) {
+            covered = YES;
+            break;
+        }
+    }
+    if (!covered && NSPointInRect(mousePoint, self.bounds)) [_surfaceCursor set];
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -8412,18 +8480,27 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
     }];
 
     for (NSUInteger index = 0; index < views.count; index++) {
-        if (![views[index] isKindOfClass:[NativeSdkWebView class]]) continue;
-        NativeSdkWebView *webView = (NativeSdkWebView *)views[index];
+        NSView *coveredView = views[index];
+        const BOOL isWebView = [coveredView isKindOfClass:[NativeSdkWebView class]];
+        const BOOL isMetalSurface = [coveredView isKindOfClass:[NativeSdkMetalSurfaceView class]];
+        if (!isWebView && !isMetalSurface) continue;
         NSMutableArray<NSValue *> *coveredRects = [[NSMutableArray alloc] init];
         for (NSUInteger coverIndex = index + 1; coverIndex < views.count; coverIndex++) {
             NSView *coveringView = views[coverIndex];
             if (coveringView.hidden) continue;
-            NSRect intersection = NSIntersectionRect(webView.frame, coveringView.frame);
+            NSRect intersection = NSIntersectionRect(coveredView.frame, coveringView.frame);
             if (NSIsEmptyRect(intersection)) continue;
-            [coveredRects addObject:[NSValue valueWithRect:[webView convertRect:intersection fromView:contentView]]];
+            [coveredRects addObject:[NSValue valueWithRect:[coveredView convertRect:intersection fromView:contentView]]];
         }
-        webView.coveredMouseRects = coveredRects;
-        [self applyCoveredMouseRects:coveredRects toWebView:webView];
+        if (isWebView) {
+            NativeSdkWebView *webView = (NativeSdkWebView *)coveredView;
+            webView.coveredMouseRects = coveredRects;
+            [self applyCoveredMouseRects:coveredRects toWebView:webView];
+        } else {
+            NativeSdkMetalSurfaceView *surfaceView = (NativeSdkMetalSurfaceView *)coveredView;
+            surfaceView.coveredMouseRects = coveredRects;
+            [surfaceView.window invalidateCursorRectsForView:surfaceView];
+        }
     }
 }
 

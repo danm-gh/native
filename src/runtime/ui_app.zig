@@ -907,6 +907,12 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         /// these.
         pixel_buffer: []u8 = &.{},
         pixel_scratch: []u8 = &.{},
+        /// Window whose retained image currently occupies
+        /// `pixel_buffer`. Software presenters consume the entire shared
+        /// buffer even for an incremental frame, so a handoff between
+        /// UiApp surfaces must repaint fully once; consecutive frames for
+        /// the same surface may retain and idle normally.
+        pixel_buffer_window_id: ?platform.WindowId = null,
         /// Worker threads, completion queue, and spawn slots for the
         /// effect system. Fixed-capacity; lives with the app struct
         /// (heap-allocated like the rest of it).
@@ -1309,6 +1315,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             if (self.pixel_scratch.len > 0) self.backing.free(self.pixel_scratch);
             self.pixel_buffer = &.{};
             self.pixel_scratch = &.{};
+            self.pixel_buffer_window_id = null;
         }
 
         pub fn app(self: *Self) App {
@@ -4291,14 +4298,12 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             }
             var clear_color = self.slotEffectiveTokens(slot).colors.background;
             if (slot.transparent) clear_color.a = 0;
-            // The CPU presenter buffers live at UiApp scope and are reused
-            // across windows. An incremental transparent-slot repaint
-            // could otherwise inherit bytes most recently rendered for
-            // the main window, or clear away retained alpha content after
-            // an activation/input frame. Rebuild the complete alpha image
-            // on every transparent-slot present; packet hosts receive the
-            // same honest full image contract.
-            try self.presentFrame(runtime, frame_event, slot.canvasLabel(), installing or slot.transparent, clear_color);
+            // Packet hosts retain each surface independently. The CPU
+            // fallback shares one UiApp pixel buffer, whose ownership is
+            // handled inside `presentFrame`: a surface handoff repaints
+            // fully once, while an idle completion for the current owner
+            // is allowed to skip.
+            try self.presentFrame(runtime, frame_event, slot.canvasLabel(), installing, clear_color);
         }
 
         /// A face joined the runtime's font registry after this app's
@@ -4331,10 +4336,9 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         /// packet plan already recorded the frame's presented summary.
         fn presentFrame(self: *Self, runtime: *Runtime, frame_event: platform.GpuSurfaceFrameEvent, canvas_label: []const u8, force_full_repaint: bool, clear_color: canvas.Color) anyerror!void {
             // A forced frame must paint unconditionally: the installing
-            // frame has no earlier glass to retain, and transparent
-            // secondary windows deliberately rebuild their complete alpha
-            // image because UiApp's software buffers are shared by every
-            // canvas.
+            // frame has no earlier glass to retain. Software-buffer
+            // ownership below independently forces the first frame after
+            // a surface handoff.
             const services = runtime.options.platform.services;
             var packet_attempted = false;
             if (services.present_gpu_surface_packet_fn != null or services.present_gpu_surface_packet_binary_fn != null) {
@@ -4365,7 +4369,9 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             }
             if (services.present_gpu_surface_pixels_fn == null) return;
             self.ensurePixelBuffers(frame_event.size, frame_event.scale_factor) catch return;
-            _ = runtime.presentNextCanvasFramePixels(
+            const pixel_buffer_owned = self.pixel_buffer_window_id != null and
+                self.pixel_buffer_window_id.? == frame_event.window_id;
+            const pixel_frame = runtime.presentNextCanvasFramePixels(
                 frame_event.window_id,
                 canvas_label,
                 .{
@@ -4373,16 +4379,20 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                     .timestamp_ns = frame_event.timestamp_ns,
                     .surface_size = frame_event.size,
                     .scale = frame_event.scale_factor,
-                    .full_repaint = frame_event.canvas_frame_full_repaint or packet_attempted or force_full_repaint,
+                    .full_repaint = frame_event.canvas_frame_full_repaint or
+                        packet_attempted or
+                        force_full_repaint or
+                        !pixel_buffer_owned,
                 },
                 runtime.canvasFrameScratchStorage(),
                 self.pixel_buffer,
                 self.pixel_scratch,
                 clear_color,
             ) catch |err| switch (err) {
-                error.UnsupportedService, error.UnsupportedViewKind => {},
+                error.UnsupportedService, error.UnsupportedViewKind => return,
                 else => return err,
             };
+            if (pixel_frame.requiresRender()) self.pixel_buffer_window_id = frame_event.window_id;
         }
 
         /// Grow the heap pixel buffers to hold the surface at the given
@@ -4390,6 +4400,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         fn ensurePixelBuffers(self: *Self, surface_size: geometry.SizeF, scale_factor: f32) anyerror!void {
             const pixel_size = try canvas_frame.canvasSurfacePixelSize(surface_size, scale_factor);
             if (self.pixel_buffer.len < pixel_size.byte_len) {
+                self.pixel_buffer_window_id = null;
                 if (self.pixel_buffer.len > 0) self.backing.free(self.pixel_buffer);
                 self.pixel_buffer = &.{};
                 self.pixel_buffer = try self.backing.alloc(u8, pixel_size.byte_len);

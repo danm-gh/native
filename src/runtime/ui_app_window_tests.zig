@@ -146,13 +146,17 @@ const Fixture = struct {
 
     /// Deliver the settings window's installing gpu frame.
     fn installSettingsCanvas(self: Fixture, window_id: support.platform.WindowId) !void {
+        try self.dispatchSettingsCanvasFrame(window_id, 1, 2_000_000);
+    }
+
+    fn dispatchSettingsCanvasFrame(self: Fixture, window_id: support.platform.WindowId, frame_index: u64, timestamp_ns: u64) !void {
         try self.harness.runtime.dispatchPlatformEvent(self.app, .{ .gpu_surface_frame = .{
             .window_id = window_id,
             .label = settings_canvas_label,
             .size = geometry.SizeF.init(320, 240),
             .scale_factor = 2,
-            .frame_index = 1,
-            .timestamp_ns = 2_000_000,
+            .frame_index = frame_index,
+            .timestamp_ns = timestamp_ns,
             .nonblank = true,
         } });
     }
@@ -249,33 +253,58 @@ test "a transparent descriptor selects premultiplied canvas alpha and an alpha-z
     try std.testing.expectEqualStrings(settings_canvas_label, views[0].label);
     try std.testing.expectEqual(support.platform.GpuSurfaceAlphaMode.premultiplied, views[0].gpu_alpha_mode);
 
+    // A packet present's completion with no invalidation must idle. Real
+    // hosts schedule this event after every successful present; presenting
+    // it again would create a self-sustaining display-rate loop.
+    try fixture.installSettingsCanvas(info.id);
+    const packet_present_count = fixture.harness.null_platform.gpu_surface_packet_present_count;
+    try fixture.dispatchSettingsCanvasFrame(info.id, 2, 3_000_000);
+    try std.testing.expectEqual(packet_present_count, fixture.harness.null_platform.gpu_surface_packet_present_count);
+
     // Exercise the pixels-only shape used by Windows' layered-window
-    // compositor, not just the null packet recorder.
+    // compositor after the packet-path idle check.
     fixture.harness.runtime.options.platform.services.present_gpu_surface_packet_fn = null;
     fixture.harness.runtime.options.platform.services.present_gpu_surface_packet_binary_fn = null;
-    try fixture.installSettingsCanvas(info.id);
+    try fixture.dispatchSettingsCanvasFrame(info.id, 3, 4_000_000);
     try std.testing.expectEqual(info.id, fixture.harness.null_platform.gpu_surface_present_window_id);
     try std.testing.expectEqual(@as(u8, 0), fixture.harness.null_platform.gpu_surface_present_sample_rgba[3]);
     try std.testing.expect(std.mem.indexOfScalar(u8, fixture.app_state.pixel_buffer, 255) != null);
 
-    // Model the shared UiApp pixel buffer having been used by another
-    // surface between frames. A normal activation/input frame carries
-    // no platform full-repaint bit; transparent slots still rebuild the
-    // complete alpha image instead of presenting a cleared/foreign
-    // retained buffer.
-    @memset(fixture.app_state.pixel_buffer, 0);
-    const present_count = fixture.harness.null_platform.gpu_surface_present_count;
+    // The current software-buffer owner also idles after its completion.
+    const idle_pixel_present_count = fixture.harness.null_platform.gpu_surface_present_count;
+    try fixture.dispatchSettingsCanvasFrame(info.id, 4, 5_000_000);
+    try std.testing.expectEqual(idle_pixel_present_count, fixture.harness.null_platform.gpu_surface_present_count);
+
+    // Hand the shared UiApp pixel buffer to the main canvas. Invalidating
+    // only that view models a host/resource full repaint without changing
+    // the secondary canvas's retained summary.
+    fixture.harness.runtime.views[0].presented_canvas_valid = false;
     try fixture.harness.runtime.dispatchPlatformEvent(fixture.app, .{ .gpu_surface_frame = .{
-        .window_id = info.id,
-        .label = settings_canvas_label,
-        .size = geometry.SizeF.init(320, 240),
+        .window_id = 1,
+        .label = canvas_label,
+        .size = geometry.SizeF.init(400, 300),
         .scale_factor = 2,
         .frame_index = 2,
-        .timestamp_ns = 3_000_000,
+        .timestamp_ns = 6_000_000,
         .nonblank = true,
     } });
-    try std.testing.expectEqual(present_count + 1, fixture.harness.null_platform.gpu_surface_present_count);
+    try std.testing.expectEqual(@as(support.platform.WindowId, 1), fixture.harness.null_platform.gpu_surface_present_window_id);
+
+    // The next transparent-slot completion must repaint once after that
+    // ownership handoff, restoring a complete alpha image instead of
+    // presenting the main surface's bytes.
+    @memset(fixture.app_state.pixel_buffer, 0);
+    const handoff_present_count = fixture.harness.null_platform.gpu_surface_present_count;
+    try fixture.dispatchSettingsCanvasFrame(info.id, 5, 7_000_000);
+    try std.testing.expectEqual(handoff_present_count + 1, fixture.harness.null_platform.gpu_surface_present_count);
+    try std.testing.expectEqual(info.id, fixture.harness.null_platform.gpu_surface_present_window_id);
     try std.testing.expect(std.mem.indexOfScalar(u8, fixture.app_state.pixel_buffer, 255) != null);
+
+    // That one corrective present must not re-arm another present when
+    // the following completion carries no invalidation.
+    const corrected_present_count = fixture.harness.null_platform.gpu_surface_present_count;
+    try fixture.dispatchSettingsCanvasFrame(info.id, 6, 8_000_000);
+    try std.testing.expectEqual(corrected_present_count, fixture.harness.null_platform.gpu_surface_present_count);
 }
 
 test "a user close dispatches on_close and the model owns the consequence" {

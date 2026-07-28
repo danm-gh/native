@@ -2432,6 +2432,44 @@ test "mac webview presses report the focused child label" {
     try std.testing.expect(std.mem.indexOf(u8, host_source, ".view_label = label") != null);
 }
 
+test "mac transparent software frames are premultiplied before Metal upload" {
+    const host_source = @embedFile("appkit_host.m");
+    const helper_at = std.mem.indexOf(
+        u8,
+        host_source,
+        "static void NativeSdkPremultiplyStraightRgba8",
+    ) orelse return error.TestExpectedEqual;
+    const present_at = std.mem.indexOfPos(
+        u8,
+        host_source,
+        helper_at,
+        "- (BOOL)presentPixelsWithWidth:",
+    ) orelse return error.TestExpectedEqual;
+    const present_tail = host_source[present_at..];
+
+    try std.testing.expect(helper_at < present_at);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        present_tail,
+        "if (self.window && !self.window.opaque)",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        present_tail,
+        "NativeSdkPremultiplyStraightRgba8(",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        present_tail,
+        "const uint8_t *uploadBytes = presentBytes +",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        present_tail,
+        "memcpy(backingBytes, presentBytes, byteLength);",
+    ) != null);
+}
+
 test "mac Chromium webview focus reports the focused child label" {
     // CEF's focus handler is the engine-level ownership edge: it covers
     // pointer, keyboard, and programmatic focus without predicting from

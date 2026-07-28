@@ -728,8 +728,12 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
             self.windows[runtime_index].info.frame = startup_frame;
             self.windows[runtime_index].source = if (source) |source_value| try WindowViewMethods().copySource(self, runtime_index, source_value) else null;
             self.windows[runtime_index].source_reloads_from_app = source != null;
-            self.windows[runtime_index].activate_on_show = shell_window.activate_on_show;
-            self.windows[runtime_index].info.focused = shell_window.activate_on_show and startup_window.show == .immediate;
+            // The host created this startup window from AppInfo before
+            // the scene loaded. Overlay presentation is immutable host
+            // state, so runtime bookkeeping must retain that same source
+            // of truth even when the scene descriptor differs.
+            self.windows[runtime_index].activate_on_show = startup_window.activate_on_show;
+            self.windows[runtime_index].info.focused = startup_window.activate_on_show and startup_window.show == .immediate;
             self.windows[runtime_index].main_focused = self.windows[runtime_index].info.focused;
             if (!self.windows[runtime_index].main_frame_set) {
                 self.windows[runtime_index].main_frame = geometry.RectF.init(0, 0, startup_frame.width, startup_frame.height);

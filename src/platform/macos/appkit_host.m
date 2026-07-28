@@ -415,6 +415,12 @@ static NSMutableDictionary *NativeSdkCredentialQuery(NSString *service, NSString
 @property(nonatomic, strong) CAMetalLayer *metalLayer;
 @property(nonatomic, strong) id<MTLBuffer> sampleBuffer;
 @property(nonatomic, strong) id<MTLTexture> canvasTexture;
+/* Reused conversion storage for the CPU reference renderer's
+ * straight-alpha RGBA8 frames. A nonopaque CAMetalLayer participates in
+ * Core Animation's premultiplied-alpha compositing, so software
+ * fallbacks must enter the shared canvas texture in the same encoding
+ * as packet-rendered frames. */
+@property(nonatomic, strong) NSMutableData *canvasPixelUploadScratch;
 @property(nonatomic, strong) id<MTLRenderPipelineState> canvasRenderPipeline;
 @property(nonatomic, strong) id<MTLSamplerState> canvasSampler;
 @property(nonatomic, assign) CGColorSpaceRef canvasColorSpace;
@@ -3518,6 +3524,18 @@ static NSDictionary *NativeSdkPacketDictionaryFromBinary(const uint8_t *bytes, N
 
 @end
 
+static void NativeSdkPremultiplyStraightRgba8(const uint8_t *source, uint8_t *destination, NSUInteger pixelCount) {
+    if (!source || !destination) return;
+    for (NSUInteger index = 0; index < pixelCount; index += 1) {
+        const NSUInteger offset = index * 4;
+        const uint32_t alpha = source[offset + 3];
+        destination[offset + 0] = (uint8_t)((source[offset + 0] * alpha + 127) / 255);
+        destination[offset + 1] = (uint8_t)((source[offset + 1] * alpha + 127) / 255);
+        destination[offset + 2] = (uint8_t)((source[offset + 2] * alpha + 127) / 255);
+        destination[offset + 3] = (uint8_t)alpha;
+    }
+}
+
 @implementation NativeSdkMetalSurfaceView
 
 - (instancetype)initWithFrame:(NSRect)frameRect {
@@ -3697,6 +3715,19 @@ static NSDictionary *NativeSdkPacketDictionaryFromBinary(const uint8_t *bytes, N
     if (byteLength != width * height * 4) return NO;
     if (![self ensureCanvasPresenter]) return NO;
 
+    const uint8_t *presentBytes = rgba8;
+    if (self.window && !self.window.opaque) {
+        if (!self.canvasPixelUploadScratch || self.canvasPixelUploadScratch.length != byteLength) {
+            self.canvasPixelUploadScratch = [NSMutableData dataWithLength:byteLength];
+        }
+        if (!self.canvasPixelUploadScratch || self.canvasPixelUploadScratch.length != byteLength) return NO;
+        NativeSdkPremultiplyStraightRgba8(
+            rgba8,
+            self.canvasPixelUploadScratch.mutableBytes,
+            byteLength / 4);
+        presentBytes = self.canvasPixelUploadScratch.bytes;
+    }
+
     BOOL textureChanged = NO;
     if (!self.canvasTexture || self.canvasTextureWidth != width || self.canvasTextureHeight != height) {
         MTLTextureDescriptor *descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:width height:height mipmapped:NO];
@@ -3770,21 +3801,21 @@ static NSDictionary *NativeSdkPacketDictionaryFromBinary(const uint8_t *bytes, N
                 return YES;
             }
         }
-        const uint8_t *uploadBytes = rgba8 + ((uploadY * width + uploadX) * 4);
+        const uint8_t *uploadBytes = presentBytes + ((uploadY * width + uploadX) * 4);
         [self.canvasTexture replaceRegion:MTLRegionMake2D(uploadX, uploadY, uploadWidth, uploadHeight)
                               mipmapLevel:0
                                 withBytes:uploadBytes
                               bytesPerRow:width * 4];
         if (backingBytes) {
             if (uploadFullTexture) {
-                memcpy(backingBytes, rgba8, byteLength);
+                memcpy(backingBytes, presentBytes, byteLength);
                 /* A full foreign upload (raw-pixels present) makes the
                  * backing match the glass byte-for-byte again. */
                 self.canvasPacketPixelsValid = YES;
             } else {
                 for (NSUInteger row = 0; row < uploadHeight; row++) {
                     const NSUInteger rowOffset = ((uploadY + row) * width + uploadX) * 4;
-                    memcpy((uint8_t *)backingBytes + rowOffset, rgba8 + rowOffset, uploadWidth * 4);
+                    memcpy((uint8_t *)backingBytes + rowOffset, presentBytes + rowOffset, uploadWidth * 4);
                 }
             }
         }

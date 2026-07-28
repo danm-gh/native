@@ -874,6 +874,77 @@ test "runtime lays out startup shell windows with native configured bounds" {
     try std.testing.expectEqual(@as(f32, 1200), statusbar.frame.width);
 }
 
+test "startup scene adoption preserves manifest passive show policy" {
+    const TestApp = struct {
+        const scene_windows = [_]app_manifest.ShellWindow{.{
+            .label = "main",
+            .title = "Scene title",
+            .width = 640,
+            .height = 480,
+            // Deliberately leave activate_on_show at its true default:
+            // the already-created startup host still owns this
+            // create-time setting through AppInfo below.
+        }};
+
+        fn scene(context: *anyopaque) anyerror!app_manifest.ShellConfig {
+            _ = context;
+            return .{ .windows = &scene_windows };
+        }
+
+        fn app(self: *@This()) App {
+            return .{
+                .context = self,
+                .name = "passive-startup-adoption",
+                .scene_fn = scene,
+            };
+        }
+    };
+
+    const app_info: platform.AppInfo = .{
+        .app_name = "Passive Startup",
+        .main_window = .{
+            .label = "main",
+            .title = "Manifest title",
+            .default_frame = geometry.RectF.init(0, 0, 640, 480),
+            .activate_on_show = false,
+        },
+    };
+    var null_platform = platform.NullPlatform.initWithOptions(
+        .{ .id = 1, .size = geometry.SizeF.init(640, 480), .scale_factor = 1 },
+        .system,
+        app_info,
+    );
+    // Model the host-created main window. Its passive flag is fixed
+    // before Runtime receives app_start and loads the scene.
+    null_platform.windows[0] = .{
+        .id = 1,
+        .label = "main",
+        .title = "Manifest title",
+        .frame = geometry.RectF.init(0, 0, 640, 480),
+        .scale_factor = 1,
+        .open = true,
+        .focused = false,
+    };
+    null_platform.window_count = 1;
+    null_platform.window_activate_on_show[0] = false;
+    null_platform.window_visible[0] = true;
+
+    const runtime = try std.testing.allocator.create(Runtime);
+    defer std.testing.allocator.destroy(runtime);
+    Runtime.initAt(runtime, .{ .platform = null_platform.platform() });
+    defer runtime.deinit();
+    var app_state: TestApp = .{};
+
+    try runtime.dispatchPlatformEvent(app_state.app(), .app_start);
+
+    try std.testing.expect(!runtime.windows[0].activate_on_show);
+    try std.testing.expect(!runtime.windows[0].info.focused);
+    try runtime.showWindow(1);
+    try std.testing.expectEqual(@as(u32, 1), null_platform.window_show_count[0]);
+    try std.testing.expect(!null_platform.windows[0].focused);
+    try std.testing.expect(!runtime.windows[0].info.focused);
+}
+
 test "runtime loads canvas-only startup shell without implicit main webview" {
     const TestApp = struct {
         const scene_views = [_]app_manifest.ShellView{.{

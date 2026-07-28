@@ -876,7 +876,7 @@ pub const GpuSurfaceOptions = struct {
         return (self.backend == .metal or self.backend == .software) and
             self.pixel_format == .bgra8_unorm and
             self.present_mode == .timer and
-            self.alpha_mode == .@"opaque" and
+            (self.alpha_mode == .@"opaque" or self.alpha_mode == .premultiplied) and
             self.color_space == .srgb and
             self.vsync;
     }

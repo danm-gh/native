@@ -106,7 +106,6 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                 self.views[index].gpu_backend = frame_event.backend;
                 self.views[index].gpu_pixel_format = frame_event.pixel_format;
                 self.views[index].gpu_present_mode = frame_event.present_mode;
-                self.views[index].gpu_alpha_mode = frame_event.alpha_mode;
                 self.views[index].gpu_color_space = frame_event.color_space;
                 self.views[index].gpu_vsync = frame_event.vsync;
                 self.views[index].gpu_status = frame_event.status;
@@ -119,6 +118,14 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                     // the rebuild so the app sees it honestly.
                     enriched_frame_event.occluded = frame_event.occluded;
                 }
+                // Alpha mode is immutable surface configuration, not a
+                // completion-time measurement. The desktop ABIs predate
+                // premultiplied surfaces and stamp their legacy opaque
+                // default on every completion, while their actual pixel
+                // presenters already preserve/premultiply alpha. Keep the
+                // create-time mode authoritative and normalize the event
+                // delivered to the app in both diagnostics tiers.
+                enriched_frame_event.alpha_mode = self.views[index].gpu_alpha_mode;
                 // Native scroll drivers reconcile against live host state
                 // on every presented frame (the relayout-stomp lesson: a
                 // one-shot frame patch races shell relayout): frames,

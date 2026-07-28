@@ -5368,6 +5368,19 @@ static ATOM registerClass(Host *host) {
     return RegisterClassExW(&wc);
 }
 
+static DWORD windowExtendedStyle(const Window &window) {
+    DWORD style = 0;
+    /* WS_EX_TRANSPARENT passes input through to other processes only
+     * for a layered window. Click-through is orthogonal to per-pixel
+     * transparency, so an otherwise opaque click-through window still
+     * uses a layered surface whose constant alpha is fixed at 255 below. */
+    if (window.transparent || window.click_through) style |= WS_EX_LAYERED;
+    if (window.always_on_top) style |= WS_EX_TOPMOST;
+    if (window.click_through) style |= WS_EX_TRANSPARENT;
+    if (!window.activate_on_show) style |= WS_EX_NOACTIVATE;
+    return style;
+}
+
 static bool createNativeWindow(Host *host, Window &window) {
     registerClass(host);
     std::wstring title = widen(window.title.empty() ? host->window_title : window.title);
@@ -5411,13 +5424,8 @@ static bool createNativeWindow(Host *host, Window &window) {
         outer_width = outer.cx;
         outer_height = outer.cy;
     }
-    DWORD ex_style = 0;
-    if (window.transparent) ex_style |= WS_EX_LAYERED;
-    if (window.always_on_top) ex_style |= WS_EX_TOPMOST;
-    if (window.click_through) ex_style |= WS_EX_TRANSPARENT;
-    if (!window.activate_on_show) ex_style |= WS_EX_NOACTIVATE;
     HWND hwnd = CreateWindowExW(
-        ex_style,
+        windowExtendedStyle(window),
         L"NativeSdkWindowsHost",
         title.c_str(),
         style,
@@ -5432,6 +5440,12 @@ static bool createNativeWindow(Host *host, Window &window) {
     if (!hwnd) return false;
     DragAcceptFiles(hwnd, TRUE);
     window.hwnd = hwnd;
+    if (window.click_through && !window.transparent &&
+        !SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
+        DestroyWindow(hwnd);
+        window.hwnd = nullptr;
+        return false;
+    }
     applyMenusToWindow(host, window);
     /* Before the first show, so a dark-scheme launch never flashes a
      * light caption. */
@@ -6067,6 +6081,7 @@ int native_sdk_windows_show_window(Host *host, uint64_t window_id) {
     if (found->second.activate_on_show) {
         ShowWindow(found->second.hwnd, IsIconic(found->second.hwnd) ? SW_RESTORE : SW_SHOW);
         SetForegroundWindow(found->second.hwnd);
+        SetFocus(found->second.hwnd);
     } else {
         ShowWindow(found->second.hwnd, SW_SHOWNOACTIVATE);
     }
@@ -6086,8 +6101,6 @@ int native_sdk_windows_show_window(Host *host, uint64_t window_id) {
         surface.gpu_emission_scheduled = false;
         gpuSurfaceScheduleFrameEmission(host, surface);
     }
-    SetForegroundWindow(found->second.hwnd);
-    SetFocus(found->second.hwnd);
     emit(host, found->second, kWindowFrame);
     return 1;
 }

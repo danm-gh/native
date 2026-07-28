@@ -1860,6 +1860,34 @@ test "windows WM_CLOSE hide consults the live tray state and downgrades to a rea
     try std.testing.expect(std.mem.indexOf(u8, close_hook, "downgraded to a real close") != null);
 }
 
+test "windows passive show never foregrounds or focuses the window" {
+    const host_source = @embedFile("webview2_host.cpp");
+    const show_at = std.mem.indexOf(u8, host_source, "int native_sdk_windows_show_window(") orelse return error.TestExpectedEqual;
+    const tail = host_source[show_at..];
+    const next_at = std.mem.indexOf(u8, tail, "int native_sdk_windows_set_window_close_policy(") orelse return error.TestExpectedEqual;
+    const show_fn = tail[0..next_at];
+    const passive_at = std.mem.indexOf(u8, show_fn, "ShowWindow(found->second.hwnd, SW_SHOWNOACTIVATE);") orelse return error.TestExpectedEqual;
+    const focused_at = std.mem.indexOf(u8, show_fn, "SetFocus(found->second.hwnd);") orelse return error.TestExpectedEqual;
+    const active_branch_end = std.mem.indexOfPos(u8, show_fn, focused_at, "} else {") orelse return error.TestExpectedEqual;
+    try std.testing.expect(focused_at < active_branch_end);
+    try std.testing.expect(std.mem.indexOfPos(u8, show_fn, passive_at, "SetForegroundWindow(") == null);
+    try std.testing.expect(std.mem.indexOfPos(u8, show_fn, passive_at, "SetFocus(") == null);
+}
+
+test "windows click-through uses a layered surface even when visually opaque" {
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (window.transparent || window.click_through) style |= WS_EX_LAYERED;",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (window.click_through && !window.transparent &&\n        !SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA))",
+    ) != null);
+}
+
 test "windows window focus includes focused native child views" {
     // This predicate lives in the C++ host, where the real HWND tree is
     // available. Pin the two parts of its contract textually: focus is

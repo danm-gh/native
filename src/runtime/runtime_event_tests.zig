@@ -309,20 +309,21 @@ test "runtime dispatches GPU surface events" {
         .label = "canvas",
         .kind = .gpu_surface,
         .frame = geometry.RectF.init(0, 0, 640, 360),
+        .gpu_surface = .{ .alpha_mode = .premultiplied },
     });
     const initial_frame = try harness.runtime.gpuSurfaceFrame(1, "canvas");
     try std.testing.expectEqual(created.id, initial_frame.surface_id);
     try std.testing.expectEqual(platform.GpuSurfaceBackend.metal, created.gpu_backend);
     try std.testing.expectEqual(platform.GpuSurfacePixelFormat.bgra8_unorm, created.gpu_pixel_format);
     try std.testing.expectEqual(platform.GpuSurfacePresentMode.timer, created.gpu_present_mode);
-    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.@"opaque", created.gpu_alpha_mode);
+    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.premultiplied, created.gpu_alpha_mode);
     try std.testing.expectEqual(platform.GpuSurfaceColorSpace.srgb, created.gpu_color_space);
     try std.testing.expect(created.gpu_vsync);
     try std.testing.expectEqual(platform.GpuSurfaceStatus.ready, created.gpu_status);
     try std.testing.expectEqual(platform.GpuSurfaceBackend.metal, initial_frame.backend);
     try std.testing.expectEqual(platform.GpuSurfacePixelFormat.bgra8_unorm, initial_frame.pixel_format);
     try std.testing.expectEqual(platform.GpuSurfacePresentMode.timer, initial_frame.present_mode);
-    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.@"opaque", initial_frame.alpha_mode);
+    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.premultiplied, initial_frame.alpha_mode);
     try std.testing.expectEqual(platform.GpuSurfaceColorSpace.srgb, initial_frame.color_space);
     try std.testing.expect(initial_frame.vsync);
     try std.testing.expectEqual(platform.GpuSurfaceStatus.ready, initial_frame.status);
@@ -389,7 +390,9 @@ test "runtime dispatches GPU surface events" {
     try std.testing.expectEqual(platform.GpuSurfaceBackend.metal, app_state.last_gpu_backend);
     try std.testing.expectEqual(platform.GpuSurfacePixelFormat.bgra8_unorm, app_state.last_gpu_pixel_format);
     try std.testing.expectEqual(platform.GpuSurfacePresentMode.timer, app_state.last_gpu_present_mode);
-    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.@"opaque", app_state.last_gpu_alpha_mode);
+    // Desktop hosts still stamp their legacy opaque completion value;
+    // runtime delivery preserves the surface's create-time contract.
+    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.premultiplied, app_state.last_gpu_alpha_mode);
     try std.testing.expectEqual(platform.GpuSurfaceColorSpace.srgb, app_state.last_gpu_color_space);
     try std.testing.expect(app_state.last_gpu_vsync);
     try std.testing.expectEqual(platform.GpuSurfaceStatus.ready, app_state.last_gpu_status);
@@ -444,7 +447,7 @@ test "runtime dispatches GPU surface events" {
     try std.testing.expectEqual(platform.GpuSurfaceBackend.metal, frame.backend);
     try std.testing.expectEqual(platform.GpuSurfacePixelFormat.bgra8_unorm, frame.pixel_format);
     try std.testing.expectEqual(platform.GpuSurfacePresentMode.timer, frame.present_mode);
-    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.@"opaque", frame.alpha_mode);
+    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.premultiplied, frame.alpha_mode);
     try std.testing.expectEqual(platform.GpuSurfaceColorSpace.srgb, frame.color_space);
     try std.testing.expect(frame.vsync);
     try std.testing.expectEqual(platform.GpuSurfaceStatus.ready, frame.status);
@@ -515,7 +518,7 @@ test "runtime dispatches GPU surface events" {
     try std.testing.expect(std.mem.indexOf(u8, view_json, "\"gpuBackend\":\"metal\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, view_json, "\"gpuPixelFormat\":\"bgra8_unorm\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, view_json, "\"gpuPresentMode\":\"timer\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, view_json, "\"gpuAlphaMode\":\"opaque\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, view_json, "\"gpuAlphaMode\":\"premultiplied\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, view_json, "\"gpuColorSpace\":\"srgb\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, view_json, "\"gpuVsync\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, view_json, "\"gpuStatus\":\"ready\"") != null);
@@ -586,7 +589,7 @@ test "runtime dispatches GPU surface events" {
     try std.testing.expectEqual(platform.GpuSurfaceBackend.metal, preview_frame.backend);
     try std.testing.expectEqual(platform.GpuSurfacePixelFormat.bgra8_unorm, preview_frame.pixel_format);
     try std.testing.expectEqual(platform.GpuSurfacePresentMode.timer, preview_frame.present_mode);
-    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.@"opaque", preview_frame.alpha_mode);
+    try std.testing.expectEqual(platform.GpuSurfaceAlphaMode.premultiplied, preview_frame.alpha_mode);
     try std.testing.expectEqual(platform.GpuSurfaceColorSpace.srgb, preview_frame.color_space);
     try std.testing.expect(preview_frame.vsync);
     try std.testing.expectEqual(platform.GpuSurfaceStatus.ready, preview_frame.status);

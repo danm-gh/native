@@ -1041,6 +1041,10 @@ pub const NullPlatform = struct {
             if (window.id == options.id) return error.DuplicateWindowId;
             if (std.mem.eql(u8, window.label, options.label)) return error.DuplicateWindowLabel;
         }
+        const focused = options.activate_on_show and options.show == .immediate;
+        if (focused) {
+            for (self.windows[0..self.window_count]) |*window| window.focused = false;
+        }
         const info: WindowInfo = .{
             .id = options.id,
             .label = options.label,
@@ -1048,7 +1052,7 @@ pub const NullPlatform = struct {
             .frame = options.default_frame,
             .scale_factor = self.surface_value.scale_factor,
             .open = true,
-            .focused = false,
+            .focused = focused,
         };
         self.windows[self.window_count] = info;
         self.window_resizable[self.window_count] = options.resizable;

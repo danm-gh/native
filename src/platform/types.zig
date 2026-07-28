@@ -8,6 +8,7 @@ pub const default_gpu_first_frame_latency_budget_ns: u64 = 150_000_000;
 
 pub const Error = error{
     UnsupportedService,
+    UnsupportedWindowTransparency,
     WindowNotFound,
     WindowLimitReached,
     DuplicateWindowId,
@@ -597,7 +598,8 @@ pub const WindowOptions = struct {
     /// Make the top-level window and its rendering surface alpha-capable.
     /// The app must also render alpha (for canvas views, select a
     /// non-opaque gpu alpha mode); otherwise opaque content still covers
-    /// the desktop normally.
+    /// the desktop normally. Backends that cannot provide an alpha-capable
+    /// render surface reject creation with `UnsupportedWindowTransparency`.
     transparent: bool = false,
     /// Keep the window above ordinary application windows using the
     /// platform's floating/topmost window level.

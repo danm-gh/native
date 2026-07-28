@@ -2932,6 +2932,10 @@ static WebKitWebView *native_sdk_ensure_main_webview(native_sdk_gtk_window_t *wi
         g_object_new(WEBKIT_TYPE_WEB_VIEW,
             "user-content-manager", win->content_manager,
             NULL));
+    if (win->transparent) {
+        GdkRGBA transparent_color = {0, 0, 0, 0};
+        webkit_web_view_set_background_color(wv, &transparent_color);
+    }
     win->web_view = wv;
     native_sdk_register_zero_scheme(win->host, wv);
     native_sdk_setup_bridge(win);

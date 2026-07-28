@@ -1184,6 +1184,30 @@ test "close_policy .hide on a secondary startup window is refused loudly at star
     }
 }
 
+test "active immediate secondary startup window becomes the runtime focus owner" {
+    const SourceApp = struct {
+        fn app(self: *@This()) support.App {
+            return .{ .context = self, .name = "startup-focus", .source = support.platform.WebViewSource.html("<p>Startup</p>") };
+        }
+    };
+    const startup_windows = [_]support.platform.WindowOptions{
+        .{ .id = 1, .label = "main", .title = "Main" },
+        .{ .id = 2, .label = "panel", .title = "Panel" },
+    };
+
+    const harness = try core.TestHarness().create(std.testing.allocator, .{ .size = geometry.SizeF.init(400, 300) });
+    defer harness.destroy(std.testing.allocator);
+    harness.runtime.options.platform.app_info.windows = &startup_windows;
+    var app_state: SourceApp = .{};
+    try harness.start(app_state.app());
+
+    var buffer: [support.platform.max_windows]support.platform.WindowInfo = undefined;
+    const windows = harness.runtime.listWindows(&buffer);
+    try std.testing.expectEqual(@as(usize, 2), windows.len);
+    try std.testing.expect(!windows[0].focused);
+    try std.testing.expect(windows[1].focused);
+}
+
 // --------------------- context-menu pin across the window lifecycle
 
 const MenuWinModel = struct {

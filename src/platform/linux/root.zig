@@ -883,7 +883,7 @@ fn createWindow(context: ?*anyopaque, options: platform_mod.WindowOptions) anyer
         .frame = frame,
         .scale_factor = 1,
         .open = true,
-        .focused = false,
+        .focused = options.activate_on_show and options.show == .immediate,
     };
 }
 
@@ -1853,6 +1853,38 @@ fn viewKindInt(kind: platform_mod.ViewKind) c_int {
 
 test "linux platform module exports type" {
     _ = LinuxPlatform;
+}
+
+test "linux transparent windows clear the main webview background" {
+    const host_source = @embedFile("gtk_host.c");
+    const ensure_at = std.mem.indexOf(
+        u8,
+        host_source,
+        "static WebKitWebView *native_sdk_ensure_main_webview",
+    ) orelse return error.TestExpectedEqual;
+    const create_at = std.mem.indexOfPos(
+        u8,
+        host_source,
+        ensure_at,
+        "WebKitWebView *wv = WEBKIT_WEB_VIEW(",
+    ) orelse return error.TestExpectedEqual;
+    const assign_at = std.mem.indexOfPos(
+        u8,
+        host_source,
+        create_at,
+        "win->web_view = wv;",
+    ) orelse return error.TestExpectedEqual;
+    const create_slice = host_source[create_at..assign_at];
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        create_slice,
+        "if (win->transparent)",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        create_slice,
+        "webkit_web_view_set_background_color(wv, &transparent_color);",
+    ) != null);
 }
 
 test "linux webview presses report the focused child label" {

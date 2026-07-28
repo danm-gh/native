@@ -905,7 +905,7 @@ fn createWindow(context: ?*anyopaque, options: platform_mod.WindowOptions) anyer
         .frame = frame,
         .scale_factor = 1,
         .open = true,
-        .focused = false,
+        .focused = options.activate_on_show and options.show == .immediate,
     };
 }
 

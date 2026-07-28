@@ -13,6 +13,7 @@ pub const Error = error{
     CreateFailed,
     FocusFailed,
     CloseFailed,
+    UnsupportedWindowTransparency,
 };
 
 const AppKitHost = opaque {};
@@ -595,6 +596,7 @@ pub const MacPlatform = struct {
 
     pub fn initWithOptions(size: geometry.SizeF, web_engine: platform_mod.WebEngine, app_info: platform_mod.AppInfo) Error!MacPlatform {
         const window_options = app_info.resolvedMainWindow();
+        try refuseUnsupportedTransparentWindow(web_engine, window_options);
         const window_title = window_options.resolvedTitle(app_info.app_name);
         const frame = window_options.default_frame;
         const display_name = app_info.resolvedDisplayName();
@@ -1229,6 +1231,10 @@ fn windowFlags(options: platform_mod.WindowOptions) u32 {
     return flags;
 }
 
+fn refuseUnsupportedTransparentWindow(web_engine: platform_mod.WebEngine, options: platform_mod.WindowOptions) Error!void {
+    if (web_engine == .chromium and options.transparent) return error.UnsupportedWindowTransparency;
+}
+
 fn closePolicyInt(policy: platform_mod.WindowClosePolicy) c_int {
     return switch (policy) {
         .quit => 0,
@@ -1258,6 +1264,7 @@ fn applyWindowContentMinSize(host: *AppKitHost, window_id: u64, min_width: f32, 
 
 fn createWindow(context: ?*anyopaque, options: platform_mod.WindowOptions) anyerror!platform_mod.WindowInfo {
     const self: *MacPlatform = @ptrCast(@alignCast(context.?));
+    try refuseUnsupportedTransparentWindow(self.web_engine, options);
     const title = options.resolvedTitle(self.app_info.app_name);
     const frame = options.default_frame;
     if (native_sdk_appkit_create_window(self.host, options.id, title.ptr, title.len, options.label.ptr, options.label.len, frame.x, frame.y, frame.width, frame.height, if (options.restore_state) 1 else 0, if (options.resizable) 1 else 0, titlebarStyleInt(options.titlebar), showModeInt(options.show), windowFlags(options)) == 0) return error.CreateFailed;
@@ -1270,7 +1277,7 @@ fn createWindow(context: ?*anyopaque, options: platform_mod.WindowOptions) anyer
         .frame = frame,
         .scale_factor = 1,
         .open = true,
-        .focused = false,
+        .focused = options.activate_on_show and options.show == .immediate,
     };
 }
 
@@ -2259,6 +2266,22 @@ test "macos chromium reports unsupported native surfaces" {
     try std.testing.expect(!MacPlatform.supportsFeature(&chromium, .file_drops));
     try std.testing.expect(!MacPlatform.supportsFeature(&chromium, .gpu_surfaces));
     try std.testing.expect(!MacPlatform.supportsFeature(&chromium, .view_surface_adoption));
+}
+
+test "macos chromium refuses transparent windows" {
+    try refuseUnsupportedTransparentWindow(.system, .{ .transparent = true });
+    try refuseUnsupportedTransparentWindow(.chromium, .{});
+    try std.testing.expectError(
+        error.UnsupportedWindowTransparency,
+        refuseUnsupportedTransparentWindow(.chromium, .{ .transparent = true }),
+    );
+
+    const host_source = @embedFile("cef_host.mm");
+    try std.testing.expect(std.mem.count(
+        u8,
+        host_source,
+        "if ((window_flags & (1u << 0)) != 0) return",
+    ) >= 2);
 }
 
 fn testPlatformWithEngine(web_engine: platform_mod.WebEngine) MacPlatform {

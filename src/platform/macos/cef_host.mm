@@ -2122,10 +2122,6 @@ static void NativeSdkApplyHiddenInsetTitlebar(NSWindow *window, int titlebar_sty
 static void NativeSdkApplyOverlayWindowFlags(NativeSdkChromiumHost *host, uint64_t window_id, uint32_t window_flags) {
     NSWindow *window = host.windows[@(window_id)];
     if (!window) return;
-    if ((window_flags & (1u << 0)) != 0) {
-        window.opaque = NO;
-        window.backgroundColor = NSColor.clearColor;
-    }
     if ((window_flags & (1u << 1)) != 0) window.level = NSFloatingWindowLevel;
     if ((window_flags & (1u << 2)) != 0) window.ignoresMouseEvents = YES;
     if ((window_flags & (1u << 3)) != 0) [host.passiveShowWindows addObject:@(window_id)];
@@ -2133,6 +2129,11 @@ static void NativeSdkApplyOverlayWindowFlags(NativeSdkChromiumHost *host, uint64
 
 native_sdk_appkit_host_t *native_sdk_appkit_create(const char *app_name, size_t app_name_len, const char *display_name, size_t display_name_len, const char *version, size_t version_len, const char *about_description, size_t about_description_len, int has_web_content, const char *window_title, size_t window_title_len, const char *bundle_id, size_t bundle_id_len, const char *icon_path, size_t icon_path_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, int show_policy, uint32_t window_flags) {
     @autoreleasepool {
+        // A windowed CEF child cannot paint transparent pixels into its
+        // parent NSWindow. Refuse instead of accepting a flag that leaves
+        // the browser surface opaque; the Zig platform seam returns the
+        // more specific UnsupportedWindowTransparency before this call.
+        if ((window_flags & (1u << 0)) != 0) return nullptr;
         // Present-before-show is a canvas contract; the Chromium host
         // hosts webviews only (gpu-surface presents are unsupported on
         // this engine), so the policy is accepted for ABI parity and
@@ -2409,6 +2410,7 @@ void native_sdk_appkit_set_shortcuts(native_sdk_appkit_host_t *host, const char 
 int native_sdk_appkit_create_window(native_sdk_appkit_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, int show_policy, uint32_t window_flags) {
     // Accepted for ABI parity; see native_sdk_appkit_create.
     (void)show_policy;
+    if ((window_flags & (1u << 0)) != 0) return 0;
     NativeSdkChromiumHost *object = (__bridge NativeSdkChromiumHost *)host;
     NSString *titleString = window_title ? [[NSString alloc] initWithBytes:window_title length:window_title_len encoding:NSUTF8StringEncoding] : @"native-sdk";
     NSString *labelString = window_label ? [[NSString alloc] initWithBytes:window_label length:window_label_len encoding:NSUTF8StringEncoding] : @"";

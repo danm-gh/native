@@ -3214,7 +3214,7 @@ test "window key-loss hides tooltips in that window's views only, re-key reveals
     const toolbar = try installTooltipToolbar(harness, app, arena.allocator());
 
     // A second window with its own canvas view and a delay-0 tooltip.
-    const second = try harness.runtime.createWindow(.{ .label = "tools", .title = "Tools" });
+    const second = try harness.runtime.createWindow(.{ .label = "tools", .title = "Tools", .activate_on_show = false });
     _ = try harness.runtime.createView(.{
         .window_id = second.id,
         .label = "canvas",
@@ -3287,7 +3287,7 @@ test "window key-loss announced loss-first (Windows/GTK ordering) hides the tool
 
     // A second window with its own canvas view and a delay-0 tooltip,
     // exactly like the gain-only key-loss test above.
-    const second = try harness.runtime.createWindow(.{ .label = "tools", .title = "Tools" });
+    const second = try harness.runtime.createWindow(.{ .label = "tools", .title = "Tools", .activate_on_show = false });
     _ = try harness.runtime.createView(.{
         .window_id = second.id,
         .label = "canvas",
@@ -3452,7 +3452,7 @@ test "a tooltip mounting beneath a non-key window's hovered trigger reveals and 
 
     // A second window with its own canvas view and a bare trigger; the
     // startup window keeps key throughout the mount.
-    const second = try harness.runtime.createWindow(.{ .label = "tools", .title = "Tools" });
+    const second = try harness.runtime.createWindow(.{ .label = "tools", .title = "Tools", .activate_on_show = false });
     _ = try harness.runtime.createView(.{
         .window_id = second.id,
         .label = "canvas",

@@ -293,6 +293,7 @@ pub fn writeWindowJsonToWriter(window: platform.WindowInfo, writer: anytype) !vo
 pub fn builtinBridgeErrorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.UnsupportedService => "Native service is not available on this platform",
+        error.UnsupportedWindowTransparency => "This backend cannot make window content transparent",
         error.WindowNotFound => "Window was not found",
         error.WindowLimitReached => "Window limit reached",
         error.DuplicateWindowLabel => "Window id or label already exists",
@@ -361,6 +362,7 @@ pub fn builtinBridgeErrorMessage(err: anyerror) []const u8 {
 pub fn builtinBridgeErrorCode(err: anyerror) bridge.ErrorCode {
     return switch (err) {
         error.UnsupportedService,
+        error.UnsupportedWindowTransparency,
         error.InvalidWindowOptions,
         error.WindowNotFound,
         error.WindowLimitReached,

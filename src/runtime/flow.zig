@@ -662,7 +662,8 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                     if (window.close_policy == .hide and !self.options.platform.supports(.window_hide_on_close)) {
                         return error.UnsupportedWindowClosePolicy;
                     }
-                    _ = try self.options.platform.services.createWindow(window);
+                    const native_info = try self.options.platform.services.createWindow(window);
+                    try WindowViewMethods().applyNativeInfo(self, runtime_index, native_info);
                 }
                 try self.options.platform.services.loadWindowWebView(window.id, self.windows[runtime_index].source.?);
                 try applyMainWebViewState(self, window.id);

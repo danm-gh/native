@@ -79,6 +79,9 @@ test "runtime creates lists focuses and closes windows" {
 
     const info = try harness.runtime.createWindow(.{ .label = "tools", .title = "Tools" });
     try std.testing.expectEqual(@as(platform.WindowId, 2), info.id);
+    try std.testing.expect(info.focused);
+    try std.testing.expect(!harness.runtime.windows[0].info.focused);
+    try std.testing.expect(harness.runtime.windows[1].info.focused);
     var output: [platform.max_windows]platform.WindowInfo = undefined;
     const windows = harness.runtime.listWindows(&output);
     try std.testing.expectEqual(@as(usize, 2), windows.len);

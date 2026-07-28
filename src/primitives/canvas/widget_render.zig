@@ -209,7 +209,11 @@ fn emitWidgetDepthContent(builder: *Builder, widget: Widget, tokens: DesignToken
     const paint_widget = widgetWithFrame(widget, pixelSnapGeometryRect(tokens, widget.frame));
     try emitWidgetBackdropBlur(builder, paint_widget, tokens);
     switch (paint_widget.kind) {
-        .stack, .row, .column, .grid, .list, .breadcrumb, .pagination, .radio_group, .toggle_group, .split, .tree => try emitWidgetClippedChildren(builder, paint_widget, tokens, depth),
+        .stack, .row, .column => {
+            try emitLayoutContainerBackground(builder, paint_widget);
+            try emitWidgetClippedChildren(builder, paint_widget, tokens, depth);
+        },
+        .grid, .list, .breadcrumb, .pagination, .radio_group, .toggle_group, .split, .tree => try emitWidgetClippedChildren(builder, paint_widget, tokens, depth),
         .button_group => try emitButtonGroupWidget(builder, paint_widget, tokens, depth),
         .table, .data_grid => {
             try emitWidgetClippedChildren(builder, paint_widget, tokens, depth);
@@ -488,7 +492,8 @@ fn emitWidgetLayoutNodeContent(
     const paint_widget = widgetWithFrame(widget, pixelSnapGeometryRect(tokens, widget.frame));
     try emitWidgetBackdropBlur(builder, paint_widget, tokens);
     switch (paint_widget.kind) {
-        .stack, .row, .column, .breadcrumb, .button_group, .pagination, .radio_group, .toggle_group, .split, .tree => {},
+        .stack, .row, .column => try emitLayoutContainerBackground(builder, paint_widget),
+        .breadcrumb, .button_group, .pagination, .radio_group, .toggle_group, .split, .tree => {},
         .data_row => try emitDataRowWidgetWash(builder, paint_widget, tokens),
         .tabs => try widget_render_surfaces.emitTabsListWidgetChrome(builder, paint_widget, tokens),
         .table, .data_grid => {
@@ -621,6 +626,20 @@ fn emitWidgetLayoutNodeContent(
     }
 
     try emitWidgetLayoutClippedChildren(builder, layout, node_index, tokens, state, paint_widget);
+}
+
+/// Flow and stacking containers have no implicit surface treatment, but
+/// an author background is real chrome: it fills the laid-out frame
+/// before any children, with the same optional radius accepted by the
+/// builder and markup grammar.
+fn emitLayoutContainerBackground(builder: *Builder, widget: Widget) Error!void {
+    const background = widget.style.background orelse return;
+    try builder.fillRoundedRect(.{
+        .id = widgetPartId(widget.id, 1),
+        .rect = widget.frame,
+        .radius = Radius.all(nonNegative(widget.style.radius orelse 0)),
+        .fill = colorFill(background),
+    });
 }
 
 fn emitWidgetLayoutScrollableChildren(

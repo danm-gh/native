@@ -1352,6 +1352,57 @@ test "widget tree emits panel button text and progress commands" {
     }
 }
 
+test "stack row and column backgrounds paint in tree and layout emission" {
+    const kinds = [_]WidgetKind{ .stack, .row, .column };
+    const frame = geometry.RectF.init(10, 12, 140, 72);
+    const background = Color.rgb8(18, 52, 86);
+
+    for (kinds, 0..) |kind, index| {
+        const id: ObjectId = @intCast(index + 1);
+        const widget = Widget{
+            .id = id,
+            .kind = kind,
+            .frame = frame,
+            .style = .{
+                .background = background,
+                .radius = 7,
+            },
+        };
+
+        var tree_commands: [1]CanvasCommand = undefined;
+        var tree_builder = Builder.init(&tree_commands);
+        try emitWidgetTree(&tree_builder, widget, .{});
+        const tree_display_list = tree_builder.displayList();
+        try std.testing.expectEqual(@as(usize, 1), tree_display_list.commandCount());
+        switch (tree_display_list.commands[0]) {
+            .fill_rounded_rect => |fill| {
+                try std.testing.expectEqual(widgetPartId(id, 1), fill.id);
+                try expectRect(frame, fill.rect);
+                try std.testing.expectEqualDeep(Radius.all(7), fill.radius);
+                try expectFillColor(background, fill.fill);
+            },
+            else => return error.TestUnexpectedResult,
+        }
+
+        var nodes: [1]WidgetLayoutNode = undefined;
+        const layout = try layoutWidgetTree(widget, frame, &nodes);
+        var layout_commands: [1]CanvasCommand = undefined;
+        var layout_builder = Builder.init(&layout_commands);
+        try emitWidgetLayout(&layout_builder, layout, .{});
+        const layout_display_list = layout_builder.displayList();
+        try std.testing.expectEqual(@as(usize, 1), layout_display_list.commandCount());
+        switch (layout_display_list.commands[0]) {
+            .fill_rounded_rect => |fill| {
+                try std.testing.expectEqual(widgetPartId(id, 1), fill.id);
+                try expectRect(frame, fill.rect);
+                try std.testing.expectEqualDeep(Radius.all(7), fill.radius);
+                try expectFillColor(background, fill.fill);
+            },
+            else => return error.TestUnexpectedResult,
+        }
+    }
+}
+
 test "widget tree emits backdrop blur before widget content" {
     const children = [_]Widget{.{
         .id = 2,

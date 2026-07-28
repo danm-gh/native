@@ -3064,7 +3064,11 @@ static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk
     win->gtk_window = GTK_WINDOW(gtk_application_window_new(host->app));
     if (win->transparent) {
         GtkCssProvider *provider = gtk_css_provider_new();
+#if GTK_CHECK_VERSION(4, 12, 0)
+        gtk_css_provider_load_from_string(provider, ".native-sdk-transparent { background-color: transparent; }");
+#else
         gtk_css_provider_load_from_data(provider, ".native-sdk-transparent { background-color: transparent; }", -1);
+#endif
         gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
         gtk_widget_add_css_class(GTK_WIDGET(win->gtk_window), "native-sdk-transparent");
         g_object_unref(provider);

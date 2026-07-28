@@ -996,6 +996,70 @@ test "runtime loads canvas-only startup shell without implicit main webview" {
     try std.testing.expectEqualStrings("canvas", snapshot.views[0].label);
 }
 
+test "hybrid scenes keep transparent canvas overlay windows sourceless" {
+    const TestApp = struct {
+        const main_views = [_]app_manifest.ShellView{.{
+            .label = "main",
+            .kind = .webview,
+            .url = "zero://inline",
+            .fill = true,
+        }};
+        const overlay_views = [_]app_manifest.ShellView{.{
+            .label = "overlay-canvas",
+            .kind = .gpu_surface,
+            .fill = true,
+        }};
+        const scene_windows = [_]app_manifest.ShellWindow{
+            .{
+                .label = "main",
+                .title = "Main",
+                .width = 800,
+                .height = 600,
+                .views = &main_views,
+            },
+            .{
+                .label = "overlay",
+                .title = "Overlay",
+                .width = 320,
+                .height = 180,
+                .transparent = true,
+                .views = &overlay_views,
+            },
+        };
+
+        fn scene(context: *anyopaque) anyerror!app_manifest.ShellConfig {
+            _ = context;
+            return .{ .windows = &scene_windows };
+        }
+
+        fn app(self: *@This()) App {
+            return .{
+                .context = self,
+                .name = "hybrid-overlay",
+                .source = platform.WebViewSource.html("<h1>Main content</h1>"),
+                .scene_fn = scene,
+            };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{ .id = 1, .size = geometry.SizeF.init(800, 600) });
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    try std.testing.expect(harness.null_platform.window_sources[0] != null);
+    try std.testing.expect(harness.null_platform.window_sources[1] == null);
+    try std.testing.expect(harness.runtime.windows[0].source != null);
+    try std.testing.expect(harness.runtime.windows[1].source == null);
+
+    // Hot reload must not turn the canvas overlay into a WebView window.
+    try reloadWindows(&harness.runtime, app);
+    try std.testing.expect(harness.null_platform.window_sources[1] == null);
+    try std.testing.expect(harness.runtime.windows[1].source == null);
+}
+
 test "runtime relayouts shell views attached to startup window" {
     const TestApp = struct {
         fn app(self: *@This()) App {

@@ -3927,6 +3927,7 @@ int native_sdk_gtk_show_window(native_sdk_gtk_host_t *host, uint64_t window_id) 
     native_sdk_gtk_window_t *win = native_sdk_find_window(host, window_id);
     if (!win || !win->gtk_window) return 0;
     native_sdk_cancel_deferred_show(win);
+    if (!win->activate_on_show) gtk_window_unminimize(win->gtk_window);
     native_sdk_show_window_implicit(win);
     native_sdk_emit_window_frame(host, win, 1);
     return 1;

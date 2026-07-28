@@ -1887,6 +1887,33 @@ test "linux transparent windows clear the main webview background" {
     ) != null);
 }
 
+test "linux passive show restores minimized windows without presenting them" {
+    const host_source = @embedFile("gtk_host.c");
+    const show_at = std.mem.indexOf(
+        u8,
+        host_source,
+        "int native_sdk_gtk_show_window",
+    ) orelse return error.TestExpectedEqual;
+    const show_end = std.mem.indexOfPos(
+        u8,
+        host_source,
+        show_at,
+        "int native_sdk_gtk_minimize_window",
+    ) orelse return error.TestExpectedEqual;
+    const show = host_source[show_at..show_end];
+    const unminimize_at = std.mem.indexOf(
+        u8,
+        show,
+        "if (!win->activate_on_show) gtk_window_unminimize(win->gtk_window);",
+    ) orelse return error.TestExpectedEqual;
+    const present_at = std.mem.indexOf(
+        u8,
+        show,
+        "native_sdk_show_window_implicit(win);",
+    ) orelse return error.TestExpectedEqual;
+    try std.testing.expect(unminimize_at < present_at);
+}
+
 test "linux webview presses report the focused child label" {
     // The capture-phase observer watches without claiming WebKit's
     // gesture; it exists solely to mirror the focus edge into runtime

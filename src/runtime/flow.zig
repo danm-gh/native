@@ -10,6 +10,7 @@ const runtime_automation_widget_dispatch = @import("automation_widget_dispatch.z
 const automation_commands = @import("automation_commands.zig");
 const launch_timing = @import("launch_timing.zig");
 const runtime_clock = @import("clock.zig");
+const runtime_state = @import("state.zig");
 const shell_layout = @import("shell_layout.zig");
 const runtime_builtin_bridge = @import("builtin_bridge.zig");
 const runtime_canvas_widget_events = @import("canvas_widget_events.zig");
@@ -28,6 +29,8 @@ const security = @import("../security/root.zig");
 
 const validateCommandName = validation.validateCommandName;
 const sceneNeedsMainWebView = shell_layout.sceneNeedsMainWebView;
+const shellWindowNeedsMainWebView = shell_layout.shellWindowNeedsMainWebView;
+const shellWindowUsesSourcelessCanvas = shell_layout.shellWindowUsesSourcelessCanvas;
 const nowNanoseconds = runtime_clock.nowNanoseconds;
 const canvasWidgetAccessibilityActionKindFromPlatform = widget_bridge.canvasWidgetAccessibilityActionKindFromPlatform;
 const parseAutomationCommandName = automation_commands.parseAutomationCommandName;
@@ -179,7 +182,7 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
             const window = app_info.resolvedStartupWindow(0);
             if (WindowViewMethods().findWindowIndexById(self, window.id) != null) return;
 
-            const runtime_index = try WindowViewMethods().reserveWindow(self, window.id, window.label, window.resolvedTitle(app_info.app_name), null, true);
+            const runtime_index = try WindowViewMethods().reserveWindow(self, window.id, window.label, window.resolvedTitle(app_info.app_name), null, true, .allow_source_less);
             self.windows[runtime_index].activate_on_show = window.activate_on_show;
             self.windows[runtime_index].info.focused = window.activate_on_show and window.show == .immediate;
             self.windows[runtime_index].main_focused = self.windows[runtime_index].info.focused;
@@ -633,9 +636,10 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                 const window = app_info.resolvedStartupWindow(index);
                 const runtime_index = if (WindowViewMethods().findWindowIndexById(self, window.id)) |runtime_index| blk: {
                     self.windows[runtime_index].source = try WindowViewMethods().copySource(self, runtime_index, source);
+                    self.windows[runtime_index].source_policy = .require_source;
                     break :blk runtime_index;
                 } else blk: {
-                    const runtime_index = try WindowViewMethods().reserveWindow(self, window.id, window.label, window.resolvedTitle(app_info.app_name), source, true);
+                    const runtime_index = try WindowViewMethods().reserveWindow(self, window.id, window.label, window.resolvedTitle(app_info.app_name), source, true, .require_source);
                     self.windows[runtime_index].info.frame = window.default_frame;
                     self.windows[runtime_index].main_frame = geometry.RectF.init(0, 0, window.default_frame.width, window.default_frame.height);
                     break :blk runtime_index;
@@ -682,16 +686,27 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                 return;
             }
 
-            const source = if (sceneNeedsMainWebView(scene) or !appUsesDefaultEmptyWebViewSource(App, app))
+            const uses_default_empty_source = appUsesDefaultEmptyWebViewSource(App, app);
+            const source = if (sceneNeedsMainWebView(scene) or !uses_default_empty_source)
                 try WindowViewMethods().copyLoadedSource(self, try app.webViewSource())
             else
                 null;
             if (source != null and !self.options.web_layer) return error.WebViewLayerNotBuilt;
             self.loaded_source = source;
 
-            try loadStartupSceneWindow(self, scene.windows[0], source);
+            const startup_uses_source = sceneWindowUsesAppSource(scene.windows[0], uses_default_empty_source);
+            try loadStartupSceneWindow(
+                self,
+                scene.windows[0],
+                if (startup_uses_source) source else null,
+                if (startup_uses_source) .allow_source_less else .never_source,
+            );
             for (scene.windows[1..]) |window| {
-                _ = try WindowViewMethods().createShellWindowWithSourceMode(self, window, source, source != null);
+                if (sceneWindowUsesAppSource(window, uses_default_empty_source)) {
+                    _ = try WindowViewMethods().createShellWindowWithSourceMode(self, window, source, source != null);
+                } else {
+                    _ = try WindowViewMethods().createSourcelessShellWindow(self, window);
+                }
             }
 
             log(self, "scene.load", "loaded app scene", &.{
@@ -700,7 +715,7 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
             });
         }
 
-        fn loadStartupSceneWindow(self: *Runtime, shell_window: app_manifest.ShellWindow, source: ?platform.WebViewSource) anyerror!void {
+        fn loadStartupSceneWindow(self: *Runtime, shell_window: app_manifest.ShellWindow, source: ?platform.WebViewSource, source_policy: runtime_state.WindowSourcePolicy) anyerror!void {
             const app_info = self.options.platform.app_info;
             const startup_window = app_info.resolvedStartupWindow(0);
             const window_id = startup_window.id;
@@ -719,6 +734,7 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                 shell_window.title orelse app_info.resolvedWindowTitle(),
                 null,
                 true,
+                source_policy,
             );
             if (WindowViewMethods().findWindowIndexByLabel(self, shell_window.label)) |label_index| {
                 if (label_index != runtime_index) return error.DuplicateWindowLabel;
@@ -729,6 +745,7 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
             self.windows[runtime_index].info.frame = startup_frame;
             self.windows[runtime_index].source = if (source) |source_value| try WindowViewMethods().copySource(self, runtime_index, source_value) else null;
             self.windows[runtime_index].source_reloads_from_app = source != null;
+            self.windows[runtime_index].source_policy = source_policy;
             // The host created this startup window from AppInfo before
             // the scene loaded. Overlay presentation is immutable host
             // state, so runtime bookkeeping must retain that same source
@@ -780,6 +797,7 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                 return;
             }
             for (self.windows[0..self.window_count], 0..) |*window, index| {
+                if (window.source_policy == .never_source) continue;
                 if (window.source == null or window.source_reloads_from_app) {
                     window.source = try WindowViewMethods().copySource(self, index, source);
                 }
@@ -1282,4 +1300,10 @@ fn appUsesDefaultEmptyWebViewSource(comptime App: type, app: App) bool {
         app.source.kind == .html and
         app.source.bytes.len == 0 and
         app.source.asset_options == null;
+}
+
+fn sceneWindowUsesAppSource(shell_window: app_manifest.ShellWindow, app_uses_default_empty_source: bool) bool {
+    if (shellWindowNeedsMainWebView(shell_window)) return true;
+    if (shellWindowUsesSourcelessCanvas(shell_window)) return false;
+    return !app_uses_default_empty_source;
 }

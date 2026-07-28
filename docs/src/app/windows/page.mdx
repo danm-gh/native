@@ -18,9 +18,9 @@ The first scene window adopts the startup window; additional scene windows are c
 
 ## Overlay windows
 
-Window creation accepts four orthogonal overlay options:
+Window creation accepts four overlay controls:
 
-- `transparent` makes the top-level window and its render surface alpha-capable. A canvas view must also use a non-opaque `gpu_alpha_mode`, and its clear/content alpha determines what reaches the desktop.
+- `transparent` makes the top-level window and its render surface alpha-capable. A raw scene canvas must also use a non-opaque `gpu_alpha_mode`, and its clear/content alpha determines what reaches the desktop. `UiApp.WindowDescriptor` selects premultiplied alpha and an alpha-zero canvas clear automatically.
 - `always_on_top` selects the platform's floating/topmost level.
 - `click_through` removes the whole window from pointer hit testing, so clicks, motion, and scrolling reach the window underneath.
 - `activate_on_show = false` orders the window front without activating the app or taking keyboard focus. This governs initial creation, the first-present reveal, and `showWindow`; an explicit `focusWindow` remains a deliberate activation request.
@@ -47,7 +47,7 @@ const overlay: native_sdk.ShellWindow = .{
 
 Canvas windows are created hidden and become visible after their first completed present. A short safety deadline reveals the window if rendering wedges. The overlay flags are installed before either reveal, so no opaque, focus-taking intermediate window flashes on screen.
 
-On macOS these map to an alpha-capable floating `NSWindow`, ignored mouse events, and passive `orderFront`. The system WebView engine can participate in that alpha window; the Chromium engine rejects `transparent` because its windowed CEF browser cannot expose alpha to the parent window. Windows uses a layered topmost window with per-pixel alpha, transparent hit testing, `WS_EX_NOACTIVATE`, and an atomic first-present reveal. Its layered presenter composites multiple canvas surfaces in layer order; WebViews and other native views are rejected inside a transparent Windows window because Win32 cannot redirect those child surfaces into the top-level alpha bitmap. Linux provides transparency, input regions, and passive show on GTK; topmost is honored on X11 through `_NET_WM_STATE_ABOVE`. Wayland intentionally gives the compositor—not clients—control of topmost placement, so the GTK host reports that limitation and cannot guarantee `always_on_top` there.
+On macOS these map to an alpha-capable floating `NSWindow`, ignored mouse events, and passive `orderFront`. The system WebView engine can participate in that alpha window; the Chromium engine rejects `transparent` because its windowed CEF browser cannot expose alpha to the parent window. Windows uses a layered topmost window with per-pixel alpha, transparent hit testing, a non-activating initial reveal, and normal activation if the user later clicks an interactive overlay. Its layered presenter composites multiple canvas surfaces in layer order. Because Win32 cannot redirect non-client chrome or child surfaces into the top-level alpha bitmap, a transparent Windows window must use `titlebar = .chromeless`, cannot be combined with application menus, and rejects WebViews and other native views. Linux provides transparency, input regions, and passive show on GTK; topmost is honored on X11 through `_NET_WM_STATE_ABOVE`. Wayland intentionally gives the compositor—not clients—control of topmost placement, so the GTK host reports that limitation and cannot guarantee `always_on_top` there.
 
 ## Creating windows from Zig
 

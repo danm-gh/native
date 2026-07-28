@@ -5440,11 +5440,16 @@ static DWORD windowExtendedStyle(const Window &window) {
     if (window.transparent || window.click_through) style |= WS_EX_LAYERED;
     if (window.always_on_top) style |= WS_EX_TOPMOST;
     if (window.click_through) style |= WS_EX_TRANSPARENT;
-    if (!window.activate_on_show) style |= WS_EX_NOACTIVATE;
     return style;
 }
 
 static bool createNativeWindow(Host *host, Window &window) {
+    /* UpdateLayeredWindow replaces the complete top-level image: Win32
+     * non-client chrome and HMENU pixels are not redirected into it.
+     * Canvas children have an explicit software composition path below,
+     * but accepting either kind of OS chrome would create an invisible
+     * titlebar/menu with live hit targets. */
+    if (window.transparent && (!windowIsChromeless(window) || !host->menus.empty())) return false;
     registerClass(host);
     std::wstring title = widen(window.title.empty() ? host->window_title : window.title);
     /* ALL titlebar styles keep the full overlapped frame. The hidden
@@ -5883,12 +5888,20 @@ void native_sdk_windows_set_security_policy(Host *host, const char *allowed_orig
     host->external_link_action = external_action;
 }
 
-void native_sdk_windows_set_menus(Host *host, const char *const *menu_titles, const size_t *menu_title_lens, size_t menu_count, const uint32_t *item_menu_indices, const char *const *item_labels, const size_t *item_label_lens, const char *const *item_commands, const size_t *item_command_lens, const char *const *item_keys, const size_t *item_key_lens, const uint32_t *item_modifiers, const int *item_separators, const int *item_enabled, const int *item_checked, size_t item_count) {
-    if (!host) return;
+int native_sdk_windows_set_menus(Host *host, const char *const *menu_titles, const size_t *menu_title_lens, size_t menu_count, const uint32_t *item_menu_indices, const char *const *item_labels, const size_t *item_label_lens, const char *const *item_commands, const size_t *item_command_lens, const char *const *item_keys, const size_t *item_key_lens, const uint32_t *item_modifiers, const int *item_separators, const int *item_enabled, const int *item_checked, size_t item_count) {
+    if (!host) return 0;
+    /* Menus may be configured after a runtime alpha window exists.
+     * Refuse the whole update before mutating the live menu model; an
+     * HMENU cannot be represented by that window's layered bitmap. */
+    if (menu_count > 0) {
+        for (const auto &entry : host->windows) {
+            if (entry.second.transparent) return 0;
+        }
+    }
     host->menus.clear();
     host->menu_commands.clear();
 
-    if (menu_count > 0 && (!menu_titles || !menu_title_lens)) return;
+    if (menu_count > 0 && (!menu_titles || !menu_title_lens)) return 0;
     host->menus.reserve(menu_count);
     for (size_t index = 0; index < menu_count; ++index) {
         Menu menu;
@@ -5896,7 +5909,7 @@ void native_sdk_windows_set_menus(Host *host, const char *const *menu_titles, co
         host->menus.push_back(menu);
     }
 
-    if (item_count > 0 && (!item_menu_indices || !item_labels || !item_label_lens || !item_commands || !item_command_lens || !item_keys || !item_key_lens || !item_modifiers || !item_separators || !item_enabled || !item_checked)) return;
+    if (item_count > 0 && (!item_menu_indices || !item_labels || !item_label_lens || !item_commands || !item_command_lens || !item_keys || !item_key_lens || !item_modifiers || !item_separators || !item_enabled || !item_checked)) return 0;
     uint32_t next_command_id = kMenuCommandBase;
     for (size_t index = 0; index < item_count; ++index) {
         uint32_t menu_index = item_menu_indices[index];
@@ -5922,6 +5935,7 @@ void native_sdk_windows_set_menus(Host *host, const char *const *menu_titles, co
     for (auto &entry : host->windows) {
         if (entry.second.hwnd) applyMenusToWindow(host, entry.second);
     }
+    return 1;
 }
 
 void native_sdk_windows_set_shortcuts(Host *host, const char *const *ids, const size_t *id_lens, const char *const *keys, const size_t *key_lens, const uint32_t *modifiers, size_t count) {

@@ -10,6 +10,7 @@ pub const Error = error{
     FocusFailed,
     CloseFailed,
     UnsupportedWindowClosePolicy,
+    UnsupportedWindowTransparency,
 };
 
 const WindowsHost = opaque {};
@@ -135,7 +136,7 @@ extern fn native_sdk_windows_bridge_respond_window(host: *WindowsHost, window_id
 extern fn native_sdk_windows_bridge_respond_webview(host: *WindowsHost, window_id: u64, webview_label: [*]const u8, webview_label_len: usize, response: [*]const u8, response_len: usize) void;
 extern fn native_sdk_windows_emit_window_event(host: *WindowsHost, window_id: u64, name: [*]const u8, name_len: usize, detail_json: [*]const u8, detail_json_len: usize) void;
 extern fn native_sdk_windows_set_security_policy(host: *WindowsHost, allowed_origins: [*]const u8, allowed_origins_len: usize, external_urls: [*]const u8, external_urls_len: usize, external_action: c_int) void;
-extern fn native_sdk_windows_set_menus(host: *WindowsHost, menu_titles: [*]const [*]const u8, menu_title_lens: [*]const usize, menu_count: usize, item_menu_indices: [*]const u32, item_labels: [*]const [*]const u8, item_label_lens: [*]const usize, item_commands: [*]const [*]const u8, item_command_lens: [*]const usize, item_keys: [*]const [*]const u8, item_key_lens: [*]const usize, item_modifiers: [*]const u32, item_separators: [*]const c_int, item_enabled: [*]const c_int, item_checked: [*]const c_int, item_count: usize) void;
+extern fn native_sdk_windows_set_menus(host: *WindowsHost, menu_titles: [*]const [*]const u8, menu_title_lens: [*]const usize, menu_count: usize, item_menu_indices: [*]const u32, item_labels: [*]const [*]const u8, item_label_lens: [*]const usize, item_commands: [*]const [*]const u8, item_command_lens: [*]const usize, item_keys: [*]const [*]const u8, item_key_lens: [*]const usize, item_modifiers: [*]const u32, item_separators: [*]const c_int, item_enabled: [*]const c_int, item_checked: [*]const c_int, item_count: usize) c_int;
 extern fn native_sdk_windows_set_shortcuts(host: *WindowsHost, ids: [*]const [*]const u8, id_lens: [*]const usize, keys: [*]const [*]const u8, key_lens: [*]const usize, modifiers: [*]const u32, count: usize) void;
 extern fn native_sdk_windows_create_window(host: *WindowsHost, window_id: u64, window_title: [*]const u8, window_title_len: usize, window_label: [*]const u8, window_label_len: usize, x: f64, y: f64, width: f64, height: f64, restore_frame: c_int, resizable: c_int, titlebar_style: c_int, min_width: f64, min_height: f64, show_policy: c_int, window_flags: u32) c_int;
 extern fn native_sdk_windows_start_window_drag(host: *WindowsHost, window_id: u64) c_int;
@@ -261,12 +262,30 @@ fn refuseUnsupportedMainWindowClosePolicy(app_info: platform_mod.AppInfo) Error!
     return error.UnsupportedWindowClosePolicy;
 }
 
+/// A Win32 per-pixel-alpha window is painted as one top-level layered
+/// bitmap: child HWNDs and non-client chrome do not participate in that
+/// bitmap. Canvas children are redirected explicitly by the host, but
+/// standard/hidden titlebars and an HMENU would otherwise be silently
+/// erased by the transparent DIB. Keep that limitation explicit at the
+/// create/configure seams instead of accepting an unusable combination.
+fn refuseUnsupportedTransparentWindow(options: platform_mod.WindowOptions, menus_active: bool) Error!void {
+    if (!options.transparent) return;
+    if (options.titlebar != .chromeless or menus_active) {
+        std.debug.print("transparent windows on windows require titlebar = \"chromeless\" and cannot be combined with application menus because Win32 layered windows cannot composite non-client chrome\n", .{});
+        return error.UnsupportedWindowTransparency;
+    }
+}
+
 pub const WindowsPlatform = struct {
     host: *WindowsHost,
     web_engine: platform_mod.WebEngine,
     app_info: platform_mod.AppInfo,
     surface_value: platform_mod.Surface,
     state: RunState = .{},
+    /// Mirrors the successfully installed native menu model so a
+    /// later runtime-created alpha window can fail with the precise
+    /// transparency error before crossing the C ABI.
+    menus_active: bool = false,
     /// Latched when the runtime's effects teardown abandons an
     /// in-flight channel `wake_fn` call (see
     /// `PlatformServices.note_channel_wake_abandoned_fn`): the stale
@@ -298,6 +317,7 @@ pub const WindowsPlatform = struct {
         // taskbar entry and windows has no dock-reopen path, so a
         // declared tray (status item) is the ONLY re-show affordance.
         try refuseUnsupportedMainWindowClosePolicy(app_info);
+        try refuseUnsupportedTransparentWindow(window_options, false);
         const window_title = window_options.resolvedTitle(app_info.app_name);
         const frame = window_options.default_frame;
         const host = native_sdk_windows_create(app_info.app_name.ptr, app_info.app_name.len, window_title.ptr, window_title.len, app_info.bundle_id.ptr, app_info.bundle_id.len, app_info.icon_path.ptr, app_info.icon_path.len, window_options.label.ptr, window_options.label.len, frame.x, frame.y, frame.width, frame.height, if (window_options.restore_state) 1 else 0, if (window_options.resizable) 1 else 0, titlebarStyleInt(window_options.titlebar), minSizeFloor(window_options.min_width), minSizeFloor(window_options.min_height), showModeInt(window_options.show), windowFlags(window_options)) orelse return error.CreateFailed;
@@ -894,6 +914,7 @@ fn minSizeFloor(value: f32) f64 {
 
 fn createWindow(context: ?*anyopaque, options: platform_mod.WindowOptions) anyerror!platform_mod.WindowInfo {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
+    try refuseUnsupportedTransparentWindow(options, self.menus_active);
     const title = options.resolvedTitle(self.app_info.app_name);
     const frame = options.default_frame;
     if (native_sdk_windows_create_window(self.host, options.id, title.ptr, title.len, options.label.ptr, options.label.len, frame.x, frame.y, frame.width, frame.height, if (options.restore_state) 1 else 0, if (options.resizable) 1 else 0, titlebarStyleInt(options.titlebar), minSizeFloor(options.min_width), minSizeFloor(options.min_height), showModeInt(options.show), windowFlags(options)) == 0) return error.CreateFailed;
@@ -1551,7 +1572,7 @@ fn configureMenus(context: ?*anyopaque, menus: []const platform_mod.Menu) anyerr
         }
     }
 
-    native_sdk_windows_set_menus(
+    if (native_sdk_windows_set_menus(
         self.host,
         menu_titles[0..menus.len].ptr,
         menu_title_lens[0..menus.len].ptr,
@@ -1568,7 +1589,8 @@ fn configureMenus(context: ?*anyopaque, menus: []const platform_mod.Menu) anyerr
         item_enabled[0..item_count].ptr,
         item_checked[0..item_count].ptr,
         item_count,
-    );
+    ) == 0) return error.UnsupportedWindowTransparency;
+    self.menus_active = menus.len > 0;
 }
 
 fn configureShortcuts(context: ?*anyopaque, shortcuts: []const platform_mod.Shortcut) anyerror!void {
@@ -1872,6 +1894,14 @@ test "windows passive show never foregrounds or focuses the window" {
     try std.testing.expect(focused_at < active_branch_end);
     try std.testing.expect(std.mem.indexOfPos(u8, show_fn, passive_at, "SetForegroundWindow(") == null);
     try std.testing.expect(std.mem.indexOfPos(u8, show_fn, passive_at, "SetFocus(") == null);
+
+    // Passive is a SHOW policy, not a permanent interaction policy:
+    // WS_EX_NOACTIVATE would also suppress activation on a later user
+    // click, making an interactive passive overlay impossible to focus.
+    const style_at = std.mem.indexOf(u8, host_source, "static DWORD windowExtendedStyle(") orelse return error.TestExpectedEqual;
+    const style_tail = host_source[style_at..];
+    const style_end = std.mem.indexOf(u8, style_tail, "static bool createNativeWindow(") orelse return error.TestExpectedEqual;
+    try std.testing.expect(std.mem.indexOf(u8, style_tail[0..style_end], "WS_EX_NOACTIVATE") == null);
 }
 
 test "windows passive canvas creation does not focus its child hwnd" {
@@ -1928,6 +1958,38 @@ test "windows transparent windows compose canvas siblings and reject unredirecta
         host_source,
         "if (window->second.transparent) return 0;",
     ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (window.transparent && (!windowIsChromeless(window) || !host->menus.empty())) return false;",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (menu_count > 0) {\n        for (const auto &entry : host->windows) {\n            if (entry.second.transparent) return 0;",
+    ) != null);
+}
+
+test "windows transparent windows require chromeless chrome and no menus" {
+    try refuseUnsupportedTransparentWindow(.{
+        .titlebar = .chromeless,
+        .transparent = true,
+    }, false);
+    try std.testing.expectError(error.UnsupportedWindowTransparency, refuseUnsupportedTransparentWindow(.{
+        .titlebar = .standard,
+        .transparent = true,
+    }, false));
+    try std.testing.expectError(error.UnsupportedWindowTransparency, refuseUnsupportedTransparentWindow(.{
+        .titlebar = .hidden_inset,
+        .transparent = true,
+    }, false));
+    try std.testing.expectError(error.UnsupportedWindowTransparency, refuseUnsupportedTransparentWindow(.{
+        .titlebar = .chromeless,
+        .transparent = true,
+    }, true));
+    // The constraint is only about per-pixel alpha: ordinary menu
+    // windows keep every titlebar style.
+    try refuseUnsupportedTransparentWindow(.{}, true);
 }
 
 test "windows first-present windows have a fallback reveal deadline" {

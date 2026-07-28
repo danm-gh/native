@@ -749,6 +749,11 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             canvas_label_len: usize = 0,
             window_id: platform.WindowId = 0,
             on_close: ?MsgT = null,
+            /// The descriptor's top-level alpha contract also controls
+            /// this slot's gpu alpha mode and frame clear. Without both,
+            /// an alpha-capable native window still receives an opaque
+            /// canvas inherited from the main scene.
+            transparent: bool = false,
             installed: bool = false,
             /// This slot's handler-tree currency (the per-slot half of
             /// `main_tree_current`): false only between handing the
@@ -2647,6 +2652,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             @memcpy(slot.canvas_label_storage[0..descriptor.canvas_label.len], descriptor.canvas_label);
             slot.window_id = info.id;
             slot.on_close = descriptor.on_close;
+            slot.transparent = descriptor.transparent;
             slot.installed = false;
             slot.canvas_size = .{ .width = descriptor.width, .height = descriptor.height };
             // Until this window's first frame reports its real density,
@@ -2669,7 +2675,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 .kind = .gpu_surface,
                 .fill = true,
             };
-            for (self.options.scene.windows) |window| {
+            scene: for (self.options.scene.windows) |window| {
                 for (window.views) |scene_view| {
                     if (scene_view.kind != .gpu_surface) continue;
                     if (!std.mem.eql(u8, scene_view.label, self.options.canvas_label)) continue;
@@ -2679,9 +2685,13 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                     view.gpu_alpha_mode = scene_view.gpu_alpha_mode;
                     view.gpu_color_space = scene_view.gpu_color_space;
                     view.gpu_vsync = scene_view.gpu_vsync;
-                    return view;
+                    break :scene;
                 }
             }
+            // The top-level alpha flag is sufficient for UiApp windows:
+            // do not inherit the main canvas's ordinary opaque alpha
+            // mode and accidentally erase the desktop behind the slot.
+            if (descriptor.transparent) view.gpu_alpha_mode = .premultiplied;
             return view;
         }
 
@@ -4219,7 +4229,13 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             if (comptime terminal_session.enabled) {
                 _ = self.terminal_sessions.flushPending();
             }
-            try self.presentFrame(runtime, frame_event, self.options.canvas_label, installing);
+            try self.presentFrame(
+                runtime,
+                frame_event,
+                self.options.canvas_label,
+                installing,
+                self.effectiveTokens().colors.background,
+            );
             if (installing) return;
             const on_frame = self.options.on_frame orelse return;
             const gpu_frame = runtime.gpuSurfaceFrame(frame_event.window_id, self.options.canvas_label) catch return;
@@ -4273,7 +4289,16 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 // lands first re-measures all of them.
                 try self.rebuildForRegisteredFonts(runtime);
             }
-            try self.presentFrame(runtime, frame_event, slot.canvasLabel(), installing);
+            var clear_color = self.slotEffectiveTokens(slot).colors.background;
+            if (slot.transparent) clear_color.a = 0;
+            // The CPU presenter buffers live at UiApp scope and are reused
+            // across windows. An incremental transparent-slot repaint
+            // could otherwise inherit bytes most recently rendered for
+            // the main window, or clear away retained alpha content after
+            // an activation/input frame. Rebuild the complete alpha image
+            // on every transparent-slot present; packet hosts receive the
+            // same honest full image contract.
+            try self.presentFrame(runtime, frame_event, slot.canvasLabel(), installing or slot.transparent, clear_color);
         }
 
         /// A face joined the runtime's font registry after this app's
@@ -4304,13 +4329,13 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         /// reports `UnsupportedService` at present time also falls back to
         /// pixels; that attempt forces a full repaint because the failed
         /// packet plan already recorded the frame's presented summary.
-        fn presentFrame(self: *Self, runtime: *Runtime, frame_event: platform.GpuSurfaceFrameEvent, canvas_label: []const u8, installing: bool) anyerror!void {
-            // The installing frame must paint unconditionally: on software
-            // platforms with no window-manager-driven resizes, nothing else
-            // invalidates before the first present, and the surface would
-            // stay blank until the first input arrives.
+        fn presentFrame(self: *Self, runtime: *Runtime, frame_event: platform.GpuSurfaceFrameEvent, canvas_label: []const u8, force_full_repaint: bool, clear_color: canvas.Color) anyerror!void {
+            // A forced frame must paint unconditionally: the installing
+            // frame has no earlier glass to retain, and transparent
+            // secondary windows deliberately rebuild their complete alpha
+            // image because UiApp's software buffers are shared by every
+            // canvas.
             const services = runtime.options.platform.services;
-            const clear_color = self.effectiveTokens().colors.background;
             var packet_attempted = false;
             if (services.present_gpu_surface_packet_fn != null or services.present_gpu_surface_packet_binary_fn != null) {
                 packet_attempted = true;
@@ -4323,7 +4348,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                             .timestamp_ns = frame_event.timestamp_ns,
                             .surface_size = frame_event.size,
                             .scale = frame_event.scale_factor,
-                            .full_repaint = frame_event.canvas_frame_full_repaint or installing,
+                            .full_repaint = frame_event.canvas_frame_full_repaint or force_full_repaint,
                         },
                         runtime.canvasFrameScratchStorage(),
                         clear_color,
@@ -4348,7 +4373,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                     .timestamp_ns = frame_event.timestamp_ns,
                     .surface_size = frame_event.size,
                     .scale = frame_event.scale_factor,
-                    .full_repaint = frame_event.canvas_frame_full_repaint or packet_attempted or installing,
+                    .full_repaint = frame_event.canvas_frame_full_repaint or packet_attempted or force_full_repaint,
                 },
                 runtime.canvasFrameScratchStorage(),
                 self.pixel_buffer,

@@ -20,6 +20,7 @@ const settings_window_label = "settings";
 
 const PanelModel = struct {
     settings_open: bool = false,
+    transparent_settings: bool = false,
     bumps: u32 = 0,
     user_closes: u32 = 0,
 };
@@ -61,6 +62,8 @@ fn panelWindows(model: *const PanelModel, scratch: *PanelApp.WindowsScratch) []c
             .height = 240,
             .min_width = 280,
             .min_height = 200,
+            .titlebar = if (model.transparent_settings) .chromeless else .standard,
+            .transparent = model.transparent_settings,
             .on_close = .settings_closed,
         };
         count += 1;
@@ -224,6 +227,55 @@ test "a Msg declares the settings window, its canvas installs, and automation dr
     try std.testing.expect(fixture.app_state.model.settings_open);
     const reopened = fixture.settingsWindowInfo() orelse return error.TestUnexpectedResult;
     try std.testing.expect(reopened.open);
+}
+
+test "a transparent descriptor selects premultiplied canvas alpha and an alpha-zero clear" {
+    const fixture = try Fixture.create();
+    defer fixture.destroy();
+
+    fixture.app_state.model.transparent_settings = true;
+    try fixture.clickSettingsButton();
+    const info = fixture.settingsWindowInfo() orelse return error.TestUnexpectedResult;
+
+    const index = for (fixture.harness.null_platform.windows[0..fixture.harness.null_platform.window_count], 0..) |window, i| {
+        if (window.id == info.id) break i;
+    } else return error.WindowNotFound;
+    try std.testing.expect(fixture.harness.null_platform.window_transparent[index]);
+    try std.testing.expectEqual(support.platform.WindowTitlebarStyle.chromeless, fixture.harness.null_platform.window_titlebar[index]);
+
+    var views_buffer: [4]support.platform.ViewInfo = undefined;
+    const views = fixture.harness.runtime.listViews(info.id, &views_buffer);
+    try std.testing.expectEqual(@as(usize, 1), views.len);
+    try std.testing.expectEqualStrings(settings_canvas_label, views[0].label);
+    try std.testing.expectEqual(support.platform.GpuSurfaceAlphaMode.premultiplied, views[0].gpu_alpha_mode);
+
+    // Exercise the pixels-only shape used by Windows' layered-window
+    // compositor, not just the null packet recorder.
+    fixture.harness.runtime.options.platform.services.present_gpu_surface_packet_fn = null;
+    fixture.harness.runtime.options.platform.services.present_gpu_surface_packet_binary_fn = null;
+    try fixture.installSettingsCanvas(info.id);
+    try std.testing.expectEqual(info.id, fixture.harness.null_platform.gpu_surface_present_window_id);
+    try std.testing.expectEqual(@as(u8, 0), fixture.harness.null_platform.gpu_surface_present_sample_rgba[3]);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fixture.app_state.pixel_buffer, 255) != null);
+
+    // Model the shared UiApp pixel buffer having been used by another
+    // surface between frames. A normal activation/input frame carries
+    // no platform full-repaint bit; transparent slots still rebuild the
+    // complete alpha image instead of presenting a cleared/foreign
+    // retained buffer.
+    @memset(fixture.app_state.pixel_buffer, 0);
+    const present_count = fixture.harness.null_platform.gpu_surface_present_count;
+    try fixture.harness.runtime.dispatchPlatformEvent(fixture.app, .{ .gpu_surface_frame = .{
+        .window_id = info.id,
+        .label = settings_canvas_label,
+        .size = geometry.SizeF.init(320, 240),
+        .scale_factor = 2,
+        .frame_index = 2,
+        .timestamp_ns = 3_000_000,
+        .nonblank = true,
+    } });
+    try std.testing.expectEqual(present_count + 1, fixture.harness.null_platform.gpu_surface_present_count);
+    try std.testing.expect(std.mem.indexOfScalar(u8, fixture.app_state.pixel_buffer, 255) != null);
 }
 
 test "a user close dispatches on_close and the model owns the consequence" {

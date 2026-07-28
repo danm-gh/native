@@ -5863,12 +5863,22 @@ static BOOL NativeSdkCompositeBlurWriteRegion(NSDictionary *command, CGFloat sca
     const double red = self.hasCanvasTexture ? 0.965 : 0.10 + 0.08 * sin(phase * 6.283185307179586);
     const double green = self.hasCanvasTexture ? 0.973 : 0.18 + 0.10 * sin((phase + 0.33) * 6.283185307179586);
     const double blue = self.hasCanvasTexture ? 0.988 : 0.34 + 0.16 * sin((phase + 0.66) * 6.283185307179586);
+    const BOOL transparentWindow = window != nil && !window.opaque;
 
     MTLRenderPassDescriptor *descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
     descriptor.colorAttachments[0].texture = drawable.texture;
     descriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
     descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-    descriptor.colorAttachments[0].clearColor = MTLClearColorMake(red, green, blue, 1.0);
+    // The clear remains visible when the renderer has not supplied a
+    // canvas texture yet, and briefly while a resize's retained texture
+    // does not match the new drawable. An opaque placeholder is useful
+    // for an ordinary window, but it defeats a transparent overlay's
+    // contract exactly when the late-reveal fallback exposes that state.
+    // Clear transparent glass to transparent black (valid premultiplied
+    // alpha); a matching canvas texture still draws over the whole pass.
+    descriptor.colorAttachments[0].clearColor = transparentWindow
+        ? MTLClearColorMake(0.0, 0.0, 0.0, 0.0)
+        : MTLClearColorMake(red, green, blue, 1.0);
 
     id<MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
     if (!commandBuffer) return;

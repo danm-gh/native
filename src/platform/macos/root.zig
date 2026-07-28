@@ -2503,6 +2503,38 @@ test "mac transparent raw frames are premultiplied exactly once before Metal upl
     ) != null);
 }
 
+test "mac transparent gpu surfaces clear missing canvas content to transparent" {
+    const host_source = @embedFile("appkit_host.m");
+    const render_at = std.mem.indexOf(
+        u8,
+        host_source,
+        "- (void)renderFrame {",
+    ) orelse return error.TestExpectedEqual;
+    const render_end = std.mem.indexOfPos(
+        u8,
+        host_source,
+        render_at,
+        "- (BOOL)acceptsFirstResponder",
+    ) orelse return error.TestExpectedEqual;
+    const render_source = host_source[render_at..render_end];
+
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        render_source,
+        "const BOOL transparentWindow = window != nil && !window.opaque;",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(u8, render_source,
+        \\descriptor.colorAttachments[0].clearColor = transparentWindow
+        \\        ? MTLClearColorMake(0.0, 0.0, 0.0, 0.0)
+        \\        : MTLClearColorMake(red, green, blue, 1.0);
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        render_source,
+        "if (self.hasCanvasTexture && canvasTextureMatchesDrawable",
+    ) != null);
+}
+
 test "mac Chromium webview focus reports the focused child label" {
     // CEF's focus handler is the engine-level ownership edge: it covers
     // pointer, keyboard, and programmatic focus without predicting from

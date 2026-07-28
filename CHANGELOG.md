@@ -2,9 +2,33 @@
 
 All notable changes to the Native SDK (formerly zero-native) will be documented in this file.
 
-## 0.6.1
+## 0.6.2
 
 <!-- release:start -->
+
+### New Features
+
+- **Reliable desktop overlay windows**: window declarations and runtime creation now support transparent, always-on-top, click-through, and passive-show presentation applied before first visibility; canvas windows reveal after their first alpha-correct present without stealing focus, fall back to a late reveal if rendering wedges, and Windows composites multiple canvas layers while rejecting child surfaces its layered presenter cannot display.
+- **Honest backend constraints**: Linux main WebViews inherit transparent-window alpha, macOS Chromium rejects transparent windows because windowed CEF content cannot supply alpha, and transparent Windows windows require chromeless chrome with no application menu because the layered compositor cannot capture Win32 non-client pixels.
+- **Resizable transparent Windows windows**: the layered presenter keeps the nearly invisible system resize frame pointer-targetable without filling intentional alpha-zero regions in the client.
+- **Hybrid overlay lifecycle**: canvas-only overlay windows stay free of implicit main WebViews in mixed WebView scenes and across hot reloads, while passive Linux windows restore from minimization without taking focus.
+- **Reliable explicit focus on macOS**: focusing a system-WebView window now activates the app before asking AppKit to make the window key, so an inactive app can come forward as requested.
+- **Imperative canvas overlays**: `runtime.createWindow` and `window.zero.windows.create` keep transparent windows without an explicit source canvas-only across hot reloads, and JavaScript can select the chromeless titlebar Windows requires.
+- **Idle overlays stay idle**: transparent canvas windows retain their last presented image without entering a display-rate repaint loop, while software presenters still rebuild fully once when their shared pixel buffer changes surfaces.
+
+### Bug Fixes
+
+- **Container backgrounds render**: explicit backgrounds on `stack`, `row`, and `column` now paint across the laid-out frame with their configured radius.
+
+### Contributors
+
+- @ctate
+- @jasonkneen
+- @sepehr-safari
+
+<!-- release:end -->
+
+## 0.6.1
 
 ### Bug Fixes
 
@@ -14,8 +38,6 @@ All notable changes to the Native SDK (formerly zero-native) will be documented 
 ### Contributors
 
 - @ctate
-
-<!-- release:end -->
 
 ## 0.6.0
 

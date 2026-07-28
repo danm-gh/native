@@ -1887,6 +1887,78 @@ test "linux transparent windows clear the main webview background" {
     ) != null);
 }
 
+test "linux transparent window stylesheet is host-owned and removed" {
+    const host_source = @embedFile("gtk_host.c");
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, host_source, "gtk_style_context_add_provider_for_display("),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        std.mem.count(u8, host_source, "gtk_style_context_remove_provider_for_display("),
+    );
+
+    const ensure_at = std.mem.indexOf(
+        u8,
+        host_source,
+        "static void native_sdk_ensure_transparent_css",
+    ) orelse return error.TestExpectedEqual;
+    const create_at = std.mem.indexOfPos(
+        u8,
+        host_source,
+        ensure_at,
+        "static native_sdk_gtk_window_t *native_sdk_create_window_internal",
+    ) orelse return error.TestExpectedEqual;
+    const ensure = host_source[ensure_at..create_at];
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        ensure,
+        "if (!host || host->transparent_css_provider) return;",
+    ) != null);
+    const create_end = std.mem.indexOfPos(
+        u8,
+        host_source,
+        create_at,
+        "static void on_activate",
+    ) orelse return error.TestExpectedEqual;
+    const create = host_source[create_at..create_end];
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        create,
+        "native_sdk_ensure_transparent_css(host);",
+    ) != null);
+
+    const destroy_at = std.mem.indexOf(
+        u8,
+        host_source,
+        "void native_sdk_gtk_destroy",
+    ) orelse return error.TestExpectedEqual;
+    const destroy = host_source[destroy_at..];
+    const remove_at = std.mem.indexOf(
+        u8,
+        destroy,
+        "gtk_style_context_remove_provider_for_display(",
+    ) orelse return error.TestExpectedEqual;
+    const provider_unref_at = std.mem.indexOf(
+        u8,
+        destroy,
+        "g_object_unref(host->transparent_css_provider);",
+    ) orelse return error.TestExpectedEqual;
+    const display_unref_at = std.mem.indexOf(
+        u8,
+        destroy,
+        "g_object_unref(host->transparent_css_display);",
+    ) orelse return error.TestExpectedEqual;
+    const app_unref_at = std.mem.indexOf(
+        u8,
+        destroy,
+        "g_object_unref(host->app);",
+    ) orelse return error.TestExpectedEqual;
+    try std.testing.expect(remove_at < provider_unref_at);
+    try std.testing.expect(remove_at < display_unref_at);
+    try std.testing.expect(remove_at < app_unref_at);
+}
+
 test "linux passive show restores minimized windows without presenting them" {
     const host_source = @embedFile("gtk_host.c");
     const show_at = std.mem.indexOf(

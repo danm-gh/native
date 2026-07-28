@@ -384,6 +384,12 @@ typedef struct native_sdk_gtk_window {
 
 struct native_sdk_gtk_host {
     GtkApplication *app;
+    /* Display providers are global and the display retains them until
+     * explicitly removed. Keep the transparent-window stylesheet once
+     * per host, rather than registering one immortal provider for every
+     * transparent window created over the process lifetime. */
+    GdkDisplay *transparent_css_display;
+    GtkCssProvider *transparent_css_provider;
     char *app_name;
     char *window_title;
     char *bundle_id;
@@ -3026,6 +3032,22 @@ static gboolean native_sdk_deferred_show_timeout(gpointer data) {
     return G_SOURCE_REMOVE;
 }
 
+static void native_sdk_ensure_transparent_css(native_sdk_gtk_host_t *host) {
+    if (!host || host->transparent_css_provider) return;
+    GdkDisplay *display = gdk_display_get_default();
+    if (!display) return;
+
+    GtkCssProvider *provider = gtk_css_provider_new();
+#if GTK_CHECK_VERSION(4, 12, 0)
+    gtk_css_provider_load_from_string(provider, ".native-sdk-transparent { background-color: transparent; }");
+#else
+    gtk_css_provider_load_from_data(provider, ".native-sdk-transparent { background-color: transparent; }", -1);
+#endif
+    gtk_style_context_add_provider_for_display(display, GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    host->transparent_css_display = g_object_ref(display);
+    host->transparent_css_provider = provider;
+}
+
 static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk_host_t *host, uint64_t window_id, const char *title, const char *label, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, double min_width, double min_height, int show_policy, uint32_t window_flags) {
     if (native_sdk_find_window(host, window_id)) return NULL;
 
@@ -3063,15 +3085,8 @@ static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk
 
     win->gtk_window = GTK_WINDOW(gtk_application_window_new(host->app));
     if (win->transparent) {
-        GtkCssProvider *provider = gtk_css_provider_new();
-#if GTK_CHECK_VERSION(4, 12, 0)
-        gtk_css_provider_load_from_string(provider, ".native-sdk-transparent { background-color: transparent; }");
-#else
-        gtk_css_provider_load_from_data(provider, ".native-sdk-transparent { background-color: transparent; }", -1);
-#endif
-        gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        native_sdk_ensure_transparent_css(host);
         gtk_widget_add_css_class(GTK_WIDGET(win->gtk_window), "native-sdk-transparent");
-        g_object_unref(provider);
     }
     gtk_window_set_title(win->gtk_window, win->title);
     gtk_window_set_default_size(win->gtk_window, (int)width, (int)height);
@@ -3269,6 +3284,13 @@ void native_sdk_gtk_destroy(native_sdk_gtk_host_t *host) {
     while (host->context_menu_teardowns) native_sdk_context_menu_free(host->context_menu_teardowns);
     for (int i = 0; i < host->window_count; i++) {
         native_sdk_clear_window(&host->windows[i]);
+    }
+    if (host->transparent_css_provider) {
+        gtk_style_context_remove_provider_for_display(
+            host->transparent_css_display,
+            GTK_STYLE_PROVIDER(host->transparent_css_provider));
+        g_object_unref(host->transparent_css_provider);
+        g_object_unref(host->transparent_css_display);
     }
     g_object_unref(host->app);
     free(host->app_name);

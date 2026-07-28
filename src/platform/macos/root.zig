@@ -2455,6 +2455,18 @@ test "mac webview presses report the focused child label" {
     try std.testing.expect(std.mem.indexOf(u8, host_source, ".view_label = label") != null);
 }
 
+test "mac active implicit show activates before making the window key" {
+    const host_source = @embedFile("appkit_host.m");
+    try std.testing.expect(std.mem.indexOf(u8, host_source,
+        \\    if ([self.passiveShowWindows containsObject:@(windowId)]) {
+        \\        [window orderFront:nil];
+        \\    } else {
+        \\        [NSApp activate];
+        \\        [window makeKeyAndOrderFront:nil];
+        \\    }
+    ) != null);
+}
+
 test "mac transparent raw frames are premultiplied exactly once before Metal upload" {
     const host_source = @embedFile("appkit_host.m");
     const helper_at = std.mem.indexOf(

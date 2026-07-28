@@ -7381,15 +7381,17 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
 
 // Implicit shows honor `activate_on_show`: passive overlays are ordered
 // front without changing the active app or key window. Explicit focus
-// continues to use makeKeyAndOrderFront + activate.
+// continues to activate and makeKeyAndOrderFront. Activation comes
+// first: a first-present window can reveal while the app is inactive,
+// and asking that inactive app to make a window key is only best effort.
 - (void)orderWindowForImplicitShow:(uint64_t)windowId {
     NSWindow *window = self.windows[@(windowId)];
     if (!window) return;
     if ([self.passiveShowWindows containsObject:@(windowId)]) {
         [window orderFront:nil];
     } else {
-        [window makeKeyAndOrderFront:nil];
         [NSApp activate];
+        [window makeKeyAndOrderFront:nil];
     }
 }
 

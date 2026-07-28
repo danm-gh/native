@@ -1865,6 +1865,25 @@ test "linux webview presses report the focused child label" {
     try std.testing.expect(std.mem.indexOf(u8, host_source, "native_sdk_watch_webview_pointer_focus(win, web_view);") != null);
 }
 
+test "linux first-present windows have a cancellable fallback reveal" {
+    const host_source = @embedFile("gtk_host.c");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "g_timeout_add(1000, native_sdk_deferred_show_timeout, win)",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "native_sdk_cancel_deferred_show(win);",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "win->reveal_after_first_draw = 0;\n    gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);",
+    ) != null);
+}
+
 test "linux refuses a .hide main window at platform init instead of a silent quit-on-close" {
     // The pre-created MAIN window never passes through the runtime's
     // create gate, so the platform's init gate must hold the same

@@ -359,6 +359,9 @@ typedef struct native_sdk_gtk_window {
     int activate_on_show;
     int show_on_first_present;
     int shown;
+    /* One-second safety reveal for a canvas window whose first present
+     * never arrives. Zero once cancelled/fired. */
+    guint deferred_show_source;
     /* A first-present window maps fully transparent so GTK can paint its
      * first canvas frame, then the draw callback reveals that composed
      * frame instead of exposing an unpainted widget. */
@@ -1871,6 +1874,10 @@ static void native_sdk_clear_webviews(native_sdk_gtk_window_t *win) {
 
 static void native_sdk_clear_window(native_sdk_gtk_window_t *win) {
     if (!win) return;
+    if (win->deferred_show_source) {
+        g_source_remove(win->deferred_show_source);
+        win->deferred_show_source = 0;
+    }
     native_sdk_clear_native_views(win);
     native_sdk_clear_webviews(win);
     native_sdk_clear_window_source(win);
@@ -3005,6 +3012,27 @@ static void native_sdk_show_window_implicit(native_sdk_gtk_window_t *win) {
     win->shown = 1;
 }
 
+static void native_sdk_cancel_deferred_show(native_sdk_gtk_window_t *win) {
+    if (!win || !win->deferred_show_source) return;
+    g_source_remove(win->deferred_show_source);
+    win->deferred_show_source = 0;
+}
+
+static gboolean native_sdk_deferred_show_timeout(gpointer data) {
+    native_sdk_gtk_window_t *win = data;
+    if (!win) return G_SOURCE_REMOVE;
+    win->deferred_show_source = 0;
+    if (!win->gtk_window || win->shown) return G_SOURCE_REMOVE;
+    /* This is the wedged-renderer safety path: reveal the GTK window
+     * itself rather than waiting for the draw callback that may never
+     * arrive. */
+    win->reveal_after_first_draw = 0;
+    gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);
+    native_sdk_show_window_implicit(win);
+    native_sdk_emit_window_frame(win->host, win, 1);
+    return G_SOURCE_REMOVE;
+}
+
 static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk_host_t *host, uint64_t window_id, const char *title, const char *label, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, double min_width, double min_height, int show_policy, uint32_t window_flags) {
     if (native_sdk_find_window(host, window_id)) return NULL;
 
@@ -3144,6 +3172,9 @@ static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk
     gtk_widget_add_controller(GTK_WIDGET(win->gtk_window), shortcut_controller);
 
     native_sdk_apply_overlay_surface_options(win);
+    if (win->show_on_first_present) {
+        win->deferred_show_source = g_timeout_add(1000, native_sdk_deferred_show_timeout, win);
+    }
 
     return win;
 }
@@ -3896,6 +3927,7 @@ int native_sdk_gtk_window_chrome(native_sdk_gtk_host_t *host, uint64_t window_id
 int native_sdk_gtk_focus_window(native_sdk_gtk_host_t *host, uint64_t window_id) {
     native_sdk_gtk_window_t *win = native_sdk_find_window(host, window_id);
     if (!win || !win->gtk_window) return 0;
+    native_sdk_cancel_deferred_show(win);
     win->reveal_after_first_draw = 0;
     gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);
     gtk_window_present(win->gtk_window);
@@ -3907,6 +3939,7 @@ int native_sdk_gtk_focus_window(native_sdk_gtk_host_t *host, uint64_t window_id)
 int native_sdk_gtk_show_window(native_sdk_gtk_host_t *host, uint64_t window_id) {
     native_sdk_gtk_window_t *win = native_sdk_find_window(host, window_id);
     if (!win || !win->gtk_window) return 0;
+    native_sdk_cancel_deferred_show(win);
     win->reveal_after_first_draw = 0;
     gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);
     native_sdk_show_window_implicit(win);
@@ -4338,6 +4371,7 @@ int native_sdk_gtk_present_gpu_surface_pixels(native_sdk_gtk_host_t *host, uint6
     const int first_present = !view->gpu_presented;
     view->gpu_presented = 1;
     if (first_present && win && !win->shown) {
+        native_sdk_cancel_deferred_show(win);
         native_sdk_show_window_implicit(win);
         native_sdk_emit_window_frame(host, win, 1);
     }

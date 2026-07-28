@@ -45,9 +45,9 @@ const overlay: native_sdk.ShellWindow = .{
 };
 ```
 
-Canvas windows are created hidden and become visible only after their first completed present. The overlay flags are installed before that reveal, so no opaque, focus-taking intermediate window flashes on screen.
+Canvas windows are created hidden and become visible after their first completed present. A short safety deadline reveals the window if rendering wedges. The overlay flags are installed before either reveal, so no opaque, focus-taking intermediate window flashes on screen.
 
-On macOS these map to an alpha-capable floating `NSWindow`, ignored mouse events, and passive `orderFront`. Windows uses a layered topmost window with per-pixel alpha, transparent hit testing, `WS_EX_NOACTIVATE`, and an atomic first-present reveal. Linux provides transparency, input regions, and passive show on GTK; topmost is honored on X11 through `_NET_WM_STATE_ABOVE`. Wayland intentionally gives the compositor—not clients—control of topmost placement, so the GTK host reports that limitation and cannot guarantee `always_on_top` there.
+On macOS these map to an alpha-capable floating `NSWindow`, ignored mouse events, and passive `orderFront`. Windows uses a layered topmost window with per-pixel alpha, transparent hit testing, `WS_EX_NOACTIVATE`, and an atomic first-present reveal. Its layered presenter composites multiple canvas surfaces in layer order; WebViews and other native views are rejected inside a transparent Windows window because Win32 cannot redirect those child surfaces into the top-level alpha bitmap. Linux provides transparency, input regions, and passive show on GTK; topmost is honored on X11 through `_NET_WM_STATE_ABOVE`. Wayland intentionally gives the compositor—not clients—control of topmost placement, so the GTK host reports that limitation and cannot guarantee `always_on_top` there.
 
 ## Creating windows from Zig
 

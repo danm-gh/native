@@ -128,7 +128,7 @@ extern fn native_sdk_windows_wake(host: *WindowsHost) void;
 extern fn native_sdk_windows_request_frame(host: *WindowsHost) void;
 extern fn native_sdk_windows_decode_image(bytes: [*]const u8, bytes_len: usize, pixels: [*]u8, pixels_len: usize, out_width: *usize, out_height: *usize) c_int;
 extern fn native_sdk_windows_load_webview(host: *WindowsHost, source: [*]const u8, source_len: usize, source_kind: c_int, asset_root: [*]const u8, asset_root_len: usize, asset_entry: [*]const u8, asset_entry_len: usize, asset_origin: [*]const u8, asset_origin_len: usize, spa_fallback: c_int) void;
-extern fn native_sdk_windows_load_window_webview(host: *WindowsHost, window_id: u64, source: [*]const u8, source_len: usize, source_kind: c_int, asset_root: [*]const u8, asset_root_len: usize, asset_entry: [*]const u8, asset_entry_len: usize, asset_origin: [*]const u8, asset_origin_len: usize, spa_fallback: c_int) void;
+extern fn native_sdk_windows_load_window_webview(host: *WindowsHost, window_id: u64, source: [*]const u8, source_len: usize, source_kind: c_int, asset_root: [*]const u8, asset_root_len: usize, asset_entry: [*]const u8, asset_entry_len: usize, asset_origin: [*]const u8, asset_origin_len: usize, spa_fallback: c_int) c_int;
 extern fn native_sdk_windows_set_bridge_callback(host: *WindowsHost, callback: WindowsBridgeCallback, context: ?*anyopaque) void;
 extern fn native_sdk_windows_bridge_respond(host: *WindowsHost, response: [*]const u8, response_len: usize) void;
 extern fn native_sdk_windows_bridge_respond_window(host: *WindowsHost, window_id: u64, response: [*]const u8, response_len: usize) void;
@@ -758,7 +758,7 @@ fn loadWebView(context: ?*anyopaque, source: platform_mod.WebViewSource) anyerro
 fn loadWindowWebView(context: ?*anyopaque, window_id: platform_mod.WindowId, source: platform_mod.WebViewSource) anyerror!void {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
     const assets: platform_mod.WebViewAssetSource = source.asset_options orelse .{ .root_path = "", .entry = "", .origin = "", .spa_fallback = false };
-    native_sdk_windows_load_window_webview(
+    if (native_sdk_windows_load_window_webview(
         self.host,
         window_id,
         source.bytes.ptr,
@@ -775,7 +775,7 @@ fn loadWindowWebView(context: ?*anyopaque, window_id: platform_mod.WindowId, sou
         assets.origin.ptr,
         assets.origin.len,
         if (assets.spa_fallback) 1 else 0,
-    );
+    ) == 0) return error.CreateFailed;
 }
 
 fn completeBridge(context: ?*anyopaque, response: []const u8) anyerror!void {
@@ -1874,6 +1874,19 @@ test "windows passive show never foregrounds or focuses the window" {
     try std.testing.expect(std.mem.indexOfPos(u8, show_fn, passive_at, "SetFocus(") == null);
 }
 
+test "windows passive canvas creation does not focus its child hwnd" {
+    const host_source = @embedFile("webview2_host.cpp");
+    const create_at = std.mem.indexOf(u8, host_source, "int native_sdk_windows_create_view(") orelse return error.TestExpectedEqual;
+    const tail = host_source[create_at..];
+    const next_at = std.mem.indexOf(u8, tail, "int native_sdk_windows_request_gpu_surface_frame(") orelse return error.TestExpectedEqual;
+    const create_fn = tail[0..next_at];
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        create_fn,
+        "if (window->second.activate_on_show) SetFocus(hwnd);",
+    ) != null);
+}
+
 test "windows click-through uses a layered surface even when visually opaque" {
     const host_source = @embedFile("webview2_host.cpp");
     try std.testing.expect(std.mem.indexOf(
@@ -1885,6 +1898,54 @@ test "windows click-through uses a layered surface even when visually opaque" {
         u8,
         host_source,
         "if (window.click_through && !window.transparent &&\n        !SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA))",
+    ) != null);
+}
+
+test "windows transparent windows compose canvas siblings and reject unredirectable children" {
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "static bool presentTransparentWindow(Host *host, Window &window)",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "std::sort(surfaces.begin(), surfaces.end()",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "compositePremultipliedChannel(128, 128, 64) == 160",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (window->second.transparent && kind != kViewGpuSurface) return 0;",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (window->second.transparent) return 0;",
+    ) != null);
+}
+
+test "windows first-present windows have a fallback reveal deadline" {
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "constexpr ULONGLONG kDeferredShowDeadlineMs = 1000;",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "showDeferredWindowIfDeadlinePassed(entry.second);",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "window.deferred_show_started_ms = window.show_on_first_present ? GetTickCount64() : 0;",
     ) != null);
 }
 

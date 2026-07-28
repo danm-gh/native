@@ -778,7 +778,7 @@ fn loadWebView(context: ?*anyopaque, source: platform_mod.WebViewSource) anyerro
 fn loadWindowWebView(context: ?*anyopaque, window_id: platform_mod.WindowId, source: platform_mod.WebViewSource) anyerror!void {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
     const assets: platform_mod.WebViewAssetSource = source.asset_options orelse .{ .root_path = "", .entry = "", .origin = "", .spa_fallback = false };
-    if (native_sdk_windows_load_window_webview(
+    const result = native_sdk_windows_load_window_webview(
         self.host,
         window_id,
         source.bytes.ptr,
@@ -795,7 +795,9 @@ fn loadWindowWebView(context: ?*anyopaque, window_id: platform_mod.WindowId, sou
         assets.origin.ptr,
         assets.origin.len,
         if (assets.spa_fallback) 1 else 0,
-    ) == 0) return error.CreateFailed;
+    );
+    if (result < 0) return error.UnsupportedWindowTransparency;
+    if (result == 0) return error.CreateFailed;
 }
 
 fn completeBridge(context: ?*anyopaque, response: []const u8) anyerror!void {
@@ -1957,6 +1959,11 @@ test "windows transparent windows compose canvas siblings and reject unredirecta
         u8,
         host_source,
         "if (window->second.transparent) return 0;",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (window->second.transparent) return -1;",
     ) != null);
     try std.testing.expect(std.mem.indexOf(
         u8,

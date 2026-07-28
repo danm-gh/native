@@ -22,6 +22,7 @@ const jsonBoolField = bridge_payload.jsonBoolField;
 const webViewWindowIdFromJson = bridge_payload.webViewWindowIdFromJson;
 const viewWindowIdFromJson = bridge_payload.viewWindowIdFromJson;
 const viewKindFromString = bridge_payload.viewKindFromString;
+const windowTitlebarStyleFromString = bridge_payload.windowTitlebarStyleFromString;
 const gpuSurfaceOptionsFromJson = bridge_payload.gpuSurfaceOptionsFromJson;
 const viewFrameFromJson = bridge_payload.viewFrameFromJson;
 const viewLayerFromJson = bridge_payload.viewLayerFromJson;
@@ -236,11 +237,16 @@ pub fn RuntimeBuiltinBridge(comptime Runtime: type) type {
             const x = jsonNumberField(payload, "x") orelse 0;
             const y = jsonNumberField(payload, "y") orelse 0;
             const source = if (jsonStringField(payload, "url", &storage)) |url| platform.WebViewSource.url(url) else null;
+            const titlebar = if (jsonStringField(payload, "titlebar", &storage)) |value|
+                windowTitlebarStyleFromString(value) orelse return error.InvalidWindowOptions
+            else
+                .standard;
             const info = try self.createWindow(.{
                 .label = label,
                 .title = title,
                 .default_frame = geometry.RectF.init(x, y, width, height),
                 .restore_state = jsonBoolField(payload, "restoreState") orelse true,
+                .titlebar = titlebar,
                 .transparent = jsonBoolField(payload, "transparent") orelse false,
                 .always_on_top = jsonBoolField(payload, "alwaysOnTop") orelse false,
                 .click_through = jsonBoolField(payload, "clickThrough") orelse false,

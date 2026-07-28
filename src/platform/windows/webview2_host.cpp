@@ -5813,7 +5813,12 @@ void native_sdk_windows_load_webview(Host *host, const char *source, size_t sour
 int native_sdk_windows_load_window_webview(Host *host, uint64_t window_id, const char *source, size_t source_len, int source_kind, const char *asset_root, size_t asset_root_len, const char *asset_entry, size_t asset_entry_len, const char *asset_origin, size_t asset_origin_len, int spa_fallback) {
     if (!host) return 0;
     auto window = host->windows.find(window_id);
-    if (window == host->windows.end() || !window->second.hwnd || window->second.transparent) return 0;
+    if (window == host->windows.end() || !window->second.hwnd) return 0;
+    /* A child WebView cannot participate in UpdateLayeredWindow's
+     * top-level alpha bitmap. Preserve a distinct return so the Zig
+     * service reports UnsupportedWindowTransparency, not the generic
+     * CreateFailed used for an absent window. */
+    if (window->second.transparent) return -1;
 #if !NATIVE_SDK_HAS_WEBVIEW2
     (void)spa_fallback;
     (void)source;

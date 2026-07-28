@@ -36,6 +36,15 @@ pub fn viewKindFromString(value: []const u8) ?platform.ViewKind {
     return null;
 }
 
+pub fn windowTitlebarStyleFromString(value: []const u8) ?platform.WindowTitlebarStyle {
+    inline for (@typeInfo(platform.WindowTitlebarStyle).@"enum".fields) |field| {
+        if (std.mem.eql(u8, value, field.name)) return @field(platform.WindowTitlebarStyle, field.name);
+    }
+    if (std.mem.eql(u8, value, "hiddenInset")) return .hidden_inset;
+    if (std.mem.eql(u8, value, "hiddenInsetTall")) return .hidden_inset_tall;
+    return null;
+}
+
 pub fn gpuSurfaceOptionsFromJson(payload: []const u8, storage: *json.StringStorage) !platform.GpuSurfaceOptions {
     var options = platform.GpuSurfaceOptions{};
     if (jsonStringField(payload, "gpuBackend", storage) orelse jsonStringField(payload, "gpu_backend", storage)) |value| {

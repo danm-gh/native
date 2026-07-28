@@ -60,6 +60,30 @@ const info = try runtime.createWindow(.{
 try runtime.focusWindow(info.id);
 ```
 
+A transparent imperative window with no explicit `source` is deliberately canvas-only: it does not inherit the app's main WebView source, and hot reload will not add one later. Attach a premultiplied GPU surface to make a Windows-compatible overlay:
+
+```zig
+const overlay = try runtime.createWindow(.{
+    .label = "overlay",
+    .title = "Overlay",
+    .default_frame = native_sdk.geometry.RectF.init(80, 80, 420, 160),
+    .titlebar = .chromeless,
+    .transparent = true,
+    .always_on_top = true,
+    .click_through = true,
+    .activate_on_show = false,
+});
+_ = try runtime.createView(.{
+    .window_id = overlay.id,
+    .label = "overlay-canvas",
+    .kind = .gpu_surface,
+    .frame = native_sdk.geometry.RectF.init(0, 0, 420, 160),
+    .gpu_surface = .{ .alpha_mode = .premultiplied },
+});
+```
+
+Supplying an explicit `source` keeps the WebView-window behavior. Windows rejects that combination when `transparent = true` because a child WebView cannot participate in the layered alpha bitmap.
+
 ## Creating windows from JavaScript
 
 `js_window_api` exposes the `window.zero.windows.*` helper in JavaScript. Window commands still require an allowed origin and the `window` permission when runtime permissions are configured:
@@ -88,6 +112,8 @@ const all = await window.zero.windows.list();
 await window.zero.windows.focus(win.id);
 await window.zero.windows.close(win.id);
 ```
+
+JavaScript creation also accepts `titlebar: "standard" | "hidden_inset" | "hidden_inset_tall" | "chromeless"`. A transparent Windows window requires `"chromeless"`. Omitting `url` makes that transparent window source-less instead of inheriting the calling WebView; a transparent WebView-backed window remains unsupported on Windows.
 
 ## Window types
 

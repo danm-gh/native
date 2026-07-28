@@ -24,6 +24,15 @@ pub fn RuntimeWindowStorage(comptime Runtime: type) type {
         const Self = @This();
 
         pub fn createWindow(self: *Runtime, options: platform.WindowCreateOptions) anyerror!platform.WindowInfo {
+            // A transparent imperative window with no EXPLICIT source is
+            // the canvas-overlay shape. Do not inherit the app's loaded
+            // WebView source: Windows layered windows cannot host that
+            // child HWND, and hot reload must not materialize one later.
+            // Explicit sources keep the established WebView-window path
+            // on backends that can composite them.
+            if (options.transparent and options.source == null) {
+                return Self.createWindowWithSourceMode(self, options, false, .never_source);
+            }
             return Self.createWindowWithSourceMode(self, options, options.source == null, .require_source);
         }
 

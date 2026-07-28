@@ -405,6 +405,8 @@ const app_permissions = [_][]const u8{
 
 ## JavaScript usage
 
+Window creation accepts `titlebar` (`standard`, `hidden_inset`, `hidden_inset_tall`, or `chromeless`) plus the overlay fields `transparent`, `alwaysOnTop`, `clickThrough`, and `activateOnShow`. A transparent create without `url` stays source-less instead of inheriting the app WebView; transparent Windows windows also require `titlebar: "chromeless"` and cannot host WebView content.
+
 ```javascript
 await window.zero.windows.create({
   label: "tools",

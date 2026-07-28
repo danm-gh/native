@@ -34,6 +34,12 @@ export interface NativeSdkWindowInfo {
   scale: number;
 }
 
+export type NativeSdkWindowTitlebarStyle =
+  | "standard"
+  | "hidden_inset"
+  | "hidden_inset_tall"
+  | "chromeless";
+
 export interface NativeSdkCreateWindowOptions {
   label?: string;
   title?: string;
@@ -42,6 +48,8 @@ export interface NativeSdkCreateWindowOptions {
   x?: number;
   y?: number;
   restoreState?: boolean;
+  /** Native titlebar treatment. Transparent Windows windows require "chromeless". */
+  titlebar?: NativeSdkWindowTitlebarStyle;
   /** Make the top-level window alpha-capable. */
   transparent?: boolean;
   /** Keep the window above ordinary application windows. */

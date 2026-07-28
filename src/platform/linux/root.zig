@@ -1865,7 +1865,7 @@ test "linux webview presses report the focused child label" {
     try std.testing.expect(std.mem.indexOf(u8, host_source, "native_sdk_watch_webview_pointer_focus(win, web_view);") != null);
 }
 
-test "linux first-present windows have a cancellable fallback reveal" {
+test "linux first-present windows stay unmapped until present with a cancellable fallback" {
     const host_source = @embedFile("gtk_host.c");
     try std.testing.expect(std.mem.indexOf(
         u8,
@@ -1880,8 +1880,31 @@ test "linux first-present windows have a cancellable fallback reveal" {
     try std.testing.expect(std.mem.indexOf(
         u8,
         host_source,
-        "win->reveal_after_first_draw = 0;\n    gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);",
-    ) != null);
+        "gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 0)",
+    ) == null);
+    const first_present_at = std.mem.indexOf(
+        u8,
+        host_source,
+        "if (first_present && win && !win->shown)",
+    ) orelse return error.TestExpectedEqual;
+    const first_present_tail = host_source[first_present_at..];
+    const cancel_at = std.mem.indexOf(
+        u8,
+        first_present_tail,
+        "native_sdk_cancel_deferred_show(win);",
+    ) orelse return error.TestExpectedEqual;
+    const show_at = std.mem.indexOf(
+        u8,
+        first_present_tail,
+        "native_sdk_show_window_implicit(win);",
+    ) orelse return error.TestExpectedEqual;
+    const queue_draw_at = std.mem.indexOf(
+        u8,
+        first_present_tail,
+        "gtk_widget_queue_draw(view->widget);",
+    ) orelse return error.TestExpectedEqual;
+    try std.testing.expect(cancel_at < show_at);
+    try std.testing.expect(show_at < queue_draw_at);
 }
 
 test "linux refuses a .hide main window at platform init instead of a silent quit-on-close" {

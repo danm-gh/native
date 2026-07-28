@@ -362,10 +362,6 @@ typedef struct native_sdk_gtk_window {
     /* One-second safety reveal for a canvas window whose first present
      * never arrives. Zero once cancelled/fired. */
     guint deferred_show_source;
-    /* A first-present window maps fully transparent so GTK can paint its
-     * first canvas frame, then the draw callback reveals that composed
-     * frame instead of exposing an unpainted widget. */
-    int reveal_after_first_draw;
     /* The window WebView's z-position among the overlay children. 0 is
      * the classic bottom-most main child; apps that layer native views
      * UNDER the WebView (or the WebView over a canvas) set it through
@@ -1241,10 +1237,6 @@ static void native_sdk_gpu_surface_draw(GtkDrawingArea *area, cairo_t *cr, int w
     cairo_paint(cr);
     cairo_restore(cr);
     cairo_surface_destroy(surface);
-    if (view->window && view->window->reveal_after_first_draw) {
-        view->window->reveal_after_first_draw = 0;
-        gtk_widget_set_opacity(GTK_WIDGET(view->window->gtk_window), 1);
-    }
 }
 
 /* Begin the windowing system's interactive move from the window's last
@@ -3023,11 +3015,8 @@ static gboolean native_sdk_deferred_show_timeout(gpointer data) {
     if (!win) return G_SOURCE_REMOVE;
     win->deferred_show_source = 0;
     if (!win->gtk_window || win->shown) return G_SOURCE_REMOVE;
-    /* This is the wedged-renderer safety path: reveal the GTK window
-     * itself rather than waiting for the draw callback that may never
-     * arrive. */
-    win->reveal_after_first_draw = 0;
-    gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);
+    /* This is the wedged-renderer safety path: map the GTK window even
+     * though the first canvas present never arrived. */
     native_sdk_show_window_implicit(win);
     native_sdk_emit_window_frame(win->host, win, 1);
     return G_SOURCE_REMOVE;
@@ -3061,7 +3050,6 @@ static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk
     win->click_through = (window_flags & (1u << 2)) != 0;
     win->activate_on_show = (window_flags & (1u << 3)) == 0;
     win->show_on_first_present = show_policy == 1;
-    win->reveal_after_first_draw = win->show_on_first_present;
     if (!win->label || !win->title) {
         free(win->label);
         free(win->title);
@@ -3070,9 +3058,6 @@ static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk
     }
 
     win->gtk_window = GTK_WINDOW(gtk_application_window_new(host->app));
-    if (win->reveal_after_first_draw) {
-        gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 0);
-    }
     if (win->transparent) {
         GtkCssProvider *provider = gtk_css_provider_new();
         gtk_css_provider_load_from_data(provider, ".native-sdk-transparent { background-color: transparent; }", -1);
@@ -3928,8 +3913,6 @@ int native_sdk_gtk_focus_window(native_sdk_gtk_host_t *host, uint64_t window_id)
     native_sdk_gtk_window_t *win = native_sdk_find_window(host, window_id);
     if (!win || !win->gtk_window) return 0;
     native_sdk_cancel_deferred_show(win);
-    win->reveal_after_first_draw = 0;
-    gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);
     gtk_window_present(win->gtk_window);
     win->shown = 1;
     native_sdk_emit_window_frame(host, win, 1);
@@ -3940,8 +3923,6 @@ int native_sdk_gtk_show_window(native_sdk_gtk_host_t *host, uint64_t window_id) 
     native_sdk_gtk_window_t *win = native_sdk_find_window(host, window_id);
     if (!win || !win->gtk_window) return 0;
     native_sdk_cancel_deferred_show(win);
-    win->reveal_after_first_draw = 0;
-    gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);
     native_sdk_show_window_implicit(win);
     native_sdk_emit_window_frame(host, win, 1);
     return 1;
@@ -4362,7 +4343,6 @@ int native_sdk_gtk_present_gpu_surface_pixels(native_sdk_gtk_host_t *host, uint6
         view->gpu_sample_color = ((uint32_t)sa << 24) | ((uint32_t)sr << 16) | ((uint32_t)sg << 8) | (uint32_t)sb;
     }
 
-    gtk_widget_queue_draw(view->widget);
     /* A present is the completion producer on the surface's single
      * frame-event scheduler: the completion event it arms is what
      * drives the runtime's frame loop (an armed animation presents,
@@ -4375,6 +4355,10 @@ int native_sdk_gtk_present_gpu_surface_pixels(native_sdk_gtk_host_t *host, uint6
         native_sdk_show_window_implicit(win);
         native_sdk_emit_window_frame(host, win, 1);
     }
+    /* GTK discards queue_draw while a widget is unmapped. Map a deferred
+     * first-present window above, then queue the draw that consumes the
+     * newly installed canvas buffer. */
+    gtk_widget_queue_draw(view->widget);
     native_sdk_gpu_surface_schedule_frame_emission(view);
     return 1;
 }

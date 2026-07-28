@@ -630,7 +630,7 @@ static NSMutableDictionary *NativeSdkCredentialQuery(NSString *service, NSString
 - (void)configureWithHost:(NativeSdkAppKitHost *)host windowId:(uint64_t)windowId label:(NSString *)label;
 - (BOOL)isAvailable;
 - (void)updateDrawableSize;
-- (BOOL)presentPixelsWithWidth:(NSUInteger)width height:(NSUInteger)height scale:(CGFloat)scale hasDirtyRect:(BOOL)hasDirtyRect dirtyX:(CGFloat)dirtyX dirtyY:(CGFloat)dirtyY dirtyWidth:(CGFloat)dirtyWidth dirtyHeight:(CGFloat)dirtyHeight dirtyRects:(NSArray<NSValue *> *)dirtyRects rgba8:(const uint8_t *)rgba8 byteLength:(NSUInteger)byteLength;
+- (BOOL)presentPixelsWithWidth:(NSUInteger)width height:(NSUInteger)height scale:(CGFloat)scale hasDirtyRect:(BOOL)hasDirtyRect dirtyX:(CGFloat)dirtyX dirtyY:(CGFloat)dirtyY dirtyWidth:(CGFloat)dirtyWidth dirtyHeight:(CGFloat)dirtyHeight dirtyRects:(NSArray<NSValue *> *)dirtyRects sourceIsPremultiplied:(BOOL)sourceIsPremultiplied rgba8:(const uint8_t *)rgba8 byteLength:(NSUInteger)byteLength;
 - (NSInteger)presentGpuPacketWithSurfaceWidth:(CGFloat)surfaceWidth height:(CGFloat)surfaceHeight scale:(CGFloat)scale clearR:(uint8_t)clearR clearG:(uint8_t)clearG clearB:(uint8_t)clearB clearA:(uint8_t)clearA requiresRender:(BOOL)requiresRender commandCount:(NSUInteger)commandCount unsupportedCommandCount:(NSUInteger)unsupportedCommandCount representable:(BOOL)representable json:(const uint8_t *)json byteLength:(NSUInteger)byteLength;
 - (NSInteger)presentGpuPacketBinaryWithSurfaceWidth:(CGFloat)surfaceWidth height:(CGFloat)surfaceHeight scale:(CGFloat)scale clearR:(uint8_t)clearR clearG:(uint8_t)clearG clearB:(uint8_t)clearB clearA:(uint8_t)clearA requiresRender:(BOOL)requiresRender commandCount:(NSUInteger)commandCount unsupportedCommandCount:(NSUInteger)unsupportedCommandCount representable:(BOOL)representable packet:(const uint8_t *)packet byteLength:(NSUInteger)byteLength;
 - (NSInteger)presentGpuPacketObject:(NSDictionary *)packet surfaceWidth:(CGFloat)surfaceWidth height:(CGFloat)surfaceHeight scale:(CGFloat)scale clearR:(uint8_t)clearR clearG:(uint8_t)clearG clearB:(uint8_t)clearB clearA:(uint8_t)clearA commandCount:(NSUInteger)commandCount;
@@ -3710,13 +3710,16 @@ static void NativeSdkPremultiplyStraightRgba8(const uint8_t *source, uint8_t *de
     }
 }
 
-- (BOOL)presentPixelsWithWidth:(NSUInteger)width height:(NSUInteger)height scale:(CGFloat)scale hasDirtyRect:(BOOL)hasDirtyRect dirtyX:(CGFloat)dirtyX dirtyY:(CGFloat)dirtyY dirtyWidth:(CGFloat)dirtyWidth dirtyHeight:(CGFloat)dirtyHeight dirtyRects:(NSArray<NSValue *> *)dirtyRects rgba8:(const uint8_t *)rgba8 byteLength:(NSUInteger)byteLength {
+- (BOOL)presentPixelsWithWidth:(NSUInteger)width height:(NSUInteger)height scale:(CGFloat)scale hasDirtyRect:(BOOL)hasDirtyRect dirtyX:(CGFloat)dirtyX dirtyY:(CGFloat)dirtyY dirtyWidth:(CGFloat)dirtyWidth dirtyHeight:(CGFloat)dirtyHeight dirtyRects:(NSArray<NSValue *> *)dirtyRects sourceIsPremultiplied:(BOOL)sourceIsPremultiplied rgba8:(const uint8_t *)rgba8 byteLength:(NSUInteger)byteLength {
     if (![self isAvailable] || !rgba8 || width == 0 || height == 0) return NO;
     if (byteLength != width * height * 4) return NO;
     if (![self ensureCanvasPresenter]) return NO;
 
     const uint8_t *presentBytes = rgba8;
-    if (self.window && !self.window.opaque) {
+    /* Raw runtime presents carry straight RGBA, while the packet renderer's
+     * Core Graphics context already writes premultiplied RGBA. Metal blends
+     * both through the same premultiplied-alpha texture contract. */
+    if (self.window && !self.window.opaque && !sourceIsPremultiplied) {
         if (!self.canvasPixelUploadScratch || self.canvasPixelUploadScratch.length != byteLength) {
             self.canvasPixelUploadScratch = [NSMutableData dataWithLength:byteLength];
         }
@@ -5339,7 +5342,7 @@ static BOOL NativeSdkCompositeBlurWriteRegion(NSDictionary *command, CGFloat sca
     }
 
     BOOL uploadDirtyRect = directRetainedDirtyUpdate;
-    BOOL presented = [self presentPixelsWithWidth:pixelWidth height:pixelHeight scale:normalizedScale hasDirtyRect:uploadDirtyRect dirtyX:scissorRect.origin.x dirtyY:scissorRect.origin.y dirtyWidth:scissorRect.size.width dirtyHeight:scissorRect.size.height dirtyRects:(uploadDirtyRect ? dirtyRects : nil) rgba8:(const uint8_t *)pixels.bytes byteLength:pixels.length];
+    BOOL presented = [self presentPixelsWithWidth:pixelWidth height:pixelHeight scale:normalizedScale hasDirtyRect:uploadDirtyRect dirtyX:scissorRect.origin.x dirtyY:scissorRect.origin.y dirtyWidth:scissorRect.size.width dirtyHeight:scissorRect.size.height dirtyRects:(uploadDirtyRect ? dirtyRects : nil) sourceIsPremultiplied:YES rgba8:(const uint8_t *)pixels.bytes byteLength:pixels.length];
     if (getenv("NATIVE_SDK_GPU_DRAW_TRACE")) {
         /* Per-present phase split (draw vs texture upload + Metal present),
          * NATIVE_SDK_WINDOW_TIMING-style stderr diagnostics. */
@@ -8034,7 +8037,7 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
      * resync. (The packet path calls presentPixelsWithWidth internally,
      * so the invalidation lives here at the raw entry, not inside it.) */
     surface.hasCanvasRetainedState = NO;
-    const BOOL presented = [surface presentPixelsWithWidth:width height:height scale:scale hasDirtyRect:hasDirtyRect dirtyX:dirtyX dirtyY:dirtyY dirtyWidth:dirtyWidth dirtyHeight:dirtyHeight dirtyRects:nil rgba8:rgba8 byteLength:byteLength];
+    const BOOL presented = [surface presentPixelsWithWidth:width height:height scale:scale hasDirtyRect:hasDirtyRect dirtyX:dirtyX dirtyY:dirtyY dirtyWidth:dirtyWidth dirtyHeight:dirtyHeight dirtyRects:nil sourceIsPremultiplied:NO rgba8:rgba8 byteLength:byteLength];
     if (presented) [self showDeferredWindowIfPending:windowId reason:"first-present"];
     return presented;
 }

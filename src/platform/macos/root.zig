@@ -2432,7 +2432,7 @@ test "mac webview presses report the focused child label" {
     try std.testing.expect(std.mem.indexOf(u8, host_source, ".view_label = label") != null);
 }
 
-test "mac transparent software frames are premultiplied before Metal upload" {
+test "mac transparent raw frames are premultiplied exactly once before Metal upload" {
     const host_source = @embedFile("appkit_host.m");
     const helper_at = std.mem.indexOf(
         u8,
@@ -2451,12 +2451,22 @@ test "mac transparent software frames are premultiplied before Metal upload" {
     try std.testing.expect(std.mem.indexOf(
         u8,
         present_tail,
-        "if (self.window && !self.window.opaque)",
+        "if (self.window && !self.window.opaque && !sourceIsPremultiplied)",
     ) != null);
     try std.testing.expect(std.mem.indexOf(
         u8,
         present_tail,
         "NativeSdkPremultiplyStraightRgba8(",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        present_tail,
+        "sourceIsPremultiplied:YES rgba8:(const uint8_t *)pixels.bytes",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        present_tail,
+        "sourceIsPremultiplied:NO rgba8:rgba8",
     ) != null);
     try std.testing.expect(std.mem.indexOf(
         u8,

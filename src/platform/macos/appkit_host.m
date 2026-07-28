@@ -7460,8 +7460,8 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
     // An explicit focus overrides a pending present-before-show defer:
     // the runtime asked for the window NOW.
     [self.deferredShowWindows removeObjectForKey:@(windowId)];
-    [window makeKeyAndOrderFront:nil];
     [NSApp activate];
+    [window makeKeyAndOrderFront:nil];
     [self emitWindowFrameForWindowId:windowId open:YES];
     [self scheduleFrame];
 }

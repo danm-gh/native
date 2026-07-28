@@ -2467,6 +2467,20 @@ test "mac active implicit show activates before making the window key" {
     ) != null);
 }
 
+test "mac explicit focus activates before making the window key" {
+    const host_source = @embedFile("appkit_host.m");
+    try std.testing.expect(std.mem.indexOf(u8, host_source,
+        \\- (void)focusWindowWithId:(uint64_t)windowId {
+        \\    NSWindow *window = self.windows[@(windowId)];
+        \\    if (!window) return;
+        \\    // An explicit focus overrides a pending present-before-show defer:
+        \\    // the runtime asked for the window NOW.
+        \\    [self.deferredShowWindows removeObjectForKey:@(windowId)];
+        \\    [NSApp activate];
+        \\    [window makeKeyAndOrderFront:nil];
+    ) != null);
+}
+
 test "mac transparent raw frames are premultiplied exactly once before Metal upload" {
     const host_source = @embedFile("appkit_host.m");
     const helper_at = std.mem.indexOf(

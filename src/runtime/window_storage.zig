@@ -98,6 +98,7 @@ pub fn RuntimeWindowStorage(comptime Runtime: type) type {
             if (Self.findWindowIndexById(self, id) != null) return error.DuplicateWindowId;
             if (Self.findWindowIndexByLabel(self, label) != null) return error.DuplicateWindowLabel;
             const index = try Self.reserveWindow(self, id, label, options.title, source, source_reloads_from_app);
+            self.windows[index].activate_on_show = options.activate_on_show;
             var native_created = false;
             errdefer Self.removeWindowAt(self, index);
             errdefer if (native_created) self.options.platform.services.closeWindow(id) catch {};

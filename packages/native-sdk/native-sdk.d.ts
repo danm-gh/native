@@ -42,6 +42,14 @@ export interface NativeSdkCreateWindowOptions {
   x?: number;
   y?: number;
   restoreState?: boolean;
+  /** Make the top-level window alpha-capable. */
+  transparent?: boolean;
+  /** Keep the window above ordinary application windows. */
+  alwaysOnTop?: boolean;
+  /** Pass all pointer input through to the window underneath. */
+  clickThrough?: boolean;
+  /** Set false to show without activating the app or taking focus. */
+  activateOnShow?: boolean;
   url?: string;
 }
 

@@ -349,6 +349,18 @@ pub const Window = struct {
     /// threaded through the platform create call, so the main window
     /// can hide its titlebar before the scene loads.
     titlebar: WindowTitlebarStyle = .standard,
+    /// Alpha-capable top-level window. Pair canvas windows with a
+    /// non-opaque `gpu_alpha_mode` so transparent pixels reach through
+    /// to the desktop.
+    transparent: bool = false,
+    /// Keep this window above ordinary application windows.
+    always_on_top: bool = false,
+    /// Let all pointer input pass through the window to whatever is
+    /// underneath it.
+    click_through: bool = false,
+    /// Show without activating the app or taking keyboard focus when
+    /// false. An explicit focus action can still activate the window.
+    activate_on_show: bool = true,
     /// Content min-size floor the window itself enforces (macOS
     /// `contentMinSize`): the resize stops at the floor instead of the
     /// layout clamping/clipping panes below it. 0 = no floor.
@@ -478,6 +490,10 @@ pub const ShellWindow = struct {
     /// create, and the scene's first window here should declare the
     /// SAME style so the two never disagree.
     titlebar: WindowTitlebarStyle = .standard,
+    transparent: bool = false,
+    always_on_top: bool = false,
+    click_through: bool = false,
+    activate_on_show: bool = true,
     /// Content min-size floor the window itself enforces (macOS
     /// `contentMinSize`): the resize stops at the floor instead of the
     /// layout clamping/clipping panes below it. 0 = no floor. Like

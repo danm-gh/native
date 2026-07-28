@@ -328,6 +328,10 @@ pub const NullPlatform = struct {
     /// like `windows` — same seam-regression purpose as
     /// `window_resizable` (the startup create used to hardcode it).
     window_titlebar: [max_windows]WindowTitlebarStyle = [_]WindowTitlebarStyle{.standard} ** max_windows,
+    window_transparent: [max_windows]bool = [_]bool{false} ** max_windows,
+    window_always_on_top: [max_windows]bool = [_]bool{false} ** max_windows,
+    window_click_through: [max_windows]bool = [_]bool{false} ** max_windows,
+    window_activate_on_show: [max_windows]bool = [_]bool{true} ** max_windows,
     /// Minimize calls per window (`minimize_window_fn`), indexed like
     /// `windows`: the observable seam for app-drawn minimize controls —
     /// the null platform has no Dock to genie into, so the count IS the
@@ -937,7 +941,7 @@ pub const NullPlatform = struct {
                 .frame = window.default_frame,
                 .scale_factor = self.surface_value.scale_factor,
                 .open = true,
-                .focused = index == 0,
+                .focused = index == 0 and window.activate_on_show and window.show == .immediate,
             } });
         }
         var frame: u32 = 0;
@@ -1049,6 +1053,10 @@ pub const NullPlatform = struct {
         self.windows[self.window_count] = info;
         self.window_resizable[self.window_count] = options.resizable;
         self.window_titlebar[self.window_count] = options.titlebar;
+        self.window_transparent[self.window_count] = options.transparent;
+        self.window_always_on_top[self.window_count] = options.always_on_top;
+        self.window_click_through[self.window_count] = options.click_through;
+        self.window_activate_on_show[self.window_count] = options.activate_on_show;
         self.window_show[self.window_count] = options.show;
         self.window_close_policy[self.window_count] = options.close_policy;
         self.window_min_width[self.window_count] = options.min_width;
@@ -1081,6 +1089,11 @@ pub const NullPlatform = struct {
             self.window_visible[index] = true;
             self.show_op_seq += 1;
             self.window_shown_seq[index] = self.show_op_seq;
+            if (self.window_activate_on_show[index]) {
+                for (self.windows[0..self.window_count], 0..) |*window, cursor| {
+                    window.focused = cursor == index;
+                }
+            }
         }
     }
 
@@ -1175,8 +1188,10 @@ pub const NullPlatform = struct {
         // present-before-show alike.
         self.windows[index].hidden = false;
         self.window_occluded[index] = false;
-        for (self.windows[0..self.window_count], 0..) |*window, cursor| {
-            window.focused = cursor == index;
+        if (self.window_activate_on_show[index]) {
+            for (self.windows[0..self.window_count], 0..) |*window, cursor| {
+                window.focused = cursor == index;
+            }
         }
         if (!self.window_visible[index]) {
             self.window_visible[index] = true;
@@ -2591,6 +2606,15 @@ pub const NullPlatform = struct {
         while (cursor + 1 < self.window_count) : (cursor += 1) {
             self.windows[cursor] = self.windows[cursor + 1];
             self.window_resizable[cursor] = self.window_resizable[cursor + 1];
+            self.window_titlebar[cursor] = self.window_titlebar[cursor + 1];
+            self.window_transparent[cursor] = self.window_transparent[cursor + 1];
+            self.window_always_on_top[cursor] = self.window_always_on_top[cursor + 1];
+            self.window_click_through[cursor] = self.window_click_through[cursor + 1];
+            self.window_activate_on_show[cursor] = self.window_activate_on_show[cursor + 1];
+            self.window_show[cursor] = self.window_show[cursor + 1];
+            self.window_visible[cursor] = self.window_visible[cursor + 1];
+            self.window_first_present_seq[cursor] = self.window_first_present_seq[cursor + 1];
+            self.window_shown_seq[cursor] = self.window_shown_seq[cursor + 1];
             self.window_min_width[cursor] = self.window_min_width[cursor + 1];
             self.window_min_height[cursor] = self.window_min_height[cursor + 1];
             self.window_minimize_count[cursor] = self.window_minimize_count[cursor + 1];

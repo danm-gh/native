@@ -146,7 +146,7 @@ pub fn RuntimeWindowViews(comptime Runtime: type) type {
             try self.options.platform.services.minimizeWindow(window_id);
         }
 
-        /// The real OS show verb: unhide + activate — the counterpart
+        /// The real OS show verb: unhide and order front — the counterpart
         /// to a `close_policy = .hide` hide, and what a tray "Open"
         /// action resolves to. Like `closeWindow`, the runtime flag
         /// flips BEFORE the platform call (hosts that emit the frame
@@ -170,16 +170,13 @@ pub fn RuntimeWindowViews(comptime Runtime: type) type {
                 self.windows[index].info.hidden = was_hidden;
                 return err;
             };
-            // The contract is show AND activate: every host's show verb
-            // makes the window key (makeKeyAndOrderFront / activate), so
-            // the runtime table must move focus with it or listWindows
-            // and the JS bridge report the shown window unfocused while
-            // it stands frontmost on the glass. Same post-success flow
-            // as focusWindow — through the setFocusedIndex seam, so the
-            // dethroned window's key-loss consequence fires — and only
-            // AFTER the platform accepted: a refused show rolls back
-            // hidden above and moves no focus.
-            try Self.setFocusedIndex(self, index);
+            // Active windows use the classic show+activate contract.
+            // Passive overlay windows order front without changing the
+            // user's current app or our focus table; an explicit
+            // focusWindow remains the deliberate activation path.
+            if (self.windows[index].activate_on_show) {
+                try Self.setFocusedIndex(self, index);
+            }
             self.invalidated = true;
         }
 
@@ -231,6 +228,10 @@ pub fn RuntimeWindowViews(comptime Runtime: type) type {
                 .restore_policy = shellRestorePolicy(shell_window.restore_policy),
                 .titlebar = shell_layout.shellTitlebarStyle(shell_window.titlebar),
                 .show = shell_layout.shellWindowShowMode(shell_window),
+                .transparent = shell_window.transparent,
+                .always_on_top = shell_window.always_on_top,
+                .click_through = shell_window.click_through,
+                .activate_on_show = shell_window.activate_on_show,
                 .min_width = shell_window.min_width,
                 .min_height = shell_window.min_height,
                 .close_policy = shell_layout.shellClosePolicy(shell_window.close_policy),

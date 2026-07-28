@@ -7775,12 +7775,11 @@ pub fn Effects(comptime Msg: type) type {
             _ = binding.minimize_fn(binding.context, window_label);
         }
 
-        /// Show a window by its declared label: unhide + activate — the
-        /// counterpart to a `close_policy = .hide` hide, and the tray
-        /// "Open" consequence of the menu-bar-app loop (macOS
-        /// deminiaturizes and orders front, Windows SW_RESTORE/SW_SHOW +
-        /// foreground, GTK presents). Also brings back a minimized or
-        /// merely backgrounded window. Fire-and-forget, same contract
+        /// Show a window by its declared label: unhide + order front,
+        /// activating by default and remaining passive for an
+        /// `activate_on_show = false` overlay. It is the counterpart to
+        /// a `close_policy = .hide` hide and also brings back a minimized
+        /// or merely backgrounded window. Fire-and-forget, same contract
         /// as `closeWindow`: no event echoes beyond the window's own
         /// frame event, an unknown label is a no-op, and the fake
         /// executor only records the request in the mirror.

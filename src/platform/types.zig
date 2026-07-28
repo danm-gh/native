@@ -594,6 +594,21 @@ pub const WindowOptions = struct {
     restore_policy: WindowRestorePolicy = .clamp_to_visible_screen,
     titlebar: WindowTitlebarStyle = .standard,
     show: WindowShowMode = .immediate,
+    /// Make the top-level window and its rendering surface alpha-capable.
+    /// The app must also render alpha (for canvas views, select a
+    /// non-opaque gpu alpha mode); otherwise opaque content still covers
+    /// the desktop normally.
+    transparent: bool = false,
+    /// Keep the window above ordinary application windows using the
+    /// platform's floating/topmost window level.
+    always_on_top: bool = false,
+    /// Ignore pointer hit testing for the whole top-level window so
+    /// clicks, motion, and scrolling reach the window underneath.
+    click_through: bool = false,
+    /// Whether an implicit show (initial creation, first-present reveal,
+    /// or `showWindow`) activates the app and takes keyboard focus.
+    /// Explicit `focusWindow` remains an activation request either way.
+    activate_on_show: bool = true,
     /// Content min-size floor the WINDOW enforces (macOS
     /// `contentMinSize`): the user cannot resize below it, so declared
     /// layout floors stop clamping/clipping panes instead of stopping
@@ -667,6 +682,10 @@ pub const WindowCreateOptions = struct {
     restore_policy: WindowRestorePolicy = .clamp_to_visible_screen,
     titlebar: WindowTitlebarStyle = .standard,
     show: WindowShowMode = .immediate,
+    transparent: bool = false,
+    always_on_top: bool = false,
+    click_through: bool = false,
+    activate_on_show: bool = true,
     /// Window-enforced content min-size floor (see
     /// `WindowOptions.min_width`/`min_height`); 0 = no floor.
     min_width: f32 = 0,
@@ -686,6 +705,10 @@ pub const WindowCreateOptions = struct {
             .restore_policy = self.restore_policy,
             .titlebar = self.titlebar,
             .show = self.show,
+            .transparent = self.transparent,
+            .always_on_top = self.always_on_top,
+            .click_through = self.click_through,
+            .activate_on_show = self.activate_on_show,
             .min_width = self.min_width,
             .min_height = self.min_height,
             .close_policy = self.close_policy,
@@ -2303,9 +2326,9 @@ pub const PlatformServices = struct {
     /// controls — chromeless windows have no system button to click.
     /// Platforms without the concept leave this null.
     minimize_window_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId) anyerror!void = null,
-    /// The real OS show verb: unhide + activate (macOS deminiaturize +
-    /// makeKeyAndOrderFront + activate, Windows SW_RESTORE/SW_SHOW +
-    /// foreground, GTK `gtk_window_present`) — the counterpart to a
+    /// The real OS show verb: unhide + order front. It activates by
+    /// default; windows created with `activate_on_show = false` use the
+    /// platform's passive variant. This is the counterpart to a
     /// `close_policy = .hide` hide, and the tray "Open" consequence.
     /// Platforms without the concept leave this null.
     show_window_fn: ?*const fn (context: ?*anyopaque, window_id: WindowId) anyerror!void = null,

@@ -353,6 +353,16 @@ typedef struct native_sdk_gtk_window {
     double emitted_width;
     double emitted_height;
     double emitted_scale;
+    int transparent;
+    int always_on_top;
+    int click_through;
+    int activate_on_show;
+    int show_on_first_present;
+    int shown;
+    /* A first-present window maps fully transparent so GTK can paint its
+     * first canvas frame, then the draw callback reveals that composed
+     * frame instead of exposing an unpainted widget. */
+    int reveal_after_first_draw;
     /* The window WebView's z-position among the overlay children. 0 is
      * the classic bottom-most main child; apps that layer native views
      * UNDER the WebView (or the WebView over a canvas) set it through
@@ -388,6 +398,8 @@ struct native_sdk_gtk_host {
     int init_titlebar_style;
     double init_min_width;
     double init_min_height;
+    int init_show_policy;
+    uint32_t init_window_flags;
 
     native_sdk_gtk_event_callback_t callback;
     void *callback_context;
@@ -1226,6 +1238,10 @@ static void native_sdk_gpu_surface_draw(GtkDrawingArea *area, cairo_t *cr, int w
     cairo_paint(cr);
     cairo_restore(cr);
     cairo_surface_destroy(surface);
+    if (view->window && view->window->reveal_after_first_draw) {
+        view->window->reveal_after_first_draw = 0;
+        gtk_widget_set_opacity(GTK_WIDGET(view->window->gtk_window), 1);
+    }
 }
 
 /* Begin the windowing system's interactive move from the window's last
@@ -2935,7 +2951,61 @@ static WebKitWebView *native_sdk_ensure_main_webview(native_sdk_gtk_window_t *wi
 }
 #endif /* NATIVE_SDK_HAS_WEBKITGTK */
 
-static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk_host_t *host, uint64_t window_id, const char *title, const char *label, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, double min_width, double min_height) {
+static void native_sdk_apply_overlay_surface_options(native_sdk_gtk_window_t *win) {
+    if (!win || !win->gtk_window) return;
+    GtkWidget *widget = GTK_WIDGET(win->gtk_window);
+    gtk_widget_realize(widget);
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(widget));
+    if (!surface) return;
+
+    if (win->click_through) {
+        cairo_region_t *empty = cairo_region_create();
+        gdk_surface_set_input_region(surface, empty);
+        cairo_region_destroy(empty);
+    }
+
+    if (win->always_on_top) {
+        /* GTK4 intentionally exposes no cross-compositor keep-above API.
+         * Honor it on X11 through the standard EWMH state set before
+         * map; Wayland compositors do not permit clients to demand this
+         * level, so the diagnostic is explicit rather than a silent lie. */
+        typedef unsigned long (*gdk_x11_surface_get_xid_fn)(GdkSurface *);
+        typedef void *(*gdk_x11_display_get_xdisplay_fn)(GdkDisplay *);
+        typedef unsigned long (*x_intern_atom_fn)(void *, const char *, int);
+        typedef int (*x_change_property_fn)(void *, unsigned long, unsigned long, unsigned long, int, int, const unsigned char *, int);
+        typedef int (*x_flush_fn)(void *);
+        gdk_x11_surface_get_xid_fn get_xid = (gdk_x11_surface_get_xid_fn)dlsym(RTLD_DEFAULT, "gdk_x11_surface_get_xid");
+        gdk_x11_display_get_xdisplay_fn get_xdisplay = (gdk_x11_display_get_xdisplay_fn)dlsym(RTLD_DEFAULT, "gdk_x11_display_get_xdisplay");
+        x_intern_atom_fn intern_atom = (x_intern_atom_fn)dlsym(RTLD_DEFAULT, "XInternAtom");
+        x_change_property_fn change_property = (x_change_property_fn)dlsym(RTLD_DEFAULT, "XChangeProperty");
+        x_flush_fn flush = (x_flush_fn)dlsym(RTLD_DEFAULT, "XFlush");
+        GdkDisplay *gdk_display = gdk_surface_get_display(surface);
+        const char *display_type = G_OBJECT_TYPE_NAME(gdk_display);
+        const int is_x11 = display_type && strstr(display_type, "X11") != NULL;
+        if (is_x11 && get_xid && get_xdisplay && intern_atom && change_property && flush) {
+            void *display = get_xdisplay(gdk_display);
+            const unsigned long xid = get_xid(surface);
+            const unsigned long state = intern_atom(display, "_NET_WM_STATE", 0);
+            const unsigned long above = intern_atom(display, "_NET_WM_STATE_ABOVE", 0);
+            change_property(display, xid, state, 4 /* XA_ATOM */, 32, 0 /* PropModeReplace */, (const unsigned char *)&above, 1);
+            flush(display);
+        } else {
+            fprintf(stderr, "native-sdk: always_on_top is unavailable on this Linux compositor (Wayland does not expose a reliable client-controlled topmost window level)\n");
+        }
+    }
+}
+
+static void native_sdk_show_window_implicit(native_sdk_gtk_window_t *win) {
+    if (!win || !win->gtk_window) return;
+    if (win->activate_on_show) {
+        gtk_window_present(win->gtk_window);
+    } else {
+        gtk_widget_set_visible(GTK_WIDGET(win->gtk_window), TRUE);
+    }
+    win->shown = 1;
+}
+
+static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk_host_t *host, uint64_t window_id, const char *title, const char *label, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, double min_width, double min_height, int show_policy, uint32_t window_flags) {
     if (native_sdk_find_window(host, window_id)) return NULL;
 
     int slot = -1;
@@ -2958,6 +3028,12 @@ static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk
     win->y = restore_frame ? y : 0;
     win->label = native_sdk_strndup(label && label[0] ? label : "main", strlen(label && label[0] ? label : "main"));
     win->title = native_sdk_strndup(title && title[0] ? title : host->app_name, strlen(title && title[0] ? title : host->app_name));
+    win->transparent = (window_flags & (1u << 0)) != 0;
+    win->always_on_top = (window_flags & (1u << 1)) != 0;
+    win->click_through = (window_flags & (1u << 2)) != 0;
+    win->activate_on_show = (window_flags & (1u << 3)) == 0;
+    win->show_on_first_present = show_policy == 1;
+    win->reveal_after_first_draw = win->show_on_first_present;
     if (!win->label || !win->title) {
         free(win->label);
         free(win->title);
@@ -2966,6 +3042,16 @@ static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk
     }
 
     win->gtk_window = GTK_WINDOW(gtk_application_window_new(host->app));
+    if (win->reveal_after_first_draw) {
+        gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 0);
+    }
+    if (win->transparent) {
+        GtkCssProvider *provider = gtk_css_provider_new();
+        gtk_css_provider_load_from_data(provider, ".native-sdk-transparent { background-color: transparent; }", -1);
+        gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        gtk_widget_add_css_class(GTK_WIDGET(win->gtk_window), "native-sdk-transparent");
+        g_object_unref(provider);
+    }
     gtk_window_set_title(win->gtk_window, win->title);
     gtk_window_set_default_size(win->gtk_window, (int)width, (int)height);
     gtk_window_set_resizable(win->gtk_window, resizable ? TRUE : FALSE);
@@ -3057,6 +3143,8 @@ static native_sdk_gtk_window_t *native_sdk_create_window_internal(native_sdk_gtk
     g_signal_connect(shortcut_controller, "key-pressed", G_CALLBACK(on_shortcut_key_pressed), win);
     gtk_widget_add_controller(GTK_WIDGET(win->gtk_window), shortcut_controller);
 
+    native_sdk_apply_overlay_surface_options(win);
+
     return win;
 }
 
@@ -3070,10 +3158,11 @@ static void on_activate(GtkApplication *app, gpointer data) {
         host->init_width > 0 ? host->init_width : 720,
         host->init_height > 0 ? host->init_height : 480,
         host->restore_frame, host->init_resizable, host->init_titlebar_style,
-        host->init_min_width, host->init_min_height);
+        host->init_min_width, host->init_min_height,
+        host->init_show_policy, host->init_window_flags);
     if (!win) return;
 
-    gtk_window_present(win->gtk_window);
+    if (!win->show_on_first_present) native_sdk_show_window_implicit(win);
     native_sdk_emit_app_active_if_changed(host);
 
     native_sdk_emit(host, (native_sdk_gtk_event_t){ .kind = NATIVE_SDK_GTK_EVENT_START });
@@ -3093,7 +3182,8 @@ native_sdk_gtk_host_t *native_sdk_gtk_create(
     const char *window_label, size_t window_label_len,
     double x, double y, double width, double height,
     int restore_frame, int resizable, int titlebar_style,
-    double min_width, double min_height)
+    double min_width, double min_height, int show_policy,
+    uint32_t window_flags)
 {
     native_sdk_gtk_host_t *host = calloc(1, sizeof(native_sdk_gtk_host_t));
     if (!host) return NULL;
@@ -3112,6 +3202,8 @@ native_sdk_gtk_host_t *native_sdk_gtk_create(
     host->init_titlebar_style = titlebar_style;
     host->init_min_width = min_width;
     host->init_min_height = min_height;
+    host->init_show_policy = show_policy;
+    host->init_window_flags = window_flags;
 
     host->allowed_origins = NULL;
     host->allowed_origins_count = 0;
@@ -3626,15 +3718,15 @@ void native_sdk_gtk_set_shortcuts(native_sdk_gtk_host_t *host, const char *const
     }
 }
 
-int native_sdk_gtk_create_window(native_sdk_gtk_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, double min_width, double min_height) {
+int native_sdk_gtk_create_window(native_sdk_gtk_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, double min_width, double min_height, int show_policy, uint32_t window_flags) {
     char *title = window_title_len > 0 ? native_sdk_strndup(window_title, window_title_len) : NULL;
     char *label = window_label_len > 0 ? native_sdk_strndup(window_label, window_label_len) : NULL;
-    native_sdk_gtk_window_t *win = native_sdk_create_window_internal(host, window_id, title, label, x, y, width, height, restore_frame, resizable, titlebar_style, min_width, min_height);
+    native_sdk_gtk_window_t *win = native_sdk_create_window_internal(host, window_id, title, label, x, y, width, height, restore_frame, resizable, titlebar_style, min_width, min_height, show_policy, window_flags);
     free(title);
     free(label);
     if (!win) return 0;
 
-    gtk_window_present(win->gtk_window);
+    if (!win->show_on_first_present) native_sdk_show_window_implicit(win);
     return 1;
 }
 
@@ -3804,7 +3896,20 @@ int native_sdk_gtk_window_chrome(native_sdk_gtk_host_t *host, uint64_t window_id
 int native_sdk_gtk_focus_window(native_sdk_gtk_host_t *host, uint64_t window_id) {
     native_sdk_gtk_window_t *win = native_sdk_find_window(host, window_id);
     if (!win || !win->gtk_window) return 0;
+    win->reveal_after_first_draw = 0;
+    gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);
     gtk_window_present(win->gtk_window);
+    win->shown = 1;
+    native_sdk_emit_window_frame(host, win, 1);
+    return 1;
+}
+
+int native_sdk_gtk_show_window(native_sdk_gtk_host_t *host, uint64_t window_id) {
+    native_sdk_gtk_window_t *win = native_sdk_find_window(host, window_id);
+    if (!win || !win->gtk_window) return 0;
+    win->reveal_after_first_draw = 0;
+    gtk_widget_set_opacity(GTK_WIDGET(win->gtk_window), 1);
+    native_sdk_show_window_implicit(win);
     native_sdk_emit_window_frame(host, win, 1);
     return 1;
 }
@@ -4230,7 +4335,12 @@ int native_sdk_gtk_present_gpu_surface_pixels(native_sdk_gtk_host_t *host, uint6
      * drives the runtime's frame loop (an armed animation presents,
      * this echo steps it again). The first present also retires the
      * placeholder pump — from here on frames exist only on demand. */
+    const int first_present = !view->gpu_presented;
     view->gpu_presented = 1;
+    if (first_present && win && !win->shown) {
+        native_sdk_show_window_implicit(win);
+        native_sdk_emit_window_frame(host, win, 1);
+    }
     native_sdk_gpu_surface_schedule_frame_emission(view);
     return 1;
 }

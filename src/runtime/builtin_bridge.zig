@@ -241,6 +241,10 @@ pub fn RuntimeBuiltinBridge(comptime Runtime: type) type {
                 .title = title,
                 .default_frame = geometry.RectF.init(x, y, width, height),
                 .restore_state = jsonBoolField(payload, "restoreState") orelse true,
+                .transparent = jsonBoolField(payload, "transparent") orelse false,
+                .always_on_top = jsonBoolField(payload, "alwaysOnTop") orelse false,
+                .click_through = jsonBoolField(payload, "clickThrough") orelse false,
+                .activate_on_show = jsonBoolField(payload, "activateOnShow") orelse true,
                 .source = source,
             });
             return writeWindowJson(info, output);

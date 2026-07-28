@@ -111,7 +111,7 @@ const shortcut_modifier_control: u32 = 1 << 2;
 const shortcut_modifier_option: u32 = 1 << 3;
 const shortcut_modifier_shift: u32 = 1 << 4;
 
-extern fn native_sdk_gtk_create(app_name: [*]const u8, app_name_len: usize, window_title: [*]const u8, window_title_len: usize, bundle_id: [*]const u8, bundle_id_len: usize, icon_path: [*]const u8, icon_path_len: usize, window_label: [*]const u8, window_label_len: usize, x: f64, y: f64, width: f64, height: f64, restore_frame: c_int, resizable: c_int, titlebar_style: c_int, min_width: f64, min_height: f64) ?*GtkHost;
+extern fn native_sdk_gtk_create(app_name: [*]const u8, app_name_len: usize, window_title: [*]const u8, window_title_len: usize, bundle_id: [*]const u8, bundle_id_len: usize, icon_path: [*]const u8, icon_path_len: usize, window_label: [*]const u8, window_label_len: usize, x: f64, y: f64, width: f64, height: f64, restore_frame: c_int, resizable: c_int, titlebar_style: c_int, min_width: f64, min_height: f64, show_policy: c_int, window_flags: u32) ?*GtkHost;
 extern fn native_sdk_gtk_destroy(host: *GtkHost) void;
 extern fn native_sdk_gtk_run(host: *GtkHost, callback: GtkCallback, context: ?*anyopaque) void;
 extern fn native_sdk_gtk_stop(host: *GtkHost) void;
@@ -128,13 +128,14 @@ extern fn native_sdk_gtk_emit_window_event(host: *GtkHost, window_id: u64, name:
 extern fn native_sdk_gtk_set_security_policy(host: *GtkHost, allowed_origins: [*]const u8, allowed_origins_len: usize, external_urls: [*]const u8, external_urls_len: usize, external_action: c_int) void;
 extern fn native_sdk_gtk_set_menus(host: *GtkHost, menu_titles: [*]const [*]const u8, menu_title_lens: [*]const usize, menu_count: usize, item_menu_indices: [*]const u32, item_labels: [*]const [*]const u8, item_label_lens: [*]const usize, item_commands: [*]const [*]const u8, item_command_lens: [*]const usize, item_keys: [*]const [*]const u8, item_key_lens: [*]const usize, item_modifiers: [*]const u32, item_separators: [*]const c_int, item_enabled: [*]const c_int, item_checked: [*]const c_int, item_count: usize) void;
 extern fn native_sdk_gtk_set_shortcuts(host: *GtkHost, ids: [*]const [*]const u8, id_lens: [*]const usize, keys: [*]const [*]const u8, key_lens: [*]const usize, modifiers: [*]const u32, count: usize) void;
-extern fn native_sdk_gtk_create_window(host: *GtkHost, window_id: u64, window_title: [*]const u8, window_title_len: usize, window_label: [*]const u8, window_label_len: usize, x: f64, y: f64, width: f64, height: f64, restore_frame: c_int, resizable: c_int, titlebar_style: c_int, min_width: f64, min_height: f64) c_int;
+extern fn native_sdk_gtk_create_window(host: *GtkHost, window_id: u64, window_title: [*]const u8, window_title_len: usize, window_label: [*]const u8, window_label_len: usize, x: f64, y: f64, width: f64, height: f64, restore_frame: c_int, resizable: c_int, titlebar_style: c_int, min_width: f64, min_height: f64, show_policy: c_int, window_flags: u32) c_int;
 extern fn native_sdk_gtk_start_window_drag(host: *GtkHost, window_id: u64) c_int;
 extern fn native_sdk_gtk_set_window_drag_regions(host: *GtkHost, window_id: u64, label: [*]const u8, label_len: usize, rects: [*]const f64, exclusions: [*]const c_int, count: usize) c_int;
 extern fn native_sdk_gtk_window_chrome(host: *GtkHost, window_id: u64, top: *f64, left: *f64, bottom: *f64, right: *f64, buttons_x: *f64, buttons_y: *f64, buttons_width: *f64, buttons_height: *f64) c_int;
 extern fn native_sdk_gtk_start_timer(host: *GtkHost, timer_id: u64, interval_ns: u64, repeats: c_int) void;
 extern fn native_sdk_gtk_cancel_timer(host: *GtkHost, timer_id: u64) void;
 extern fn native_sdk_gtk_focus_window(host: *GtkHost, window_id: u64) c_int;
+extern fn native_sdk_gtk_show_window(host: *GtkHost, window_id: u64) c_int;
 extern fn native_sdk_gtk_close_window(host: *GtkHost, window_id: u64) c_int;
 extern fn native_sdk_gtk_minimize_window(host: *GtkHost, window_id: u64) c_int;
 extern fn native_sdk_gtk_create_view(host: *GtkHost, window_id: u64, label: [*]const u8, label_len: usize, kind: c_int, parent: [*]const u8, parent_len: usize, x: f64, y: f64, width: f64, height: f64, layer: c_int, visible: c_int, enabled: c_int, role: [*]const u8, role_len: usize, accessibility_label: [*]const u8, accessibility_label_len: usize, text: [*]const u8, text_len: usize, command: [*]const u8, command_len: usize) c_int;
@@ -286,7 +287,7 @@ pub const LinuxPlatform = struct {
         try refuseUnsupportedMainWindowClosePolicy(window_options);
         const window_title = window_options.resolvedTitle(app_info.app_name);
         const frame = window_options.default_frame;
-        const host = native_sdk_gtk_create(app_info.app_name.ptr, app_info.app_name.len, window_title.ptr, window_title.len, app_info.bundle_id.ptr, app_info.bundle_id.len, app_info.icon_path.ptr, app_info.icon_path.len, window_options.label.ptr, window_options.label.len, frame.x, frame.y, frame.width, frame.height, if (window_options.restore_state) 1 else 0, if (window_options.resizable) 1 else 0, titlebarStyleInt(window_options.titlebar), minSizeFloor(window_options.min_width), minSizeFloor(window_options.min_height)) orelse return error.CreateFailed;
+        const host = native_sdk_gtk_create(app_info.app_name.ptr, app_info.app_name.len, window_title.ptr, window_title.len, app_info.bundle_id.ptr, app_info.bundle_id.len, app_info.icon_path.ptr, app_info.icon_path.len, window_options.label.ptr, window_options.label.len, frame.x, frame.y, frame.width, frame.height, if (window_options.restore_state) 1 else 0, if (window_options.resizable) 1 else 0, titlebarStyleInt(window_options.titlebar), minSizeFloor(window_options.min_width), minSizeFloor(window_options.min_height), showModeInt(window_options.show), windowFlags(window_options)) orelse return error.CreateFailed;
         return .{
             .host = host,
             .web_engine = web_engine,
@@ -848,6 +849,22 @@ fn titlebarStyleInt(style: platform_mod.WindowTitlebarStyle) c_int {
     };
 }
 
+fn showModeInt(mode: platform_mod.WindowShowMode) c_int {
+    return switch (mode) {
+        .immediate => 0,
+        .on_first_present => 1,
+    };
+}
+
+fn windowFlags(options: platform_mod.WindowOptions) u32 {
+    var flags: u32 = 0;
+    if (options.transparent) flags |= 1 << 0;
+    if (options.always_on_top) flags |= 1 << 1;
+    if (options.click_through) flags |= 1 << 2;
+    if (!options.activate_on_show) flags |= 1 << 3;
+    return flags;
+}
+
 /// Zero/negative/non-finite floors are the "no floor" sentinel (the
 /// host leaves that axis at its natural minimum).
 fn minSizeFloor(value: f32) f64 {
@@ -858,7 +875,7 @@ fn createWindow(context: ?*anyopaque, options: platform_mod.WindowOptions) anyer
     const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
     const title = options.resolvedTitle(self.app_info.app_name);
     const frame = options.default_frame;
-    if (native_sdk_gtk_create_window(self.host, options.id, title.ptr, title.len, options.label.ptr, options.label.len, frame.x, frame.y, frame.width, frame.height, if (options.restore_state) 1 else 0, if (options.resizable) 1 else 0, titlebarStyleInt(options.titlebar), minSizeFloor(options.min_width), minSizeFloor(options.min_height)) == 0) return error.CreateFailed;
+    if (native_sdk_gtk_create_window(self.host, options.id, title.ptr, title.len, options.label.ptr, options.label.len, frame.x, frame.y, frame.width, frame.height, if (options.restore_state) 1 else 0, if (options.resizable) 1 else 0, titlebarStyleInt(options.titlebar), minSizeFloor(options.min_width), minSizeFloor(options.min_height), showModeInt(options.show), windowFlags(options)) == 0) return error.CreateFailed;
     return .{
         .id = options.id,
         .label = options.label,
@@ -885,12 +902,11 @@ fn minimizeWindow(context: ?*anyopaque, window_id: platform_mod.WindowId) anyerr
     if (native_sdk_gtk_minimize_window(self.host, window_id) == 0) return error.WindowNotFound;
 }
 
-/// GTK has no hide-on-close (see `window_hide_on_close`), so show is
-/// honestly the present verb: bring the window to the front and give
-/// it focus — the same call the focus service makes.
+/// GTK has no hide-on-close, but show is still distinct from explicit
+/// focus for passive overlay windows.
 fn showWindow(context: ?*anyopaque, window_id: platform_mod.WindowId) anyerror!void {
     const self: *LinuxPlatform = @ptrCast(@alignCast(context.?));
-    if (native_sdk_gtk_focus_window(self.host, window_id) == 0) return error.WindowNotFound;
+    if (native_sdk_gtk_show_window(self.host, window_id) == 0) return error.WindowNotFound;
 }
 
 /// The graceful quit: the same emitShutdown + g_application_quit the

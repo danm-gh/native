@@ -321,6 +321,13 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             /// titlebar-control channel's scope, not this field's.
             /// Platforms without the concept keep standard chrome.
             titlebar: app_manifest.WindowTitlebarStyle = .standard,
+            /// Creation-time overlay presentation. These mirror
+            /// `app_manifest.ShellWindow` and are immutable for the life
+            /// of the declared window.
+            transparent: bool = false,
+            always_on_top: bool = false,
+            click_through: bool = false,
+            activate_on_show: bool = true,
             /// Msg dispatched when the USER closes the window (never for
             /// a reconcile close the model itself initiated). The
             /// dismissal precedent: the window is already gone as an
@@ -2618,6 +2625,10 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                 .y = descriptor.y,
                 .resizable = descriptor.resizable,
                 .titlebar = descriptor.titlebar,
+                .transparent = descriptor.transparent,
+                .always_on_top = descriptor.always_on_top,
+                .click_through = descriptor.click_through,
+                .activate_on_show = descriptor.activate_on_show,
                 .min_width = descriptor.min_width,
                 .min_height = descriptor.min_height,
                 // Deterministic reopen: the descriptor is the geometry

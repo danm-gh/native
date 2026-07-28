@@ -530,6 +530,7 @@ static const char *NativeSdkCefBridgeScript() {
 /// policy currently hides — mirrors the AppKit host's bookkeeping.
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *windowClosePolicies;
 @property(nonatomic, strong) NSMutableSet<NSNumber *> *policyHiddenWindows;
+@property(nonatomic, strong) NSMutableSet<NSNumber *> *passiveShowWindows;
 @property(nonatomic, strong) id reopenDelegate;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSView *> *webviewViews;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *webviewPendingURLs;
@@ -577,7 +578,8 @@ static const char *NativeSdkCefBridgeScript() {
 - (void)configureApplication;
 - (void)buildMenuBar;
 - (NSMenuItem *)menuItem:(NSString *)title action:(SEL)action key:(NSString *)key modifiers:(NSEventModifierFlags)modifiers;
-- (BOOL)createWindowWithId:(uint64_t)windowId title:(NSString *)title label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame resizable:(BOOL)resizable makeMain:(BOOL)makeMain;
+- (BOOL)createWindowWithId:(uint64_t)windowId title:(NSString *)title label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame resizable:(BOOL)resizable windowFlags:(uint32_t)windowFlags makeMain:(BOOL)makeMain;
+- (void)orderWindowForImplicitShow:(uint64_t)windowId;
 - (void)focusWindowWithId:(uint64_t)windowId;
 - (void)closeWindowWithId:(uint64_t)windowId;
 - (void)hideWindowWithId:(uint64_t)windowId;
@@ -730,6 +732,7 @@ static const char *NativeSdkCefBridgeScript() {
     [self.host closeWebViewsInWindow:self.windowId];
     NSNumber *key = @(self.windowId);
     [self.host.windowClosePolicies removeObjectForKey:key];
+    [self.host.passiveShowWindows removeObject:key];
     [self.host.windows removeObjectForKey:key];
     [self.host.browserContainers removeObjectForKey:key];
     [self.host.delegates removeObjectForKey:key];
@@ -788,6 +791,7 @@ static const char *NativeSdkCefBridgeScript() {
     self.fallbackURLs = [[NSMutableDictionary alloc] init];
     self.windowClosePolicies = [[NSMutableDictionary alloc] init];
     self.policyHiddenWindows = [[NSMutableSet alloc] init];
+    self.passiveShowWindows = [[NSMutableSet alloc] init];
     self.webviewViews = [[NSMutableDictionary alloc] init];
     self.webviewPendingURLs = [[NSMutableDictionary alloc] init];
     self.webviewPendingZooms = [[NSMutableDictionary alloc] init];
@@ -804,7 +808,7 @@ static const char *NativeSdkCefBridgeScript() {
     self.externalLinkAction = 0;
     self.shortcuts = @[];
 
-    [self createWindowWithId:1 title:(title.length > 0 ? title : self.appName) label:@"main" x:0 y:0 width:width height:height restoreFrame:NO resizable:YES makeMain:YES];
+    [self createWindowWithId:1 title:(title.length > 0 ? title : self.appName) label:@"main" x:0 y:0 width:width height:height restoreFrame:NO resizable:YES windowFlags:0 makeMain:YES];
     self.didShutdown = NO;
     self.pendingPreRunStop = NO;
     self.observesApplicationActivation = NO;
@@ -919,7 +923,7 @@ static const char *NativeSdkCefBridgeScript() {
     delete self.browsers;
 }
 
-- (BOOL)createWindowWithId:(uint64_t)windowId title:(NSString *)title label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame resizable:(BOOL)resizable makeMain:(BOOL)makeMain {
+- (BOOL)createWindowWithId:(uint64_t)windowId title:(NSString *)title label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame resizable:(BOOL)resizable windowFlags:(uint32_t)windowFlags makeMain:(BOOL)makeMain {
     NSNumber *key = @(windowId);
     if (self.windows[key]) return NO;
 
@@ -934,6 +938,13 @@ static const char *NativeSdkCefBridgeScript() {
                                                    styleMask:styleMask
                                                      backing:NSBackingStoreBuffered
                                                        defer:NO];
+    if ((windowFlags & (1u << 0)) != 0) {
+        window.opaque = NO;
+        window.backgroundColor = NSColor.clearColor;
+    }
+    if ((windowFlags & (1u << 1)) != 0) window.level = NSFloatingWindowLevel;
+    if ((windowFlags & (1u << 2)) != 0) window.ignoresMouseEvents = YES;
+    if ((windowFlags & (1u << 3)) != 0) [self.passiveShowWindows addObject:key];
     [window setTitle:title.length > 0 ? title : @"native-sdk"];
     if (!restoreFrame) [window center];
 
@@ -963,11 +974,19 @@ static const char *NativeSdkCefBridgeScript() {
         self.browserContainer = browserContainer;
         self.delegate = delegate;
         self.cefClient = client;
+    }
+    return YES;
+}
+
+- (void)orderWindowForImplicitShow:(uint64_t)windowId {
+    NSWindow *window = self.windows[@(windowId)];
+    if (!window) return;
+    if ([self.passiveShowWindows containsObject:@(windowId)]) {
+        [window orderFront:nil];
     } else {
         [window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
     }
-    return YES;
 }
 
 - (void)focusWindowWithId:(uint64_t)windowId {
@@ -1009,8 +1028,7 @@ static const char *NativeSdkCefBridgeScript() {
         if (!window) return;
         [self.policyHiddenWindows removeObject:@(windowId)];
         if (window.miniaturized) [window deminiaturize:nil];
-        [window makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
+        [self orderWindowForImplicitShow:windowId];
         [self emitWindowFrameForWindowId:windowId open:YES];
     };
     if ([NSThread isMainThread]) {
@@ -1098,8 +1116,7 @@ static const char *NativeSdkCefBridgeScript() {
         NSApp.delegate = reopenDelegate;
     }
 
-    [self.window makeKeyAndOrderFront:nil];
-    [NSApp activateIgnoringOtherApps:YES];
+    [self orderWindowForImplicitShow:1];
     if (!self.shortcutEventMonitor) {
         __weak NativeSdkChromiumHost *weakSelf = self;
         self.shortcutEventMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown handler:^NSEvent *(NSEvent *event) {
@@ -2102,7 +2119,19 @@ static void NativeSdkApplyHiddenInsetTitlebar(NSWindow *window, int titlebar_sty
     }
 }
 
-native_sdk_appkit_host_t *native_sdk_appkit_create(const char *app_name, size_t app_name_len, const char *display_name, size_t display_name_len, const char *version, size_t version_len, const char *about_description, size_t about_description_len, int has_web_content, const char *window_title, size_t window_title_len, const char *bundle_id, size_t bundle_id_len, const char *icon_path, size_t icon_path_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, int show_policy) {
+static void NativeSdkApplyOverlayWindowFlags(NativeSdkChromiumHost *host, uint64_t window_id, uint32_t window_flags) {
+    NSWindow *window = host.windows[@(window_id)];
+    if (!window) return;
+    if ((window_flags & (1u << 0)) != 0) {
+        window.opaque = NO;
+        window.backgroundColor = NSColor.clearColor;
+    }
+    if ((window_flags & (1u << 1)) != 0) window.level = NSFloatingWindowLevel;
+    if ((window_flags & (1u << 2)) != 0) window.ignoresMouseEvents = YES;
+    if ((window_flags & (1u << 3)) != 0) [host.passiveShowWindows addObject:@(window_id)];
+}
+
+native_sdk_appkit_host_t *native_sdk_appkit_create(const char *app_name, size_t app_name_len, const char *display_name, size_t display_name_len, const char *version, size_t version_len, const char *about_description, size_t about_description_len, int has_web_content, const char *window_title, size_t window_title_len, const char *bundle_id, size_t bundle_id_len, const char *icon_path, size_t icon_path_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, int show_policy, uint32_t window_flags) {
     @autoreleasepool {
         // Present-before-show is a canvas contract; the Chromium host
         // hosts webviews only (gpu-surface presents are unsupported on
@@ -2131,6 +2160,7 @@ native_sdk_appkit_host_t *native_sdk_appkit_create(const char *app_name, size_t 
             host.window.styleMask &= ~NSWindowStyleMaskResizable;
         }
         NativeSdkApplyHiddenInsetTitlebar(host.window, titlebar_style, host.delegates[@1]);
+        NativeSdkApplyOverlayWindowFlags(host, 1, window_flags);
         return (__bridge_retained native_sdk_appkit_host_t *)host;
     }
 }
@@ -2376,14 +2406,17 @@ void native_sdk_appkit_set_shortcuts(native_sdk_appkit_host_t *host, const char 
     [object setShortcutsWithIds:ids idLengths:id_lens keys:keys keyLengths:key_lens modifiers:modifiers count:count];
 }
 
-int native_sdk_appkit_create_window(native_sdk_appkit_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, int show_policy) {
+int native_sdk_appkit_create_window(native_sdk_appkit_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, int show_policy, uint32_t window_flags) {
     // Accepted for ABI parity; see native_sdk_appkit_create.
     (void)show_policy;
     NativeSdkChromiumHost *object = (__bridge NativeSdkChromiumHost *)host;
     NSString *titleString = window_title ? [[NSString alloc] initWithBytes:window_title length:window_title_len encoding:NSUTF8StringEncoding] : @"native-sdk";
     NSString *labelString = window_label ? [[NSString alloc] initWithBytes:window_label length:window_label_len encoding:NSUTF8StringEncoding] : @"";
-    if (![object createWindowWithId:window_id title:titleString ?: @"native-sdk" label:labelString ?: @"" x:x y:y width:width height:height restoreFrame:(restore_frame != 0) resizable:(resizable != 0) makeMain:NO]) return 0;
+    if (![object createWindowWithId:window_id title:titleString ?: @"native-sdk" label:labelString ?: @"" x:x y:y width:width height:height restoreFrame:(restore_frame != 0) resizable:(resizable != 0) windowFlags:window_flags makeMain:NO]) return 0;
     NativeSdkApplyHiddenInsetTitlebar(object.windows[@(window_id)], titlebar_style, object.delegates[@(window_id)]);
+    // Apply chrome and overlay presentation while still hidden, then
+    // reveal once so a secondary window cannot flash its default frame.
+    [object orderWindowForImplicitShow:window_id];
     return 1;
 }
 

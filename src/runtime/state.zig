@@ -27,6 +27,9 @@ pub const RuntimeWindow = struct {
     main_view_id: platform.ViewId = 0,
     source: ?platform.WebViewSource = null,
     source_reloads_from_app: bool = false,
+    /// Creation-time show policy retained so Runtime.showWindow mirrors
+    /// whether the native host passively orders front or activates.
+    activate_on_show: bool = true,
     main_frame: geometry.RectF = geometry.RectF.init(0, 0, 0, 0),
     main_frame_set: bool = false,
     main_layer: i32 = 0,

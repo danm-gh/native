@@ -180,6 +180,9 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
             if (WindowViewMethods().findWindowIndexById(self, window.id) != null) return;
 
             const runtime_index = try WindowViewMethods().reserveWindow(self, window.id, window.label, window.resolvedTitle(app_info.app_name), null, true);
+            self.windows[runtime_index].activate_on_show = window.activate_on_show;
+            self.windows[runtime_index].info.focused = window.activate_on_show and window.show == .immediate;
+            self.windows[runtime_index].main_focused = self.windows[runtime_index].info.focused;
             self.windows[runtime_index].info.frame = window.default_frame;
             self.windows[runtime_index].main_frame = geometry.RectF.init(0, 0, window.default_frame.width, window.default_frame.height);
             self.next_window_id = @max(self.next_window_id, window.id + 1);
@@ -638,6 +641,9 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
                     break :blk runtime_index;
                 };
                 self.windows[runtime_index].source_reloads_from_app = true;
+                self.windows[runtime_index].activate_on_show = window.activate_on_show;
+                self.windows[runtime_index].info.focused = index == 0 and window.activate_on_show and window.show == .immediate;
+                self.windows[runtime_index].main_focused = self.windows[runtime_index].info.focused;
                 if (index > 0) {
                     // The same `.hide` gate as the runtime create path
                     // (window_storage): secondary startup windows reach
@@ -722,6 +728,9 @@ pub fn RuntimeFlow(comptime Runtime: type) type {
             self.windows[runtime_index].info.frame = startup_frame;
             self.windows[runtime_index].source = if (source) |source_value| try WindowViewMethods().copySource(self, runtime_index, source_value) else null;
             self.windows[runtime_index].source_reloads_from_app = source != null;
+            self.windows[runtime_index].activate_on_show = shell_window.activate_on_show;
+            self.windows[runtime_index].info.focused = shell_window.activate_on_show and startup_window.show == .immediate;
+            self.windows[runtime_index].main_focused = self.windows[runtime_index].info.focused;
             if (!self.windows[runtime_index].main_frame_set) {
                 self.windows[runtime_index].main_frame = geometry.RectF.init(0, 0, startup_frame.width, startup_frame.height);
             }

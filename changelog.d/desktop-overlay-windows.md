@@ -1,0 +1,1 @@
+feature: **Reliable desktop overlay windows**: window declarations and runtime creation now support transparent, always-on-top, click-through, and passive-show presentation applied before first visibility; canvas windows reveal only after their first alpha-correct present, avoiding focus theft and creation flashes.

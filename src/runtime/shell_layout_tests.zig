@@ -662,6 +662,55 @@ test "canvas shell windows present before they become visible" {
     }
 }
 
+test "overlay window presentation reaches create and passive show preserves focus" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "overlay-window", .source = platform.WebViewSource.html("<h1>Host</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    var app_state: TestApp = .{};
+    try harness.start(app_state.app());
+
+    const views = [_]app_manifest.ShellView{
+        .{ .label = "overlay-content", .kind = .webview, .url = "zero://app/overlay.html", .fill = true },
+    };
+    const info = try harness.runtime.createShellWindow(.{
+        .label = "overlay",
+        .title = "Overlay",
+        .titlebar = .chromeless,
+        .transparent = true,
+        .always_on_top = true,
+        .click_through = true,
+        .activate_on_show = false,
+        .views = &views,
+    }, platform.WebViewSource.html("<h1>Overlay</h1>"));
+    const index = for (harness.null_platform.windows[0..harness.null_platform.window_count], 0..) |window, i| {
+        if (window.id == info.id) break i;
+    } else return error.WindowNotFound;
+
+    try std.testing.expect(harness.null_platform.window_transparent[index]);
+    try std.testing.expect(harness.null_platform.window_always_on_top[index]);
+    try std.testing.expect(harness.null_platform.window_click_through[index]);
+    try std.testing.expect(!harness.null_platform.window_activate_on_show[index]);
+
+    const runtime_index = for (harness.runtime.windows[0..harness.runtime.window_count], 0..) |window, i| {
+        if (window.info.id == info.id) break i;
+    } else return error.WindowNotFound;
+    const focused_before = harness.runtime.windows[0].info.id;
+    try harness.runtime.showWindow(info.id);
+    try std.testing.expect(harness.runtime.windows[0].info.focused);
+    try std.testing.expectEqual(focused_before, harness.runtime.windows[0].info.id);
+    try std.testing.expect(!harness.runtime.windows[runtime_index].info.focused);
+
+    // Explicit focus is still deliberate activation, even for a window
+    // whose implicit creation/show policy is passive.
+    try harness.runtime.focusWindow(info.id);
+    try std.testing.expect(harness.runtime.windows[runtime_index].info.focused);
+}
+
 test "runtime lays out created shell windows with native returned bounds" {
     const ShellCreatePlatform = struct {
         create_count: usize = 0,

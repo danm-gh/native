@@ -92,6 +92,10 @@ pub const RunOptions = struct {
             info.main_window.titlebar = manifestShellStartupTitlebar();
             info.main_window.resizable = manifestShellStartupResizable();
             info.main_window.show = manifestShellStartupShowMode();
+            info.main_window.transparent = manifestShellStartupBool("transparent", false);
+            info.main_window.always_on_top = manifestShellStartupBool("always_on_top", false);
+            info.main_window.click_through = manifestShellStartupBool("click_through", false);
+            info.main_window.activate_on_show = manifestShellStartupBool("activate_on_show", true);
             // Min-size floors ride the create call like the titlebar:
             // the scene re-applies size/title later, but the window's
             // enforced floor is host state from the first frame on.
@@ -158,6 +162,10 @@ fn manifestWindow(comptime window: anytype, comptime index: usize) native_sdk.Wi
         .restore_state = windowBool(window, "restore_state", true),
         .restore_policy = windowRestorePolicy(window),
         .titlebar = windowTitlebarStyle(window),
+        .transparent = windowBool(window, "transparent", false),
+        .always_on_top = windowBool(window, "always_on_top", false),
+        .click_through = windowBool(window, "click_through", false),
+        .activate_on_show = windowBool(window, "activate_on_show", true),
         .min_width = windowMinSize(window, "min_width"),
         .min_height = windowMinSize(window, "min_height"),
         .close_policy = windowClosePolicy(window),
@@ -205,6 +213,17 @@ fn manifestShellStartupResizable() bool {
     if (comptime !@hasField(@TypeOf(shell), "windows")) return true;
     if (comptime shell.windows.len == 0) return true;
     return windowBool(shell.windows[0], "resizable", true);
+}
+
+/// One creation-time boolean from app.zon's first shell window. Overlay
+/// presentation must reach the host before the startup window is shown;
+/// applying it after scene load would allow a focus/opaque flash.
+fn manifestShellStartupBool(comptime field: []const u8, comptime default_value: bool) bool {
+    if (comptime !@hasField(@TypeOf(app_manifest), "shell")) return default_value;
+    const shell = app_manifest.shell;
+    if (comptime !@hasField(@TypeOf(shell), "windows")) return default_value;
+    if (comptime shell.windows.len == 0) return default_value;
+    return windowBool(shell.windows[0], field, default_value);
 }
 
 /// The startup window's close policy for scene-first apps: app.zon's

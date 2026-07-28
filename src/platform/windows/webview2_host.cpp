@@ -2720,6 +2720,54 @@ static_assert(
     compositePremultipliedChannel(128, 128, 128) == 192,
     "premultiplied source-over must preserve destination contribution");
 
+/* User32 excludes alpha-zero pixels before WM_NCHITTEST reaches a
+ * per-pixel layered window. Keep the real WS_THICKFRAME resize bands at
+ * the smallest nonzero alpha so they remain pointer targets without
+ * making the transparent frame visibly opaque. Client pixels stay zero
+ * until a canvas paints them, preserving intentional transparent holes.
+ * click_through still wins in windowProc by returning HTTRANSPARENT. */
+static constexpr uint8_t kTransparentResizeHitAlpha = 1;
+
+static constexpr bool outsideTransparentClientBounds(
+    int x,
+    int y,
+    int client_left,
+    int client_top,
+    int client_right,
+    int client_bottom) {
+    return x < client_left || x >= client_right || y < client_top || y >= client_bottom;
+}
+
+static_assert(
+    outsideTransparentClientBounds(6, 100, 7, 7, 713, 513) &&
+    !outsideTransparentClientBounds(7, 100, 7, 7, 713, 513),
+    "the non-client resize band must stop exactly where the client begins");
+
+static void seedTransparentResizeHitFrame(
+    uint8_t *target,
+    int outer_width,
+    int outer_height,
+    int client_left,
+    int client_top,
+    int client_right,
+    int client_bottom) {
+    const int left = std::max(0, std::min(outer_width, client_left));
+    const int top = std::max(0, std::min(outer_height, client_top));
+    const int right = std::max(left, std::min(outer_width, client_right));
+    const int bottom = std::max(top, std::min(outer_height, client_bottom));
+    const auto seed_span = [&](int y, int begin, int end) {
+        for (int x = begin; x < end; ++x) {
+            target[((size_t)y * (size_t)outer_width + (size_t)x) * 4 + 3] = kTransparentResizeHitAlpha;
+        }
+    };
+    for (int y = 0; y < top; ++y) seed_span(y, 0, outer_width);
+    for (int y = top; y < bottom; ++y) {
+        seed_span(y, 0, left);
+        seed_span(y, right, outer_width);
+    }
+    for (int y = bottom; y < outer_height; ++y) seed_span(y, 0, outer_width);
+}
+
 /* Per-pixel-alpha presentation for transparent top-level windows.
  * Layered windows do not compose child HWND redirection surfaces, so
  * blend every visible canvas's premultiplied BGRA buffer into one
@@ -2733,6 +2781,14 @@ static bool presentTransparentWindow(Host *host, Window &window) {
     const int outer_width = outer.right - outer.left;
     const int outer_height = outer.bottom - outer.top;
     if (outer_width <= 0 || outer_height <= 0) return false;
+    RECT client = {};
+    if (!GetClientRect(window.hwnd, &client)) return false;
+    POINT client_origin = { client.left, client.top };
+    if (!ClientToScreen(window.hwnd, &client_origin)) return false;
+    const int client_left = client_origin.x - outer.left;
+    const int client_top = client_origin.y - outer.top;
+    const int client_right = client_left + (client.right - client.left);
+    const int client_bottom = client_top + (client.bottom - client.top);
 
     BITMAPINFO target_info = {};
     target_info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -2753,6 +2809,16 @@ static bool presentTransparentWindow(Host *host, Window &window) {
     }
     memset(target_bits, 0, (size_t)outer_width * (size_t)outer_height * 4);
     uint8_t *target = reinterpret_cast<uint8_t *>(target_bits);
+    if (window.resizable) {
+        seedTransparentResizeHitFrame(
+            target,
+            outer_width,
+            outer_height,
+            client_left,
+            client_top,
+            client_right,
+            client_bottom);
+    }
 
     std::vector<NativeView *> surfaces;
     for (auto &entry : host->native_views) {
@@ -2766,8 +2832,6 @@ static bool presentTransparentWindow(Host *host, Window &window) {
         return a->creation_order < b->creation_order;
     });
 
-    POINT client_origin = { 0, 0 };
-    ClientToScreen(window.hwnd, &client_origin);
     for (const NativeView *view : surfaces) {
         RECT child = {};
         if (!GetWindowRect(view->hwnd, &child)) continue;

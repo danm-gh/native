@@ -1970,6 +1970,42 @@ test "windows transparent windows compose canvas siblings and reject unredirecta
     ) != null);
 }
 
+test "windows transparent resize frame remains hit-testable without filling the client" {
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "static constexpr uint8_t kTransparentResizeHitAlpha = 1;",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "outsideTransparentClientBounds(6, 100, 7, 7, 713, 513)",
+    ) != null);
+    const present_at = std.mem.indexOf(
+        u8,
+        host_source,
+        "static bool presentTransparentWindow(Host *host, Window &window)",
+    ) orelse return error.TestExpectedEqual;
+    const present = host_source[present_at..];
+    const seed_at = std.mem.indexOf(
+        u8,
+        present,
+        "if (window.resizable) {\n        seedTransparentResizeHitFrame(",
+    ) orelse return error.TestExpectedEqual;
+    const surfaces_at = std.mem.indexOf(
+        u8,
+        present,
+        "std::vector<NativeView *> surfaces;",
+    ) orelse return error.TestExpectedEqual;
+    try std.testing.expect(seed_at < surfaces_at);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        present,
+        "if (input_window && input_window->click_through && message == WM_NCHITTEST) return HTTRANSPARENT;",
+    ) != null);
+}
+
 test "windows transparent windows require chromeless chrome and no menus" {
     try refuseUnsupportedTransparentWindow(.{
         .titlebar = .chromeless,

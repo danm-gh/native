@@ -42,6 +42,32 @@ fn appendTextWidgets(widget: canvas.Widget, output: *std.ArrayListUnmanaged(u8),
     for (widget.children) |child| try appendTextWidgets(child, output, allocator);
 }
 
+fn expectCompleteSpanLayouts(widget: canvas.Widget) !void {
+    if (widget.kind == .text and widget.spans.len > 0) {
+        var runs: [text_spans.max_text_span_runs_per_paragraph]text_spans.TextSpanRun = undefined;
+        const layout = text_spans.layoutTextSpans(
+            widget.spans,
+            .{ .size = 14, .max_width = 1 },
+            &runs,
+        );
+        try testing.expect(!layout.truncated);
+        try testing.expect(layout.line_count <= text_spans.max_text_span_lines_per_paragraph);
+    }
+    for (widget.children) |child| try expectCompleteSpanLayouts(child);
+}
+
+fn allTextSpansHaveColor(widget: canvas.Widget, color: canvas.TextSpanColor) bool {
+    if (widget.kind == .text and widget.spans.len > 0) {
+        for (widget.spans) |span| {
+            if (span.color != color) return false;
+        }
+    }
+    for (widget.children) |child| {
+        if (!allTextSpansHaveColor(child, color)) return false;
+    }
+    return true;
+}
+
 test "HTML and JSX highlighting distinguishes tags attributes expressions and strings" {
     const source =
         \\<Accordion defaultValue={["item-1"]}>
@@ -180,6 +206,16 @@ test "line numbers are opt-in and stay paired with logical source lines" {
     try testing.expect(findByText(numbered.root, "2") != null);
     try testing.expect(findByText(numbered.root, "alpha") != null);
     try testing.expect(findByText(numbered.root, "beta") != null);
+
+    var comment_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer comment_arena.deinit();
+    var comment_ui = Ui.init(comment_arena.allocator());
+    const comments = try comment_ui.finalize(comment_ui.code(.{
+        .language = .zig,
+        .line_numbers = true,
+    }, "// first\nconst second = true;"));
+    const second = findByText(comments.root, "const second = true;").?;
+    try testing.expectEqual(canvas.TextSpanColor.info, spanWithFragment(second.spans, "const").?.color.?);
 }
 
 test "large code blocks split at the paragraph line capacity without hiding their tail" {
@@ -193,12 +229,100 @@ test "large code blocks split at the paragraph line capacity without hiding thei
     var ui = Ui.init(arena.allocator());
     const view = try ui.finalize(ui.code(.{ .language = .plain }, source.items));
 
-    try testing.expectEqual(@as(usize, 3), countByKind(view.root, .text));
-    try testing.expect(findByText(view.root, "line\ntail") != null);
+    try testing.expect(countByKind(view.root, .text) > 1);
+    try expectCompleteSpanLayouts(view.root);
     var recovered: std.ArrayListUnmanaged(u8) = .empty;
     defer recovered.deinit(testing.allocator);
     try appendTextWidgets(view.root, &recovered, testing.allocator);
     try testing.expectEqualStrings(source.items, recovered.items);
+}
+
+test "wrapped code chunks long logical lines before span layout can truncate them" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    try source.appendSlice(testing.allocator, "// ");
+    for (0..130) |_| try source.appendSlice(testing.allocator, "é");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{ .language = .zig }, source.items));
+
+    try testing.expectEqual(@as(usize, 2), countByKind(view.root, .text));
+    try expectCompleteSpanLayouts(view.root);
+    try testing.expect(allTextSpansHaveColor(view.root, .text_muted));
+
+    var recovered: std.ArrayListUnmanaged(u8) = .empty;
+    defer recovered.deinit(testing.allocator);
+    try appendTextWidgets(view.root, &recovered, testing.allocator);
+    try testing.expectEqualStrings(source.items, recovered.items);
+}
+
+test "numbered code stays below the retained widget node budget at its limit" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    for (0..Ui.max_code_lines) |index| {
+        if (index > 0) try source.append(testing.allocator, '\n');
+        try source.append(testing.allocator, 'x');
+    }
+
+    var numbered_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer numbered_arena.deinit();
+    var numbered_ui = Ui.init(numbered_arena.allocator());
+    const numbered = try numbered_ui.finalize(numbered_ui.code(.{
+        .line_numbers = true,
+        .wrap = false,
+    }, source.items));
+
+    var numbered_nodes: [1024]canvas.WidgetLayoutNode = undefined;
+    const numbered_layout = try canvas.layoutWidgetTree(
+        numbered.root,
+        geometry.RectF.init(0, 0, 320, 4000),
+        &numbered_nodes,
+    );
+    // Panel + horizontal scroll + track + content column + scrollbar
+    // spacer, then four retained widgets per numbered source line.
+    try testing.expectEqual(
+        @as(usize, Ui.max_code_lines * 4 + 5),
+        numbered_layout.nodes.len,
+    );
+
+    try source.append(testing.allocator, '\n');
+    try source.append(testing.allocator, 'x');
+    var fallback_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer fallback_arena.deinit();
+    var fallback_ui = Ui.init(fallback_arena.allocator());
+    const fallback = try fallback_ui.finalize(fallback_ui.code(.{
+        .line_numbers = true,
+        .wrap = false,
+    }, source.items));
+    try testing.expectEqual(@as(usize, 0), countByKind(fallback.root, .row));
+    var fallback_nodes: [1024]canvas.WidgetLayoutNode = undefined;
+    _ = try canvas.layoutWidgetTree(
+        fallback.root,
+        geometry.RectF.init(0, 0, 320, 4000),
+        &fallback_nodes,
+    );
+
+    var long_source: std.ArrayListUnmanaged(u8) = .empty;
+    defer long_source.deinit(testing.allocator);
+    for (0..100) |line_index| {
+        if (line_index > 0) try long_source.append(testing.allocator, '\n');
+        for (0..130) |_| try long_source.append(testing.allocator, 'x');
+    }
+    var long_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer long_arena.deinit();
+    var long_ui = Ui.init(long_arena.allocator());
+    const long_fallback = try long_ui.finalize(long_ui.code(.{
+        .line_numbers = true,
+    }, long_source.items));
+    try testing.expectEqual(@as(usize, 0), countByKind(long_fallback.root, .row));
+    var long_nodes: [1024]canvas.WidgetLayoutNode = undefined;
+    _ = try canvas.layoutWidgetTree(
+        long_fallback.root,
+        geometry.RectF.init(0, 0, 320, 20_000),
+        &long_nodes,
+    );
 }
 
 test "unwrapped multiline intrinsic width is the widest logical line" {

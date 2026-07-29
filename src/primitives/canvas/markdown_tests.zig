@@ -58,7 +58,6 @@ fn findKind(widget: canvas.Widget, kind: canvas.WidgetKind) ?canvas.Widget {
 
 fn appendParagraphText(widget: canvas.Widget, out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
     if (widget.kind == .text and widget.spans.len > 0) {
-        if (out.items.len > 0) try out.append(allocator, '\n');
         try out.appendSlice(allocator, widget.text);
         return;
     }

@@ -36,6 +36,8 @@ pub const HighlightState = struct {
     html_expression_depth: usize = 0,
     html_comment: bool = false,
     block_comment: bool = false,
+    line_comment: bool = false,
+    preprocessor_line: bool = false,
     string_quote: ?u8 = null,
 };
 
@@ -268,7 +270,23 @@ pub fn highlightWithState(
         const rest = source[index..];
         var color: ?text_spans.TextSpanColor = null;
 
-        if (state.html_comment) {
+        // Artificial presentation chunks can end in the middle of a
+        // logical source line. A real newline ends the two line-scoped
+        // states before ordinary token dispatch handles that byte.
+        if (rest[0] == '\n') {
+            state.line_comment = false;
+            state.preprocessor_line = false;
+        }
+
+        if (state.line_comment) {
+            while (index < source.len and source[index] != '\n') index += 1;
+            state.line_comment = index == source.len;
+            color = .text_muted;
+        } else if (state.preprocessor_line) {
+            while (index < source.len and source[index] != '\n') index += 1;
+            state.preprocessor_line = index == source.len;
+            color = .info;
+        } else if (state.html_comment) {
             while (index < source.len and !std.mem.startsWith(u8, source[index..], "-->")) index += 1;
             if (index < source.len) {
                 index = @min(source.len, index + 3);
@@ -321,9 +339,11 @@ pub fn highlightWithState(
             color = .text_muted;
         } else if (lineCommentPrefix(language, rest) != 0) {
             while (index < source.len and source[index] != '\n') index += 1;
+            state.line_comment = index == source.len;
             color = .text_muted;
         } else if (language == .c_like and rest[0] == '#') {
             while (index < source.len and source[index] != '\n') index += 1;
+            state.preprocessor_line = index == source.len;
             color = .info;
         } else if (language == .html and rest[0] == '<') {
             index += 1;

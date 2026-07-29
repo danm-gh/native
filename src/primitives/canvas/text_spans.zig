@@ -41,8 +41,11 @@ const TextAlign = @import("text_layout_types.zig").TextAlign;
 /// `max_text_span_lines_per_paragraph` lines. Overflow truncates
 /// deterministically instead of failing.
 pub const max_text_spans_per_paragraph: usize = 32;
-pub const max_text_span_runs_per_paragraph: usize = 128;
-pub const max_text_span_lines_per_paragraph: usize = 64;
+pub const max_text_span_lines_per_paragraph: usize = 128;
+// A maximally split highlighted paragraph can add one run at every span
+// boundary in addition to one run per visual line.
+pub const max_text_span_runs_per_paragraph: usize =
+    max_text_span_lines_per_paragraph + max_text_spans_per_paragraph;
 
 pub const TextSpanWeight = enum {
     regular,

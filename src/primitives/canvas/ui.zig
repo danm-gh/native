@@ -2311,7 +2311,10 @@ pub fn Ui(comptime Msg: type) type {
         /// Markdown fences lower through this same component.
         pub fn code(self: *Self, options: CodeOptions, source: []const u8) Node {
             const line_count = codeLineCount(source);
-            const content = if (options.line_numbers and line_count <= max_code_lines)
+            const numbered = options.line_numbers and
+                line_count <= max_code_lines and
+                numberedCodeNodeCount(source, options.wrap) <= max_numbered_code_nodes;
+            const content = if (numbered)
                 self.numberedCodeLines(source, options.language, options.wrap)
             else
                 self.codeParagraphChunks(source, options.language, options.wrap);
@@ -2356,7 +2359,13 @@ pub fn Ui(comptime Msg: type) type {
             var lines = std.mem.splitScalar(u8, source, '\n');
             var index: usize = 0;
             while (lines.next()) |line| : (index += 1) {
-                const code_line = self.codeParagraphWithState(line, language, wrap, 1, &highlight_state);
+                const code_line = self.codeParagraphChunksWithState(line, language, wrap, 1, &highlight_state);
+                // Numbered lines are handed to the highlighter without
+                // their newline separator. End line-scoped lexer state
+                // explicitly; block comments, strings, and HTML/JSX
+                // structure intentionally continue into the next line.
+                highlight_state.line_comment = false;
+                highlight_state.preprocessor_line = false;
                 const number = self.codeLineNumber(index + 1, digits);
                 const marker = self.paragraph(.{
                     .style_tokens = .{ .foreground = .text_muted },
@@ -2375,45 +2384,41 @@ pub fn Ui(comptime Msg: type) type {
         /// line capacity requires it; every chunk remains independently
         /// visible instead of silently truncating a large source block.
         fn codeParagraphChunks(self: *Self, source: []const u8, language: code_model.Language, wrap: bool) Node {
-            const count = codeLineCount(source);
-            if (count <= canvas.text_spans.max_text_span_lines_per_paragraph) {
-                var state: code_model.HighlightState = .{};
-                return self.codeParagraphWithState(source, language, wrap, if (wrap) 1 else 0, &state);
-            }
+            var state: code_model.HighlightState = .{};
+            return self.codeParagraphChunksWithState(source, language, wrap, if (wrap) 1 else 0, &state);
+        }
 
-            const chunk_count = (count + canvas.text_spans.max_text_span_lines_per_paragraph - 1) /
-                canvas.text_spans.max_text_span_lines_per_paragraph;
+        fn codeParagraphChunksWithState(
+            self: *Self,
+            source: []const u8,
+            language: code_model.Language,
+            wrap: bool,
+            grow: f32,
+            state: *code_model.HighlightState,
+        ) Node {
+            const chunk_count = codeParagraphChunkCount(source, wrap);
+            if (chunk_count == 1) {
+                return self.codeParagraphWithState(source, language, wrap, grow, state);
+            }
             const chunks = self.arena.alloc(Node, chunk_count) catch {
                 self.failed = true;
                 return self.column(.{}, .{});
             };
-            var state: code_model.HighlightState = .{};
             var chunk_index: usize = 0;
             var chunk_start: usize = 0;
-            var chunk_lines: usize = 0;
-            var cursor: usize = 0;
-            while (cursor <= source.len) : (cursor += 1) {
-                if (cursor != source.len and source[cursor] != '\n') continue;
-                chunk_lines += 1;
-                if (chunk_lines < canvas.text_spans.max_text_span_lines_per_paragraph and cursor != source.len) continue;
-
-                // Keep the separating newline in the preceding paragraph.
-                // A trailing newline advances past the last painted line
-                // without adding an empty line to the paragraph's extent, so
-                // concatenating chunk text still recovers the exact source.
-                const chunk_end = if (cursor < source.len) cursor + 1 else cursor;
+            while (chunk_start < source.len) {
+                const chunk_end = codeParagraphChunkEnd(source, chunk_start, wrap);
                 chunks[chunk_index] = self.codeParagraphWithState(
                     source[chunk_start..chunk_end],
                     language,
                     wrap,
                     0,
-                    &state,
+                    state,
                 );
                 chunk_index += 1;
-                chunk_start = cursor + 1;
-                chunk_lines = 0;
+                chunk_start = chunk_end;
             }
-            return self.column(.{ .grow = if (wrap) 1 else 0 }, .{chunks[0..chunk_index]});
+            return self.column(.{ .grow = grow }, .{chunks[0..chunk_index]});
         }
 
         fn codeParagraphWithState(self: *Self, source: []const u8, language: code_model.Language, wrap: bool, grow: f32, state: *code_model.HighlightState) Node {
@@ -2442,8 +2447,110 @@ pub fn Ui(comptime Msg: type) type {
         }
 
         /// Upper bound for allocating one numbered row per logical code line.
-        /// Larger sources fall back to unnumbered, capacity-bounded chunks.
-        pub const max_code_lines: usize = 256;
+        /// A numbered line costs four retained widgets; 128 keeps a maximal
+        /// gutter near half of the 1024-node per-view budget. Larger sources
+        /// and unusually long numbered lines that would push the component
+        /// past that same half-view budget fall back to unnumbered chunks.
+        pub const max_code_lines: usize = 128;
+        const max_numbered_code_nodes: usize = 520;
+
+        fn numberedCodeNodeCount(source: []const u8, wrap: bool) usize {
+            // Panel + content column, plus the horizontal-scroll wrapper,
+            // track, and scrollbar spacer in no-wrap mode.
+            var count: usize = if (wrap) 2 else 5;
+            var lines = std.mem.splitScalar(u8, source, '\n');
+            while (lines.next()) |line| {
+                const chunks = codeParagraphChunkCount(line, wrap);
+                // Row + marker column + marker text + one code text.
+                count += 4;
+                // A split code line replaces that one text with a column
+                // holding every chunk: net growth is `chunks`.
+                if (chunks > 1) count += chunks;
+                if (count > max_numbered_code_nodes) return count;
+            }
+            return count;
+        }
+
+        fn codeParagraphChunkCount(source: []const u8, wrap: bool) usize {
+            if (source.len == 0) return 1;
+            var count: usize = 0;
+            var start: usize = 0;
+            while (start < source.len) {
+                start = codeParagraphChunkEnd(source, start, wrap);
+                count += 1;
+            }
+            return count;
+        }
+
+        /// Pack complete logical lines while their UTF-8 scalar count fits
+        /// the span layout's worst case (one glyph per visual line). Only a
+        /// single over-capacity logical line is split internally; ordinary
+        /// source keeps every authored line boundary exactly.
+        fn codeParagraphChunkEnd(source: []const u8, start: usize, wrap: bool) usize {
+            if (!wrap) {
+                var cursor = start;
+                var lines: usize = 0;
+                while (cursor < source.len) : (cursor += 1) {
+                    if (source[cursor] != '\n') continue;
+                    lines += 1;
+                    if (lines >= max_code_logical_lines_per_paragraph and cursor + 1 < source.len) {
+                        return cursor + 1;
+                    }
+                }
+                return source.len;
+            }
+
+            var cursor = start;
+            var units: usize = 0;
+            var lines: usize = 0;
+            while (cursor < source.len) {
+                const newline = std.mem.indexOfScalarPos(u8, source, cursor, '\n');
+                const line_end = newline orelse source.len;
+                const after_line = if (newline != null) line_end + 1 else line_end;
+                // A trailing newline ends the final painted line without
+                // adding another one. An empty source line still occupies
+                // one visual line.
+                const line_units = @max(1, codeScalarCount(source[cursor..line_end]));
+                if (line_units > canvas.text_spans.max_text_span_lines_per_paragraph) {
+                    if (cursor > start) return cursor;
+                    return codeAdvanceScalars(
+                        source,
+                        cursor,
+                        canvas.text_spans.max_text_span_lines_per_paragraph,
+                    );
+                }
+                if (units + line_units > canvas.text_spans.max_text_span_lines_per_paragraph and cursor > start) {
+                    return cursor;
+                }
+                units += line_units;
+                lines += 1;
+                cursor = after_line;
+                if (lines >= max_code_logical_lines_per_paragraph and cursor < source.len) return cursor;
+            }
+            return source.len;
+        }
+
+        fn codeScalarCount(source: []const u8) usize {
+            var count: usize = 0;
+            var cursor: usize = 0;
+            while (cursor < source.len) : (count += 1) {
+                const sequence_len = std.unicode.utf8ByteSequenceLength(source[cursor]) catch 1;
+                cursor += @min(sequence_len, source.len - cursor);
+            }
+            return count;
+        }
+
+        fn codeAdvanceScalars(source: []const u8, start: usize, count: usize) usize {
+            var cursor = start;
+            var advanced: usize = 0;
+            while (cursor < source.len and advanced < count) : (advanced += 1) {
+                const sequence_len = std.unicode.utf8ByteSequenceLength(source[cursor]) catch 1;
+                cursor += @min(sequence_len, source.len - cursor);
+            }
+            return cursor;
+        }
+
+        const max_code_logical_lines_per_paragraph: usize = 64;
 
         fn codeLineCount(source: []const u8) usize {
             return std.mem.count(u8, source, "\n") + 1;

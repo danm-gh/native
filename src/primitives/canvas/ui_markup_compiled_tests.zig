@@ -1089,6 +1089,39 @@ test "compiled markdown element matches the interpreter and the hand-written Md.
     try testing.expectEqual(summary_item.id, fixture.findByKind(expanded_compiled.root, .list_item).?.id);
 }
 
+// ------------------------------------------------------ code element parity
+
+const CodeUi = fixture.CodeUi;
+const CodeInterpreter = markup_view.MarkupView(fixture.CodeModel, fixture.CodeMsg);
+const CodeCompiled = canvas.CompiledMarkupView(fixture.CodeModel, fixture.CodeMsg, fixture.code_markup_source);
+
+test "compiled code element matches the interpreter and Ui.code" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var model = fixture.CodeModel{};
+
+    var view = try CodeInterpreter.init(arena, fixture.code_markup_source);
+    var interpreted_ui = CodeUi.init(arena);
+    const interpreted = try interpreted_ui.finalize(try view.build(&interpreted_ui, &model));
+    var compiled_ui = CodeUi.init(arena);
+    const compiled = try compiled_ui.finalize(CodeCompiled.build(&compiled_ui, &model));
+    var hand_ui = CodeUi.init(arena);
+    const hand = try hand_ui.finalize(fixture.handCodeView(&hand_ui, &model));
+
+    try expectSameTree(fixture.CodeMsg, hand, interpreted);
+    try expectSameTree(fixture.CodeMsg, hand, compiled);
+    try expectSameTexts(interpreted.root, compiled.root);
+    try testing.expectEqual(canvas.ScrollAxes.horizontal, fixture.findByKind(compiled.root, .scroll_view).?.scroll_axes);
+
+    model.wrap_code = true;
+    model.show_lines = false;
+    var wrapped_ui = CodeUi.init(arena);
+    const wrapped = try wrapped_ui.finalize(CodeCompiled.build(&wrapped_ui, &model));
+    try testing.expect(fixture.findByKind(wrapped.root, .scroll_view) == null);
+    try testing.expect(fixture.findByText(wrapped.root, .text, "1") == null);
+}
+
 // ------------------------------------------- template/use + style parity
 
 fn expectSameStyles(expected: canvas.Widget, actual: canvas.Widget) !void {

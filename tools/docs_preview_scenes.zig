@@ -171,6 +171,7 @@ pub const scenes = [_]Scene{
     .{ .name = "resizable", .height = 240, .build = stateless(buildResizable) },
     .{ .name = "skeleton", .height = 200, .build = stateless(buildSkeleton) },
     .{ .name = "spinner", .height = 140, .build = stateless(buildSpinner) },
+    .{ .name = "code", .height = 300, .build = stateless(buildCode) },
     .{ .name = "markdown", .height = 440, .build = stateless(buildMarkdown) },
     .{ .name = "media-surface", .height = 280, .build = stateless(buildMediaSurface) },
     .{ .name = "video", .height = 300, .build = stateless(buildVideo) },
@@ -198,6 +199,7 @@ pub const scenes = [_]Scene{
     heroScene("chart-hero", buildChartHero),
     heroScene("checkbox-hero", buildCheckboxHero),
     heroScene("combobox-hero", buildComboboxHero),
+    heroScene("code-hero", buildCodeHero),
     heroScene("dialog-hero", buildDialogHero),
     heroScene("drawer-hero", buildDrawerHero),
     heroScene("dropdown-menu-hero", buildDropdownMenuHero),
@@ -1056,6 +1058,28 @@ const markdown_sample =
     \\```
 ;
 
+const code_sample =
+    \\<Accordion defaultValue={["item-1"]}>
+    \\  <AccordionItem value="item-1">
+    \\    <AccordionTrigger>Is it accessible?</AccordionTrigger>
+    \\    <AccordionContent>
+    \\      Yes. It follows the WAI-ARIA design pattern.
+    \\    </AccordionContent>
+    \\  </AccordionItem>
+    \\</Accordion>
+;
+
+fn buildCode(ui: *Ui) Node {
+    return tileStart(ui, .{
+        ui.code(.{
+            .language = .html,
+            .line_numbers = true,
+            .wrap = false,
+            .width = 496,
+        }, code_sample),
+    });
+}
+
 fn buildMarkdown(ui: *Ui) Node {
     return tileStart(ui, .{
         Md.view(ui, markdown_sample, .{}),
@@ -1390,6 +1414,22 @@ const markdown_hero_sample =
     \\`inline code`, and [links](https://native-sdk.dev) — through
     \\native widgets.
 ;
+
+fn buildCodeHero(ui: *Ui) Node {
+    return heroTileStart(ui, .{
+        ui.code(.{
+            .language = .html,
+            .line_numbers = true,
+            .wrap = false,
+            .width = 320,
+        },
+            \\<Button variant="primary"
+            \\  onPress={() => save()}>
+            \\  Save changes
+            \\</Button>
+        ),
+    });
+}
 
 fn buildMarkdownHero(ui: *Ui) Node {
     return heroTileStart(ui, .{

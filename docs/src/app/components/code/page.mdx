@@ -1,0 +1,47 @@
+import { ComponentPreview } from "@/components/component-preview";
+import { AttrTable } from "@/components/attr-table";
+
+# Code
+
+Presents source text in a themed monospace surface with deterministic syntax highlighting. Code wraps by default. Set `wrap="false"` to preserve logical lines inside one horizontal scroll region, and opt into logical line numbers with `line-numbers`.
+
+HTML-family highlighting understands HTML, XML, SVG, JSX, and TSX structure: element or component tags, attributes, strings, comments, numbers, and JavaScript/TypeScript expressions receive distinct theme-token colors.
+
+<ComponentPreview name="code" alt="A JSX code sample with syntax highlighting and line numbers" caption="JSX tags, attributes, strings, expressions, and an unwrapped horizontal viewport" />
+
+## Markup
+
+```html
+<code
+  source="{component_source}"
+  language="tsx"
+  line-numbers
+  wrap="false"
+  width="480"
+  label="Accordion example"
+/>
+```
+
+`source` is required and must be one `{binding}` producing text. `language` is a literal lexer name; unknown names are validation errors. Line numbers are off by default. Numbered presentation is bounded to 256 logical lines; longer sources keep all code and omit the gutter.
+
+## Programmatic construction (Zig)
+
+```zig
+ui.code(.{
+    .language = .html,
+    .line_numbers = true,
+    .wrap = false,
+    .width = 480,
+    .semantics = .{ .label = "Accordion example" },
+}, model.component_source)
+```
+
+The public lexer model is `native_sdk.canvas.code`. `languageFromName` resolves markup spellings, `languageFromFence` reads a Markdown info string, and `highlight` produces the same bounded, theme-colored span runs both renderers use.
+
+## Languages
+
+Zig; JavaScript and TypeScript; JSX and TSX; JSON; shell; Python; Rust; C, C++, C#, Java, Kotlin, and Swift; Go; HTML, XML, and SVG; CSS, SCSS, and Less; and SQL. An omitted language renders plain monospace.
+
+## Attributes
+
+<AttrTable element="code" attrs={["source", "language", "line-numbers", "wrap", "width", "height", "min-width", "grow", "key", "global-key", "label"]} />

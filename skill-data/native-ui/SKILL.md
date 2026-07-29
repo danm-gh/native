@@ -182,6 +182,7 @@ Automation drives the native path honestly: snapshots list every widget's declar
 | `icon` | vector icon leaf | `name` picks the icon: a bare literal is a curated built-in stroke icon (compile-checked; 49 names: search, plus, x, x-circle, check, check-circle, chevron-up/down/left/right, arrow-up/down/right, menu, panel-left, panel-right, settings, terminal, wrench, trash, edit, copy, external-link, play, pause, skip-back/forward, shuffle, repeat, music, volume, info, alert, download, save, folder, folder-open, file-text, sun, moon, eye, clock, git-pull-request, git-merge, git-branch, circle-dot, archive, refresh-cw, send); `app:<name>` reaches an icon the app registered at boot with `canvas.icons.registerAppIcons` (declare the table as `pub const app_icons` on the app root so `native check` verifies the name against the model contract), and one `{binding}` defers the choice to model data - an unknown resolved name draws the missing-icon fallback (a slashed circle) with a Debug warning naming the value, never a silent gap; tint with `foreground`, size with `width`/`height` |
 | `media-surface` | media surface leaf | composites a texture produced OUTSIDE the widget tree (video decoder, camera, an external renderer like mpv) into the layout like any widget — clipped, z-ordered, rounded. `surface="{binding}"` (required) binds the model-owned u64 surface id a Zig-tier producer targets (`runtime.acquireMediaSurfaceProducer` pushes RGBA8 frames, latest-wins, paced by the presented-frame clock; 0 = unbound, draws nothing; usable ids are nonzero values below the reserved bit 63). No intrinsic size — give it `width`/`height` or `grow`; display-only (presses fall through); `label` it (pictorial content). Texture contents are presentation chrome: goldens, reference screenshots, and session replay show the deterministic id-derived placeholder, never producer frames |
 | `image` | runtime image leaf | draws a RUNTIME-REGISTERED image by its model-owned u64 ImageId — the id `Cmd.imageLoad` (TS) or `fx.loadImage`/`fx.registerImageBytes` (Zig) registered pixels under. `image="{binding}"` (required) binds a model field/fn; ids are model data, never markup literals, and 0 draws nothing (store the id only when the load reports loaded — see the Images section). No intrinsic size — give it `width`/`height` or `grow`; display-only (presses fall through); `label` it (pictorial content) |
+| `code` | highlighted source surface | `source="{binding}"` (required) provides source text and `language="tsx"` selects a literal lexer name; wraps by default, `line-numbers` opts into logical line numbers, and `wrap="false"` preserves lines inside one horizontal scroll region. HTML-family highlighting distinguishes HTML/XML/SVG and JSX/TSX tags, attributes, strings, comments, and embedded expressions. Zig builder: `ui.code(CodeOptions, source)` |
 | `markdown` | rendered markdown subtree | leaf; `source` is one `{binding}` — see "Markdown in markup" |
 | `stepper` > `step` | composite stage track | `active="{index}"` (required) derives each step's completed/active/pending state; steps are text leaves (no attributes) joined by connectors; stepper also takes `key`, `global-key`, `label` |
 | `timeline` > `timeline-item` | composite ledger list | items only inside a timeline (for/if fine); items are leaves — `title` (required), `description`, `meta`, `indicator`, `variant`, `connector="false"` on the last item, `selected`; `on-press` makes the whole item pressable with a trailing chevron |
@@ -967,6 +968,20 @@ Rules and semantics:
 
 Both engines implement templates, defaults, slots, and imports: the interpreter expands at build time (hot reload re-resolves imports from disk, so edits to imported files reload), and the compiled engine inlines at comptime with the identical result. A document with imports compiles through `canvas.CompiledMarkupImports(Model, Msg, "root.native", &sources)` where `sources` is a `canvas.ui_markup.SourceFile` set (`.{ .path = "components/cards.native", .source = @embedFile("components/cards.native") }`, paths relative to the root file's directory); pass the same set on `MarkupOptions.sources` for the runtime engine. See `examples/kanban/src/board.native` + `examples/kanban/src/components/board-column.native`.
 
+## Code in markup: `<code>`
+
+A source-bound highlighted surface shared with Markdown fences:
+
+```html
+<code source="{snippet}" language="tsx" line-numbers wrap="false" width="480" label="Component source" />
+```
+
+- `source` is one required `{binding}` producing `[]const u8`; the element has no children.
+- `language` is a literal lexer name: Zig, JS/TS, JSX/TSX, JSON, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, or SQL. Omit it for plain monospace.
+- Wrapping is on by default. `wrap="false"` keeps logical lines intact inside one horizontal scroll region.
+- `line-numbers` is off by default. Wrapped logical lines stay paired with their number. Numbered mode is bounded to 256 logical lines; longer sources preserve all code and omit the gutter.
+- Zig builder: `ui.code(.{ .language = .html, .line_numbers = true, .wrap = false }, model.snippet)`. The public lexer helpers are under `native_sdk.canvas.code`.
+
 ## Markdown in markup: `<markdown>`
 
 A leaf element that renders a markdown string (the GFM subset below) as ordinary widgets, wiring `native_sdk.markdown` for you — both engines implement it identically:
@@ -1080,7 +1095,7 @@ Md.view(ui, model.body_markdown, .{
 })
 ```
 
-- Supported: `#`–`###` headings, paragraphs with `**bold**`/`*italic*`/`` `code` ``/`~~strike~~`/`[links](url)`, bare `http(s)://` URLs (autolink, trailing punctuation trimmed), `#123` issue refs (opt-in: set `Options.issue_link_base` and the ref links to base ++ number), bullet + ordered + task lists (task checkboxes are display-only, disabled), fenced code blocks, `> blockquotes`, `---` rules, GFM pipe tables (header bold, `:---`/`:--:`/`---:` column alignment, inline spans + clickable links inside cells, `\|` escapes a pipe in a cell; columns share width equally, and a missing/mismatched delimiter row degrades the block to paragraphs), `<details><summary>`.
+- Supported: `#`–`###` headings, paragraphs with `**bold**`/`*italic*`/`` `code` ``/`~~strike~~`/`[links](url)`, bare `http(s)://` URLs (autolink, trailing punctuation trimmed), `#123` issue refs (opt-in: set `Options.issue_link_base` and the ref links to base ++ number), bullet + ordered + task lists (task checkboxes are display-only, disabled), fenced code blocks (source indentation preserved; they lower through `ui.code` with wrapping on and line numbers off; recognized Zig, JS/TS, JSX/TSX, JSON, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, and SQL info strings get theme-token syntax highlighting; unknown tags stay plain mono), `> blockquotes`, `---` rules, GFM pipe tables (header bold, `:---`/`:--:`/`---:` column alignment, inline spans + clickable links inside cells, `\|` escapes a pipe in a cell; columns share width equally, and a missing/mismatched delimiter row degrades the block to paragraphs), `<details><summary>`.
 - Not in v1 (degrades to plain text, never fails): reference links, raw HTML, footnotes, backslash escapes (except `\|` in table rows).
 - `<details>` state is elm-style: the CALLER owns the expanded flags. Keep a bounded `details_expanded: [8]bool` in the model, toggle it in `update` on the details message, and pass the slice back in.
 

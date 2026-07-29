@@ -3,7 +3,7 @@ import { AttrTable } from "@/components/attr-table";
 
 # Markdown
 
-Renders a markdown string (a GFM subset, pipe tables included) as native widgets through the same text pipeline as every other component — deterministic layout, selectable text. `source` is required and must be one `{binding}`; the element takes no children. Links dispatch `on-link` with the URL as payload (bare URLs autolink), `<details>` blocks toggle through `on-details` plus a model-owned `details-expanded` flag list, and `#123` references linkify through `issue-link-base`.
+Renders a markdown string (a GFM subset, pipe tables included) as native widgets through the same text pipeline as every other component — deterministic layout, selectable text. `source` is required and must be one `{binding}`; the element takes no children. Links dispatch `on-link` with the URL as payload (bare URLs autolink), `<details>` blocks toggle through `on-details` plus a model-owned `details-expanded` flag list, and `#123` references linkify through `issue-link-base`. Fenced blocks lower through the reusable [Code](/components/code) component, so indentation and syntax behavior stay identical.
 
 <ComponentPreview name="markdown" alt="A markdown document rendered by the engine" caption="headings, emphasis, inline code, lists, links, and a code block" />
 

@@ -1926,6 +1926,91 @@ test "markdown misuse is caught by the model-agnostic validator with positions" 
     try testing.expectEqual(@as(?canvas.ui_markup.MarkupErrorInfo, null), canvas.ui_markup.validate(try parser.parse()));
 }
 
+// ------------------------------------------------------- code component
+
+pub const CodeMsg = union(enum) { noop };
+
+pub const CodeModel = struct {
+    snippet: []const u8 =
+        \\<Accordion defaultValue={["item-1"]}>
+        \\  <AccordionTrigger>Accessible?</AccordionTrigger>
+        \\</Accordion>
+    ,
+    show_lines: bool = true,
+    wrap_code: bool = false,
+    count: usize = 3,
+};
+
+pub const code_markup_source =
+    \\<code source="{snippet}" language="tsx" line-numbers="{show_lines}" wrap="{wrap_code}" width="240" label="Example code" />
+;
+
+pub const CodeUi = canvas.Ui(CodeMsg);
+
+pub fn handCodeView(ui: *CodeUi, model: *const CodeModel) CodeUi.Node {
+    return ui.code(.{
+        .language = .html,
+        .line_numbers = model.show_lines,
+        .wrap = model.wrap_code,
+        .width = 240,
+        .semantics = .{ .label = "Example code" },
+    }, model.snippet);
+}
+
+test "code markup builds the reusable component with opt-in numbers and horizontal scrolling" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const model = CodeModel{};
+    const CodeMarkup = markup_view.MarkupView(CodeModel, CodeMsg);
+
+    var view = try CodeMarkup.init(arena, code_markup_source);
+    var markup_ui = CodeUi.init(arena);
+    const markup_tree = try markup_ui.finalize(try view.build(&markup_ui, &model));
+    var hand_ui = CodeUi.init(arena);
+    const hand_tree = try hand_ui.finalize(handCodeView(&hand_ui, &model));
+
+    var markup_ids: std.ArrayListUnmanaged(canvas.ObjectId) = .empty;
+    defer markup_ids.deinit(testing.allocator);
+    var hand_ids: std.ArrayListUnmanaged(canvas.ObjectId) = .empty;
+    defer hand_ids.deinit(testing.allocator);
+    try collectIds(markup_tree.root, &markup_ids, testing.allocator);
+    try collectIds(hand_tree.root, &hand_ids, testing.allocator);
+    try testing.expectEqualSlices(canvas.ObjectId, hand_ids.items, markup_ids.items);
+    try testing.expectEqual(canvas.ScrollAxes.horizontal, findByKind(markup_tree.root, .scroll_view).?.scroll_axes);
+    try testing.expect(findByText(markup_tree.root, .text, "1") != null);
+    try testing.expect(findByText(markup_tree.root, .text, "3") != null);
+    try testing.expectEqualStrings("Example code", markup_tree.root.semantics.label);
+}
+
+test "code markup misuse reports the component's closed contract" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const model = CodeModel{};
+    const CodeMarkup = markup_view.MarkupView(CodeModel, CodeMsg);
+    const cases = [_]struct { source: []const u8, message: []const u8, model_agnostic: bool = true }{
+        .{ .source = "<code language=\"zig\" />", .message = canvas.ui_markup.code_source_message },
+        .{ .source = "<code source=\"literal\" />", .message = canvas.ui_markup.code_source_message },
+        .{ .source = "<code source=\"{count}\" />", .message = canvas.ui_markup.code_source_message, .model_agnostic = false },
+        .{ .source = "<code source=\"{snippet}\" language=\"brainwave\" />", .message = canvas.ui_markup.code_language_message },
+        .{ .source = "<code source=\"{snippet}\" padding=\"8\" />", .message = canvas.ui_markup.code_attr_message },
+        .{ .source = "<code source=\"{snippet}\">text</code>", .message = canvas.ui_markup.code_children_message },
+    };
+    for (cases) |case| {
+        var view = try CodeMarkup.init(arena, case.source);
+        var ui = CodeUi.init(arena);
+        try testing.expectError(error.MarkupBuild, view.build(&ui, &model));
+        try testing.expectEqualStrings(case.message, view.diagnostic.message);
+
+        if (case.model_agnostic) {
+            var parser = canvas.ui_markup.Parser.init(arena, case.source);
+            const info = canvas.ui_markup.validate(try parser.parse()) orelse return error.TestUnexpectedResult;
+            try testing.expectEqualStrings(case.message, info.message);
+        }
+    }
+}
+
 // -------------------------------------------------- component catalog fixture
 
 pub const CatalogRow = struct {

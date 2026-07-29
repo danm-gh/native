@@ -315,6 +315,8 @@ pub const Server = struct {
                     // else takes no attributes
                 } else if (std.mem.eql(u8, element_name, "markdown")) {
                     for (markdown_attr_docs) |doc| try writeCompletionItem(&js, doc.name, .property, "markdown attribute", doc.doc);
+                } else if (std.mem.eql(u8, element_name, "code")) {
+                    for (code_attr_docs) |doc| try writeCompletionItem(&js, doc.name, .property, "code attribute", doc.doc);
                 } else if (std.mem.eql(u8, element_name, "stepper")) {
                     for (stepper_attr_docs) |doc| try writeCompletionItem(&js, doc.name, .property, "stepper attribute", doc.doc);
                 } else if (std.mem.eql(u8, element_name, "step")) {
@@ -646,6 +648,7 @@ pub const template_attr_docs = markup_docs.template_attr_docs;
 pub const for_attr_docs = markup_docs.for_attr_docs;
 pub const if_attr_docs = markup_docs.if_attr_docs;
 pub const markdown_attr_docs = markup_docs.markdown_attr_docs;
+pub const code_attr_docs = markup_docs.code_attr_docs;
 pub const stepper_attr_docs = markup_docs.stepper_attr_docs;
 pub const timeline_attr_docs = markup_docs.timeline_attr_docs;
 pub const timeline_item_attr_docs = markup_docs.timeline_item_attr_docs;

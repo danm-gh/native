@@ -1,0 +1,1 @@
+fix: **Polished Markdown lists and code blocks**: bullet and ordered-list markers now align with the first content line, while fenced code preserves source indentation and applies theme-aware highlighting with richer HTML/JSX tags and attributes.

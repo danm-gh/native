@@ -263,6 +263,9 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
             if (comptime std.mem.eql(u8, node.name, "markdown")) {
                 return buildMarkdown(node, entries, ui, model, scope);
             }
+            if (comptime std.mem.eql(u8, node.name, "code")) {
+                return buildCode(node, entries, ui, model, scope);
+            }
             if (comptime std.mem.eql(u8, node.name, "stepper")) {
                 return buildStepper(node, entries, ui, model, scope);
             }
@@ -774,6 +777,79 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
                 if (base.len > 0) options.issue_link_base = base;
             }
             return Md.view(ui, source_text, options);
+        }
+
+        // ----------------------------------------------------------- code
+
+        fn buildCode(comptime node: markup.MarkupNode, comptime entries: []const ScopeEntry, ui: *Ui, model: *const ModelT, scope: anytype) Ui.Node {
+            comptime {
+                if (node.children.len != 0) fail(node.children[0], markup.code_children_message);
+                for (node.attrs) |attribute| {
+                    if (std.mem.eql(u8, attribute.name, "kind")) continue;
+                    const known = std.mem.eql(u8, attribute.name, "source") or
+                        std.mem.eql(u8, attribute.name, "language") or
+                        std.mem.eql(u8, attribute.name, "line-numbers") or
+                        std.mem.eql(u8, attribute.name, "wrap") or
+                        std.mem.eql(u8, attribute.name, "width") or
+                        std.mem.eql(u8, attribute.name, "height") or
+                        std.mem.eql(u8, attribute.name, "min-width") or
+                        std.mem.eql(u8, attribute.name, "grow") or
+                        std.mem.eql(u8, attribute.name, "label") or
+                        std.mem.eql(u8, attribute.name, "key") or
+                        std.mem.eql(u8, attribute.name, "global-key");
+                    if (!known) fail(node, markup.code_attr_message);
+                }
+            }
+            const source_path = comptime blk: {
+                const raw = node.attr("source") orelse fail(node, markup.code_source_message);
+                const expression = markup.parseAttrExpression(raw) orelse fail(node, markup.code_source_message);
+                if (expression != .binding) fail(node, markup.code_source_message);
+                break :blk expression.binding;
+            };
+            comptime requireVariant(pathVariant(node, entries, source_path, true), &.{.string}, node, markup.code_source_message);
+            const source = switch (bindingValue(node, entries, source_path, ui, model, scope, true)) {
+                .string => |text| text,
+                else => runtimeFail([]const u8, ui),
+            };
+
+            var options: Ui.CodeOptions = .{};
+            if (comptime (node.attr("language") != null)) {
+                const name = comptime blk: {
+                    const expression = markup.parseAttrExpression(node.attr("language").?) orelse fail(node, markup.code_language_message);
+                    if (expression != .literal) fail(node, markup.code_language_message);
+                    if (!canvas.code.isLanguageName(expression.literal)) fail(node, markup.code_language_message);
+                    break :blk expression.literal;
+                };
+                options.language = canvas.code.languageFromName(name);
+            }
+            if (comptime (node.attr("line-numbers") != null)) {
+                options.line_numbers = videoFlagValue(node, entries, comptime node.attr("line-numbers").?, ui, model, scope);
+            }
+            if (comptime (node.attr("wrap") != null)) {
+                options.wrap = videoFlagValue(node, entries, comptime node.attr("wrap").?, ui, model, scope);
+            }
+            if (comptime (node.attr("width") != null)) {
+                options.width = floatAttr(node, entries, comptime node.attr("width").?, ui, model, scope);
+            }
+            if (comptime (node.attr("height") != null)) {
+                options.height = floatAttr(node, entries, comptime node.attr("height").?, ui, model, scope);
+            }
+            if (comptime (node.attr("min-width") != null)) {
+                options.min_width = floatAttr(node, entries, comptime node.attr("min-width").?, ui, model, scope);
+            }
+            if (comptime (node.attr("grow") != null)) {
+                options.grow = floatAttr(node, entries, comptime node.attr("grow").?, ui, model, scope);
+            }
+            if (comptime (node.attr("label") != null)) {
+                options.semantics.label = stringAttr(node, entries, comptime node.attr("label").?, ui, model, scope, "label expects text");
+            }
+            if (comptime (node.attr("key") != null)) {
+                options.key = attrKey(node, entries, comptime node.attr("key").?, ui, model, scope, "keys must be integers or strings");
+            }
+            if (comptime (node.attr("global-key") != null)) {
+                options.global_key = attrKey(node, entries, comptime node.attr("global-key").?, ui, model, scope, "keys must be integers or strings");
+            }
+            return ui.code(options, source);
         }
 
         fn markdownLinkConstructor(comptime node: markup.MarkupNode, comptime raw: []const u8) Ui.LinkMsgFn {

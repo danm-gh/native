@@ -1185,6 +1185,7 @@ const Checker = struct {
     fn checkElement(self: *Checker, node: markup.MarkupNode) CheckErr!void {
         if (std.mem.eql(u8, node.name, "span")) return self.checkSpan(node);
         if (std.mem.eql(u8, node.name, "markdown")) return self.checkMarkdown(node);
+        if (std.mem.eql(u8, node.name, "code")) return self.checkCode(node);
         if (std.mem.eql(u8, node.name, "stepper")) return self.checkStepper(node);
         if (std.mem.eql(u8, node.name, "timeline-item")) return self.checkTimelineItem(node);
         if (std.mem.eql(u8, node.name, "chart")) return self.checkChart(node);
@@ -1334,6 +1335,39 @@ const Checker = struct {
             if (std.mem.eql(u8, attribute.name, "issue-link-base")) {
                 const kind = try self.attrKind(node, attribute, attribute.value);
                 try self.requireAttrKind(node, attribute, kind, &.{.string}, markup.markdown_issue_link_base_message);
+            }
+        }
+    }
+
+    fn checkCode(self: *Checker, node: markup.MarkupNode) CheckErr!void {
+        for (node.attrs) |attribute| {
+            if (std.mem.eql(u8, attribute.name, "source")) {
+                const expression = markup.parseAttrExpression(attribute.value) orelse continue;
+                if (expression != .binding) continue;
+                const resolved = try self.resolveBinding(node, expression.binding, true);
+                try self.requireAttrKind(node, attribute, resolved.kind, &.{.string}, markup.code_source_message);
+                continue;
+            }
+            if (std.mem.eql(u8, attribute.name, "line-numbers") or std.mem.eql(u8, attribute.name, "wrap")) {
+                if (attribute.value.len == 0) continue;
+                _ = try self.attrKind(node, attribute, attribute.value);
+                continue;
+            }
+            if (std.mem.eql(u8, attribute.name, "width") or
+                std.mem.eql(u8, attribute.name, "height") or
+                std.mem.eql(u8, attribute.name, "min-width") or
+                std.mem.eql(u8, attribute.name, "grow"))
+            {
+                try self.checkClassAttr(node, attribute, .number);
+                continue;
+            }
+            if (std.mem.eql(u8, attribute.name, "key") or std.mem.eql(u8, attribute.name, "global-key")) {
+                try self.checkKeyAttr(node, attribute);
+                continue;
+            }
+            if (std.mem.eql(u8, attribute.name, "label")) {
+                const kind = try self.attrKind(node, attribute, attribute.value);
+                try self.requireAttrKind(node, attribute, kind, &.{.string}, label_attr_message);
             }
         }
     }

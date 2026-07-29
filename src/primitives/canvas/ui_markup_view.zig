@@ -213,6 +213,9 @@ pub fn MarkupView(comptime ModelT: type, comptime MsgT: type) type {
             if (std.mem.eql(u8, node.name, "markdown")) {
                 return self.buildMarkdown(ui, scope, node);
             }
+            if (std.mem.eql(u8, node.name, "code")) {
+                return self.buildCode(ui, scope, node);
+            }
             if (std.mem.eql(u8, node.name, "stepper")) {
                 return self.buildStepper(ui, scope, node);
             }
@@ -796,6 +799,76 @@ pub fn MarkupView(comptime ModelT: type, comptime MsgT: type) type {
             }
             const source_value = source_text orelse return self.failNode(node, markup.markdown_source_message);
             return Md.view(ui, source_value, options);
+        }
+
+        // ----------------------------------------------------------- code
+
+        fn buildCode(self: *Self, ui: *Ui, scope: *Scope, node: markup.MarkupNode) BuildError!Ui.Node {
+            if (node.children.len != 0) return self.failNode(node.children[0], markup.code_children_message);
+            var options: Ui.CodeOptions = .{};
+            var source_text: ?[]const u8 = null;
+            for (node.attrs) |attribute| {
+                if (std.mem.eql(u8, attribute.name, "kind")) continue;
+                if (std.mem.eql(u8, attribute.name, "source")) {
+                    const typed = markup.attrTyped(attribute);
+                    if (typed != .binding) return self.failNode(node, markup.code_source_message);
+                    source_text = switch (try self.evalBinding(scope, node, typed.binding, true)) {
+                        .string => |text| text,
+                        else => return self.failNode(node, markup.code_source_message),
+                    };
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "language")) {
+                    const typed = markup.attrTyped(attribute);
+                    if (typed != .literal) return self.failNode(node, markup.code_language_message);
+                    if (!canvas.code.isLanguageName(typed.literal)) return self.failNode(node, markup.code_language_message);
+                    options.language = canvas.code.languageFromName(typed.literal);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "line-numbers")) {
+                    options.line_numbers = try self.codeFlagAttr(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "wrap")) {
+                    options.wrap = try self.codeFlagAttr(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "width")) {
+                    options.width = try self.floatAttr(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "height")) {
+                    options.height = try self.floatAttr(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "min-width")) {
+                    options.min_width = try self.floatAttr(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "grow")) {
+                    options.grow = try self.floatAttr(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "key")) {
+                    options.key = try self.attrKey(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "global-key")) {
+                    options.global_key = try self.attrKey(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "label")) {
+                    options.semantics.label = try self.stringAttr(scope, node, attribute, "label expects text");
+                    continue;
+                }
+                return self.failNode(node, markup.code_attr_message);
+            }
+            return ui.code(options, source_text orelse return self.failNode(node, markup.code_source_message));
+        }
+
+        fn codeFlagAttr(self: *Self, scope: *Scope, node: markup.MarkupNode, attribute: markup.MarkupAttr) BuildError!bool {
+            if (attribute.value.len == 0) return true;
+            return (try self.evalAttrExpression(scope, node, attribute)).truthy();
         }
 
         // ------------------------------------------------ stepper/timeline

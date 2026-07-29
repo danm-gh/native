@@ -213,6 +213,10 @@
       "doc": "Vector icon leaf: name selects a curated built-in stroke icon (comptime-validated), an app-registered app:<name> (canvas.icons.registerAppIcons; native check verifies the name against the model contract), or one {binding} resolving to such a name. Tint via foreground, size with width/height or size."
     },
     {
+      "name": "code",
+      "doc": "Highlighted source-code surface. source is one required text {binding}; language is a literal lexer name. Wraps by default, line-numbers opts into logical line numbers, and wrap=\"false\" keeps lines intact inside one horizontal scroll region."
+    },
+    {
       "name": "markdown",
       "doc": "Renders a markdown string (GFM subset, pipe tables included) as widgets; source is one {binding}, links dispatch on-link (bare URLs autolink), <details> blocks toggle via on-details + details-expanded, #123 refs linkify via issue-link-base."
     },
@@ -271,6 +275,10 @@
     {
       "name": "video",
       "doc": "The video leaf: plays the app's single platform-decoded video into the framework-owned media-surface (macOS decodes with AVFoundation; hosts without a decoder deliver one explicit failed event). src declares the source — an app-assets path or an http(s) URL, resolved local-first exactly like audio; autoplay (default true), loop, and muted shape the fresh playback; controls composes the house transport chrome (play/pause, scrub bar, time readout) under the picture, and without it the element is the surface alone — compose your own controls from the video command vocabulary. Until a decoded frame arrives (and in every golden, screenshot, and replay) the surface shows its deterministic placeholder: pixels are presentation chrome, transport is the journaled truth. Size it with width/height or grow (no intrinsic size); label it for screen readers."
+    },
+    {
+      "name": "terminal",
+      "doc": "The terminal leaf: renders the framework-owned emulator session behind a model-owned pty effect key — the grid as real text with geometric box drawing, a theme-derived ANSI palette, selection, cursor, and scrollback — and routes keys, IME text, and wheel scrollback to it when focused. pty is one {binding} to the u64 key the app's ptySpawn named (required; keys are model data, never markup literals; 0 renders the empty surface); scrollback echoes the app-visible offset back under the scroll value source-wins rule, and on-terminal delivers the post-change view state. The grid derives its cols/rows from the frame the layout resolves (the runtime pushes them to the pty), so size it like a leaf: grow or a definite width/height. An interactive control: give it a label."
     }
   ],
   "structure": [
@@ -527,6 +535,10 @@
       "doc": "split element only: names a Msg variant with f32 payload; delivers the applied first-pane fraction after every divider drag, keyboard adjustment, and assistive increment/decrement. Echo it back into value - the delivered fraction never fights the reconcile."
     },
     {
+      "name": "on-terminal",
+      "doc": "terminal element only: names a bare Msg variant with canvas.TerminalState payload; delivers the post-change view state (scrollback, history, cols, rows) after every runtime-applied change - wheel and keyboard scrollback, and the layout-derived grid resize. Echo scrollback back into the attribute - the delivered state never fights the reconcile."
+    },
+    {
       "name": "on-reach-end",
       "doc": "scroll element only: Msg (tag or tag:{payload}) dispatched when a user scroll comes within one viewport of the content end - the infinite-scroll fetch signal. Fires once per approach with hysteresis: it re-arms only after the offset retreats past 1.5 viewports, which appending a batch causes on its own by growing the extent."
     },
@@ -560,6 +572,52 @@
       {
         "name": "issue-link-base",
         "doc": "markdown: literal URL prefix or one {binding}; '#123' refs become links to base ++ number (ghissue:// or https://github.com/owner/repo/issues/)."
+      }
+    ],
+    "code": [
+      {
+        "name": "source",
+        "doc": "code: one required {binding} producing source text (a []const u8 field or fn; arena fns work)."
+      },
+      {
+        "name": "language",
+        "doc": "code: literal lexer name. Supports Zig, JavaScript/TypeScript, JSX/TSX, JSON, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, and SQL; unknown names are a validation error."
+      },
+      {
+        "name": "line-numbers",
+        "doc": "code: opt into muted logical line numbers. Off by default; a wrapped logical line stays paired with its number."
+      },
+      {
+        "name": "wrap",
+        "doc": "code: true by default. false preserves logical lines and puts the highlighted content in one horizontal scroll region."
+      },
+      {
+        "name": "width",
+        "doc": "Definite width (plain number)."
+      },
+      {
+        "name": "height",
+        "doc": "Definite height (plain number)."
+      },
+      {
+        "name": "min-width",
+        "doc": "Width floor without a definite maximum."
+      },
+      {
+        "name": "grow",
+        "doc": "Flex grow factor."
+      },
+      {
+        "name": "key",
+        "doc": "Sibling-scoped identity key."
+      },
+      {
+        "name": "global-key",
+        "doc": "Parent-independent identity: ids survive reparenting between containers."
+      },
+      {
+        "name": "label",
+        "doc": "Accessible name for the code group."
       }
     ],
     "stepper": [
@@ -662,6 +720,14 @@
       {
         "name": "surface",
         "doc": "media-surface: one {binding} to the model-owned u64 surface id a Zig-tier producer targets (runtime.acquireMediaSurfaceProducer). Required; surface ids are model data, never markup literals; 0 leaves the surface unbound and it draws nothing, and usable ids are nonzero values below bit 63 — the reserved media-surface texture namespace, which the producer acquire refuses."
+      },
+      {
+        "name": "pty",
+        "doc": "terminal: one {binding} to the model-owned u64 pty effect key whose session the terminal renders (the key ptySpawn named). Required; pty keys are model data, never markup literals; 0 leaves the terminal unbound and it renders the empty surface."
+      },
+      {
+        "name": "scrollback",
+        "doc": "terminal only: the scrollback offset in rows above the live screen (0 is pinned to the bottom). Follows the scroll value source-wins reconcile rule - echo on-terminal's scrollback back to keep user scrollback across rebuilds; move it model-side to scroll programmatically."
       }
     ],
     "video": [
@@ -1114,6 +1180,10 @@
       "width": 1120,
       "height": 280
     },
+    "code": {
+      "width": 1120,
+      "height": 600
+    },
     "markdown": {
       "width": 1120,
       "height": 880
@@ -1199,6 +1269,10 @@
       "height": 396
     },
     "combobox-hero": {
+      "width": 704,
+      "height": 396
+    },
+    "code-hero": {
       "width": 704,
       "height": 396
     },

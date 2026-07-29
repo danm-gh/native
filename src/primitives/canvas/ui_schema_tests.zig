@@ -21,15 +21,15 @@ test "registry codes are stable: assigned at birth, never renumbered or renamed"
     // (append or slot them anywhere — order carries no meaning) and pin
     // the new fingerprint ONLY for additions; renames/renumbers are
     // schema-version-bump events, not silent edits.
-    try testing.expectEqual(@as(usize, 69), schema.elements.len);
-    try testing.expectEqual(@as(usize, 89), schema.attrs.len);
+    try testing.expectEqual(@as(usize, 70), schema.elements.len);
+    try testing.expectEqual(@as(usize, 91), schema.attrs.len);
     try testing.expectEqual(@as(usize, 13), schema.events.len);
     // The element table runs through the span composite (64), the
     // bubble-reactions composite (65), the media surface (66), the
     // runtime-image leaf (67), the video playback composite (68), and
-    // the terminal leaf (69).
+    // the terminal leaf (69), and the reusable code composite (70).
     try testing.expectEqual(
-        @as(u64, 0x439b5e520bedc352),
+        @as(u64, 0x180108eb2382ba60),
         tableFingerprint(schema.ElementInfo, &schema.elements),
     );
     // The attr table runs through the split layout-tween attributes
@@ -42,9 +42,10 @@ test "registry codes are stable: assigned at birth, never renumbered or renamed"
     // surface (81), the video element attributes controls (82),
     // autoplay (83), loop (84), and muted (85), the scroll-axis
     // attributes axis (86) and value-x (87), and the terminal
-    // attributes pty (88) and scrollback (89).
+    // attributes pty (88) and scrollback (89), and the code language
+    // (90) and line-numbers (91) declarations.
     try testing.expectEqual(
-        @as(u64, 0x60e430e0cf2cc4f9),
+        @as(u64, 0x8c9311ac81d2a800),
         tableFingerprint(schema.AttrInfo, &schema.attrs),
     );
     // The event table runs through the pointer-hover containment pair

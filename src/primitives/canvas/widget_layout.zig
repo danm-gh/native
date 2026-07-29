@@ -103,7 +103,7 @@ pub fn layoutWidgetDepth(
         .scroll_view => if (widget.layout.virtualized)
             try layoutVirtualVerticalChildren(widget.children, content, index, depth, output, len, widget.value, widget.layout, tokens)
         else
-            try layoutScrollChildren(widget.children, content, index, depth, output, len, scrollLayoutOffset(widget), tokens),
+            try layoutScrollChildren(widget.children, content, index, depth, output, len, widget.scroll_axes, scrollLayoutOffset(widget), tokens),
         .list => if (widget.layout.virtualized)
             try layoutVirtualVerticalChildren(widget.children, content, index, depth, output, len, widget.value, widget.layout, tokens)
         else
@@ -1051,13 +1051,19 @@ fn layoutScrollChildren(
     depth: usize,
     output: []WidgetLayoutNode,
     len: *usize,
+    axes: canvas.ScrollAxes,
     scroll_offset: geometry.OffsetF,
     tokens: DesignTokens,
 ) Error!void {
     const scrolled_content = content.translate(geometry.OffsetF.init(-scroll_offset.dx, -scroll_offset.dy));
     for (children) |child| {
         if (child.layout.anchor != null) continue;
-        _ = try layoutWidgetDepth(child, stackChildFrame(scrolled_content, child), parent_index, depth + 1, output, len, tokens);
+        var child_frame = stackChildFrame(scrolled_content, child);
+        const intrinsic = intrinsicChildSize(child, tokens, depth + 1);
+        if (axes == .horizontal and child.frame.width <= 0) {
+            child_frame.width = @max(child_frame.width, intrinsic.width);
+        }
+        _ = try layoutWidgetDepth(child, child_frame, parent_index, depth + 1, output, len, tokens);
     }
 }
 
@@ -1615,8 +1621,11 @@ fn intrinsicWidgetSizeDepth(widget: Widget, tokens: DesignTokens, depth: usize) 
         .dialog, .drawer, .sheet => intrinsicModalSurfaceWidgetSize(widget, tokens, depth),
         // Containers measure their children (matching the stacking axis the
         // layout pass uses), bounded by the widget depth cap. Scroll
-        // viewports and virtualized containers stay zero: their content is
-        // allowed to overflow the space they're given.
+        // viewports and virtualized containers stay zero on each axis they
+        // scroll: their content is allowed to overflow the space they're
+        // given. A horizontal-only viewport still reports its child's
+        // height, so an inline code scroller hugs its rows instead of
+        // collapsing to a zero-height clip.
         .row, .breadcrumb, .button_group, .pagination, .radio_group, .tabs, .toggle_group => intrinsicAxisChildrenSize(widget, tokens, .horizontal, depth),
         .column, .menu_surface, .dropdown_menu, .input_group => intrinsicAxisChildrenSize(widget, tokens, .vertical, depth),
         .list, .data_grid, .table => if (widget.layout.virtualized)
@@ -1640,7 +1649,11 @@ fn intrinsicWidgetSizeDepth(widget: Widget, tokens: DesignTokens, depth: usize) 
         // Terminals join them: the grid derives its cols/rows FROM the
         // space it is given (the runtime resizes the pty to fit), so
         // reporting an intrinsic size would invert the contract.
-        .scroll_view, .image, .split, .media_surface, .terminal => geometry.SizeF.zero(),
+        .scroll_view => if (!widget.layout.virtualized and widget.scroll_axes == .horizontal) blk: {
+            const child_size = intrinsicOverlayChildrenSize(widget, tokens, depth);
+            break :blk geometry.SizeF.init(0, child_size.height);
+        } else geometry.SizeF.zero(),
+        .image, .split, .media_surface, .terminal => geometry.SizeF.zero(),
     };
 }
 

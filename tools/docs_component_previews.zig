@@ -192,6 +192,8 @@ fn writeVocabJson(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
     try js.beginObject();
     try js.objectField("markdown");
     try writeDocList(&js, &markup_docs.markdown_attr_docs);
+    try js.objectField("code");
+    try writeDocList(&js, &markup_docs.code_attr_docs);
     try js.objectField("stepper");
     try writeDocList(&js, &markup_docs.stepper_attr_docs);
     try js.objectField("timeline");

@@ -71,6 +71,7 @@ pub const element_docs = [_]Doc{
     .{ .name = "skeleton", .doc = "Loading placeholder block; size with width and height." },
     .{ .name = "spinner", .doc = "Indeterminate progress spinner leaf." },
     .{ .name = "icon", .doc = "Vector icon leaf: name selects a curated built-in stroke icon (comptime-validated), an app-registered app:<name> (canvas.icons.registerAppIcons; native check verifies the name against the model contract), or one {binding} resolving to such a name. Tint via foreground, size with width/height or size." },
+    .{ .name = "code", .doc = "Highlighted source-code surface. source is one required text {binding}; language is a literal lexer name. Wraps by default, line-numbers opts into logical line numbers, and wrap=\"false\" keeps lines intact inside one horizontal scroll region." },
     .{ .name = "markdown", .doc = "Renders a markdown string (GFM subset, pipe tables included) as widgets; source is one {binding}, links dispatch on-link (bare URLs autolink), <details> blocks toggle via on-details + details-expanded, #123 refs linkify via issue-link-base." },
     .{ .name = "stepper", .doc = "Stage stepper: step children joined by connectors; active names the current step index (earlier steps render completed, later ones pending)." },
     .{ .name = "step", .doc = "One stepper stage; only allowed inside a stepper, the label is the text content (supports {} interpolation), state derives from the stepper's active index." },
@@ -171,6 +172,20 @@ pub const markdown_attr_docs = [_]Doc{
     .{ .name = "on-details", .doc = "markdown: bare Msg tag dispatched on a <details> summary press; its payload is the block index (usize variant)." },
     .{ .name = "details-expanded", .doc = "markdown: {binding} naming a []const bool iterable of expanded flags, in details-block document order." },
     .{ .name = "issue-link-base", .doc = "markdown: literal URL prefix or one {binding}; '#123' refs become links to base ++ number (ghissue:// or https://github.com/owner/repo/issues/)." },
+};
+
+pub const code_attr_docs = [_]Doc{
+    .{ .name = "source", .doc = "code: one required {binding} producing source text (a []const u8 field or fn; arena fns work)." },
+    .{ .name = "language", .doc = "code: literal lexer name. Supports Zig, JavaScript/TypeScript, JSX/TSX, JSON, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, and SQL; unknown names are a validation error." },
+    .{ .name = "line-numbers", .doc = "code: opt into muted logical line numbers. Off by default; a wrapped logical line stays paired with its number." },
+    .{ .name = "wrap", .doc = "code: true by default. false preserves logical lines and puts the highlighted content in one horizontal scroll region." },
+    .{ .name = "width", .doc = "Definite width (plain number)." },
+    .{ .name = "height", .doc = "Definite height (plain number)." },
+    .{ .name = "min-width", .doc = "Width floor without a definite maximum." },
+    .{ .name = "grow", .doc = "Flex grow factor." },
+    .{ .name = "key", .doc = "Sibling-scoped identity key." },
+    .{ .name = "global-key", .doc = "Parent-independent identity: ids survive reparenting between containers." },
+    .{ .name = "label", .doc = "Accessible name for the code group." },
 };
 
 pub const stepper_attr_docs = [_]Doc{
@@ -314,6 +329,7 @@ pub fn attributeDoc(name: []const u8) ?[]const u8 {
     if (findDoc(&for_attr_docs, name)) |doc| return doc;
     if (findDoc(&template_attr_docs, name)) |doc| return doc;
     if (findDoc(&markdown_attr_docs, name)) |doc| return doc;
+    if (findDoc(&code_attr_docs, name)) |doc| return doc;
     if (findDoc(&stepper_attr_docs, name)) |doc| return doc;
     if (findDoc(&timeline_attr_docs, name)) |doc| return doc;
     if (findDoc(&timeline_item_attr_docs, name)) |doc| return doc;

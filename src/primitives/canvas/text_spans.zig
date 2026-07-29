@@ -170,10 +170,12 @@ pub fn textSpanLineHeight(spans: []const TextSpan, options: TextSpanLayoutOption
     return options.size * textSpansMaxScale(spans) * 1.25;
 }
 
-/// Single-line (unwrapped) advance of the whole paragraph: the intrinsic
-/// width seam for widget sizing. Measures per-span with the span's font.
+/// Widest logical-line advance of an unwrapped paragraph: the intrinsic
+/// width seam for widget sizing. Measures per-span with the span's font
+/// while carrying each line across span boundaries.
 pub fn textSpansIntrinsicWidth(spans: []const TextSpan, options: TextSpanLayoutOptions) f32 {
     var width: f32 = 0;
+    var max_width: f32 = 0;
     for (spans, 0..) |span, index| {
         if (index >= max_text_spans_per_paragraph) break;
         var start: usize = 0;
@@ -181,13 +183,15 @@ pub fn textSpansIntrinsicWidth(spans: []const TextSpan, options: TextSpanLayoutO
         while (cursor < span.text.len) {
             if (span.text[cursor] == '\n') {
                 width += measureSpanSlice(span, span.text[start..cursor], options);
+                max_width = @max(max_width, width);
+                width = 0;
                 start = cursor + 1;
             }
             cursor += 1;
         }
         width += measureSpanSlice(span, span.text[start..], options);
     }
-    return width;
+    return @max(max_width, width);
 }
 
 /// Wrapped paragraph height at `max_width`: the vertical-extent seam the
@@ -398,9 +402,12 @@ fn layoutTextSpansUncached(spans: []const TextSpan, options: TextSpanLayoutOptio
         }
         if (isSpanBreakByte(byte)) {
             const end = spanWhitespaceEnd(text, offset);
-            // Whitespace at a fresh line start is consumed by the wrap;
-            // mid-line whitespace is held back until the next word lands.
-            if (state.line_has_content) {
+            // Prose consumes whitespace at a fresh line start, but a
+            // monospace span is preformatted content (markdown fences are
+            // assembled from these) and must keep its source indentation.
+            // In both cases whitespace is held until the next word lands,
+            // so trailing spaces still never widen a rendered line.
+            if (state.line_has_content or spans[span_index].monospace) {
                 const slice = text[offset..end];
                 state.recordPendingWhitespace(span_index, slice, measureSpanSlice(spans[span_index], slice, options));
             }

@@ -77,6 +77,28 @@ test "mono spans measure and draw with the mono font id" {
     try testing.expectApproxEqAbs(@as(f32, 9 * 14 * 0.6), result.runs[1].width, 0.01);
 }
 
+test "mono spans preserve source indentation after line breaks" {
+    const spans = [_]TextSpan{
+        .{ .text = "fn main() {\n    ", .monospace = true },
+        .{ .text = "return", .monospace = true, .color = .info },
+        .{ .text = ";\n}", .monospace = true },
+    };
+    var runs: [text_spans.max_text_span_runs_per_paragraph]TextSpanRun = undefined;
+    const result = layout(&spans, .{ .size = 14, .max_width = 10_000 }, &runs);
+
+    var indent: ?TextSpanRun = null;
+    var keyword: ?TextSpanRun = null;
+    for (result.runs) |run| {
+        if (run.line_index == 1 and std.mem.eql(u8, run.text, "    ")) indent = run;
+        if (run.line_index == 1 and std.mem.eql(u8, run.text, "return")) keyword = run;
+    }
+    try testing.expect(indent != null);
+    try testing.expect(keyword != null);
+    try testing.expectEqual(@as(f32, 0), indent.?.x);
+    try testing.expect(keyword.?.x > 0);
+    try testing.expectApproxEqAbs(indent.?.width, keyword.?.x, 0.01);
+}
+
 const FakeMeasure = struct {
     calls: usize = 0,
     mono_calls: usize = 0,

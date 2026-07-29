@@ -1865,6 +1865,10 @@ pub const markdown_issue_link_base_message = "issue-link-base takes a literal UR
 pub const markdown_on_link_message = "on-link takes a bare Msg tag whose payload is the pressed link URL (a []const u8 variant, like open_url: []const u8)";
 pub const markdown_on_details_message = "on-details takes a bare Msg tag whose payload is the details block index (a usize variant, like toggle_details: usize)";
 pub const markdown_details_expanded_message = "details-expanded takes one {binding} naming a []const bool iterable (a model field, pub decl, or fn - the same sources for each accepts)";
+pub const code_source_message = "code requires a source attribute with one {binding} naming the source text (a []const u8 field or fn - arena fns work)";
+pub const code_children_message = "code takes no children or text content - the source binding provides the code";
+pub const code_attr_message = "unknown attribute for code - it takes source, language, line-numbers, wrap, width, height, min-width, grow, key, global-key, and label";
+pub const code_language_message = "language takes a literal lexer name: plain, zig, javascript/js, typescript/ts, jsx/tsx, json, shell/sh/bash/zsh, python/py, rust/rs, c/cpp/c++/csharp/java/kotlin/swift, go, html/xml/svg, css/scss/less, or sql";
 pub const stepper_active_message = "stepper requires an active attribute (a number or one {binding}) naming the active step index";
 pub const stepper_attr_message = "unknown attribute for stepper - it takes active, key, global-key, and label";
 pub const stepper_children_message = "stepper takes only step children (each step is a text leaf: <step>Work</step>)";
@@ -2212,6 +2216,58 @@ fn validateMarkdown(node: MarkupNode) ?MarkupErrorInfo {
         return attrError(node, attribute, markdown_attr_message);
     }
     if (!has_source) return errorAt(node, markdown_source_message);
+    return null;
+}
+
+fn codeLanguageName(name: []const u8) bool {
+    const names = "plain text zig js javascript jsx ts typescript tsx json jsonc sh bash zsh shell py python rs rust c h cc cpp c++ cs csharp java kotlin swift go golang html xml svg css scss less sql";
+    var known = std.mem.tokenizeScalar(u8, names, ' ');
+    while (known.next()) |candidate| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    }
+    return false;
+}
+
+/// `<code>` is a source-bound leaf lowered through `Ui.code`: syntax
+/// language is static markup, while flags and layout values can bind.
+fn validateCode(node: MarkupNode) ?MarkupErrorInfo {
+    for (node.children) |child| return errorAt(child, code_children_message);
+    var has_source = false;
+    for (node.attrs) |attribute| {
+        if (std.mem.eql(u8, attribute.name, "source")) {
+            has_source = true;
+            const expression = parseAttrExpression(attribute.value);
+            if (expression == null or expression.? != .binding) return attrError(node, attribute, code_source_message);
+            continue;
+        }
+        if (std.mem.eql(u8, attribute.name, "language")) {
+            const expression = parseAttrExpression(attribute.value);
+            if (expression == null or expression.? != .literal or !codeLanguageName(expression.?.literal)) {
+                return attrError(node, attribute, code_language_message);
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, attribute.name, "line-numbers") or std.mem.eql(u8, attribute.name, "wrap")) {
+            if (attribute.value.len == 0) continue;
+            if (attrExpressionError(attribute.value, invalid_expression_message)) |message| {
+                return attrError(node, attribute, message);
+            }
+            continue;
+        }
+        const known = std.mem.eql(u8, attribute.name, "width") or
+            std.mem.eql(u8, attribute.name, "height") or
+            std.mem.eql(u8, attribute.name, "min-width") or
+            std.mem.eql(u8, attribute.name, "grow") or
+            std.mem.eql(u8, attribute.name, "label") or
+            std.mem.eql(u8, attribute.name, "key") or
+            std.mem.eql(u8, attribute.name, "global-key");
+        if (!known) return attrError(node, attribute, code_attr_message);
+        if (attrExpressionError(attribute.value, invalid_expression_message)) |message| {
+            return attrError(node, attribute, message);
+        }
+        if (attrCoverageError(node, attribute)) |info| return info;
+    }
+    if (!has_source) return errorAt(node, code_source_message);
     return null;
 }
 
@@ -2806,7 +2862,7 @@ fn validateVideo(node: MarkupNode) ?MarkupErrorInfo {
 /// The rule hooks the composite registry entries name. A registry entry
 /// whose hook this table does not implement is a compile error (below),
 /// so attachment and implementation can never drift.
-const rule_hook_names = [_][]const u8{ "markdown", "stepper", "step", "timeline", "timeline-item", "chart", "series", "context-menu", "input-group", "input-group-actions", "span", "reactions", "video" };
+const rule_hook_names = [_][]const u8{ "markdown", "code", "stepper", "step", "timeline", "timeline-item", "chart", "series", "context-menu", "input-group", "input-group-actions", "span", "reactions", "video" };
 
 comptime {
     for (schema.elements) |entry| {
@@ -2826,6 +2882,7 @@ comptime {
 /// a worse inner language than plain Zig.
 fn validateRuleHook(hook: []const u8, document: MarkupDocument, node: MarkupNode, parent_element: ?[]const u8, template_limit: usize, slot_rule: SlotRule) ?MarkupErrorInfo {
     if (std.mem.eql(u8, hook, "markdown")) return validateMarkdown(node);
+    if (std.mem.eql(u8, hook, "code")) return validateCode(node);
     if (std.mem.eql(u8, hook, "stepper")) return validateStepper(node);
     if (std.mem.eql(u8, hook, "step")) {
         // Steps inside a stepper are consumed by validateStepper; one

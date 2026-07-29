@@ -27,6 +27,7 @@ export const componentPages: ComponentPage[] = [
   { slug: "card", name: "Card", preview: "card-hero", blurb: "The bordered, elevated surface container." },
   { slug: "chart", name: "Chart", preview: "chart-hero", blurb: "Line, bar, and band series (Zig builder)." },
   { slug: "checkbox", name: "Checkbox", preview: "checkbox-hero", blurb: "Binary choice with model-owned state." },
+  { slug: "code", name: "Code", preview: "code-hero", blurb: "Highlighted source with line numbers and optional horizontal scrolling." },
   { slug: "combobox", name: "Combobox", preview: "combobox-hero", blurb: "Text entry with an anchored suggestions menu." },
   { slug: "dialog", name: "Dialog", preview: "dialog-hero", blurb: "Modal surface with model-owned dismissal." },
   { slug: "drawer", name: "Drawer", preview: "drawer-hero", blurb: "Side-anchored modal surface." },

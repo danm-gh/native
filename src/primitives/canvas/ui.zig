@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const code_model = @import("code.zig");
 const font_coverage = @import("font_coverage.zig");
 const geometry = @import("geometry");
 const canvas = @import("root.zig");
@@ -2289,6 +2290,136 @@ pub fn Ui(comptime Msg: type) type {
             return self.el(.stack, .{ .grow = grow }, .{});
         }
 
+        pub const CodeOptions = struct {
+            key: ?UiKey = null,
+            global_key: ?UiKey = null,
+            language: code_model.Language = .plain,
+            /// Prefix each logical source line with a muted, monospace
+            /// number. Off by default.
+            line_numbers: bool = false,
+            /// Word-wrap long source lines. `false` keeps logical lines
+            /// intact inside one horizontal scroll region.
+            wrap: bool = true,
+            width: f32 = 0,
+            height: f32 = 0,
+            min_width: f32 = 0,
+            grow: f32 = 0,
+            semantics: canvas.WidgetSemantics = .{},
+        };
+
+        /// A themed source-code surface with bounded syntax highlighting.
+        /// Markdown fences lower through this same component.
+        pub fn code(self: *Self, options: CodeOptions, source: []const u8) Node {
+            const line_count = codeLineCount(source);
+            const line_widgets = line_count <= max_code_lines;
+            const content = if (line_widgets)
+                self.codeLines(source, options.language, options.wrap, options.line_numbers)
+            else
+                self.codeParagraph(source, options.language, options.wrap, if (options.wrap) 1 else 0);
+            const body = if (options.wrap)
+                content
+            else blk: {
+                // The engine scrollbar overlays the viewport's bottom
+                // edge. Reserve one quiet band inside the scrollable
+                // track so the final code baseline never sits under it.
+                const track = self.column(.{}, .{
+                    content,
+                    self.el(.stack, .{ .height = 8 }, .{}),
+                });
+                break :blk self.scroll(.{ .axis = .horizontal, .grow = 1 }, .{track});
+            };
+            var surface = self.el(.panel, .{
+                .key = options.key,
+                .global_key = options.global_key,
+                .width = options.width,
+                .height = options.height,
+                .min_width = options.min_width,
+                .grow = options.grow,
+                .padding = 12,
+                .style_tokens = .{ .background = .surface_subtle },
+                .semantics = options.semantics,
+            }, .{body});
+            surface.widget.layout.clip_content = true;
+            return surface;
+        }
+
+        /// Line-number mode creates one paired row per logical source
+        /// line, so a wrapped line grows beside its number while the next
+        /// number remains attached to the next logical line.
+        fn codeLines(self: *Self, source: []const u8, language: code_model.Language, wrap: bool, line_numbers: bool) Node {
+            const count = codeLineCount(source);
+            const digits = decimalDigits(count);
+            const rows = self.arena.alloc(Node, count) catch {
+                self.failed = true;
+                return self.column(.{}, .{});
+            };
+            var highlight_state: code_model.HighlightState = .{};
+            var lines = std.mem.splitScalar(u8, source, '\n');
+            var index: usize = 0;
+            while (lines.next()) |line| : (index += 1) {
+                const code_line = self.codeParagraphWithState(line, language, wrap, if (line_numbers) 1 else 0, &highlight_state);
+                if (!line_numbers) {
+                    rows[index] = code_line;
+                    continue;
+                }
+                const number = self.codeLineNumber(index + 1, digits);
+                const marker = self.paragraph(.{
+                    .style_tokens = .{ .foreground = .text_muted },
+                }, &.{.{ .text = number, .monospace = true }});
+                const marker_top = self.column(.{}, .{marker});
+                rows[index] = self.row(.{ .gap = 12, .cross = .stretch }, .{
+                    marker_top,
+                    code_line,
+                });
+            }
+            return self.column(.{}, .{rows});
+        }
+
+        fn codeParagraph(self: *Self, source: []const u8, language: code_model.Language, wrap: bool, grow: f32) Node {
+            var state: code_model.HighlightState = .{};
+            return self.codeParagraphWithState(source, language, wrap, grow, &state);
+        }
+
+        fn codeParagraphWithState(self: *Self, source: []const u8, language: code_model.Language, wrap: bool, grow: f32, state: *code_model.HighlightState) Node {
+            var storage: [canvas.text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+            const highlighted = if (source.len == 0) blk: {
+                storage[0] = .{ .text = " ", .monospace = true };
+                break :blk storage[0..1];
+            } else code_model.highlightWithState(source, language, &storage, state);
+            return self.paragraph(.{ .wrap = wrap, .grow = grow }, highlighted);
+        }
+
+        fn codeLineNumber(self: *Self, number: usize, digits: usize) []const u8 {
+            const result = self.arena.alloc(u8, digits) catch {
+                self.failed = true;
+                return "";
+            };
+            @memset(result, ' ');
+            var value = number;
+            var cursor = digits;
+            while (cursor > 0 and value > 0) {
+                cursor -= 1;
+                result[cursor] = '0' + @as(u8, @intCast(value % 10));
+                value /= 10;
+            }
+            return result;
+        }
+
+        /// Upper bound for allocating one widget per logical code line.
+        /// Larger sources retain every byte in one bounded paragraph.
+        pub const max_code_lines: usize = 256;
+
+        fn codeLineCount(source: []const u8) usize {
+            return std.mem.count(u8, source, "\n") + 1;
+        }
+
+        fn decimalDigits(value: usize) usize {
+            var remaining = value;
+            var digits: usize = 1;
+            while (remaining >= 10) : (remaining /= 10) digits += 1;
+            return digits;
+        }
+
         pub const ChartOptions = struct {
             key: ?UiKey = null,
             global_key: ?UiKey = null,
@@ -2889,8 +3020,10 @@ pub fn Ui(comptime Msg: type) type {
             // way, matching the single-line measurement both layout paths
             // already perform; overflow policy (`overflow`, trailing
             // ellipsis by default) decides what happens past the frame.
-            // Span paragraphs keep wrapping.
-            if (node.wrap == false and widget.kind == .text and widget.spans.len == 0) {
+            // Span paragraphs honor the same explicit no-wrap policy.
+            // `Ui.code` uses this to keep highlighted logical lines
+            // intact inside its horizontal scroll region.
+            if (node.wrap == false and widget.kind == .text) {
                 widget.text_no_wrap = true;
             }
             widget.id = if (node.global_key) |global_key|

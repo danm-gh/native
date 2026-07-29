@@ -31,6 +31,8 @@ const max_canvas_widget_nodes_per_view = canvas_limits.max_canvas_widget_nodes_p
 const max_canvas_widget_semantics_per_view = canvas_limits.max_canvas_widget_semantics_per_view;
 const max_canvas_widget_text_bytes_per_view = canvas_limits.max_canvas_widget_text_bytes_per_view;
 const max_canvas_widget_source_text_entries_per_view = canvas_limits.max_canvas_widget_source_text_entries_per_view;
+const max_canvas_widget_text_history_bytes_per_view = canvas_limits.max_canvas_widget_text_history_bytes_per_view;
+const max_canvas_widget_text_history_entries_per_view = canvas_limits.max_canvas_widget_text_history_entries_per_view;
 
 const CanvasWidgetSourceTextEntry = canvas_widget_runtime.CanvasWidgetSourceTextEntry;
 const CanvasWidgetSourceScrollEntry = canvas_widget_runtime.CanvasWidgetSourceScrollEntry;
@@ -750,10 +752,21 @@ pub const RuntimeView = struct {
     accessibility_label_storage: [platform.max_view_accessibility_label_bytes]u8 = undefined,
     text_storage: [platform.max_view_text_bytes]u8 = undefined,
     command_storage: [platform.max_view_command_bytes]u8 = undefined,
+    /// Per-view, per-widget undo/redo deltas. Kept at the tail so adding
+    /// editor history does not move the established hot render/layout
+    /// fields inside RuntimeView. Text bytes are shared across entries, so
+    /// ordinary typing costs one byte per step rather than a full document
+    /// snapshot.
+    canvas_widget_text_history_entries: [max_canvas_widget_text_history_entries_per_view]view_widget_text.CanvasWidgetTextHistoryEntry = undefined,
+    canvas_widget_text_history_entry_count: usize = 0,
+    canvas_widget_text_history_bytes: [max_canvas_widget_text_history_bytes_per_view]u8 = undefined,
+    canvas_widget_text_history_byte_count: usize = 0,
 
     const CanvasWidgetTextMethods = view_widget_text.RuntimeViewCanvasWidgetText(RuntimeView);
     pub const applyCanvasWidgetTextEdit = CanvasWidgetTextMethods.applyCanvasWidgetTextEdit;
+    pub const applyCanvasWidgetTextEditWithoutHistory = CanvasWidgetTextMethods.applyCanvasWidgetTextEditWithoutHistory;
     pub const canvasWidgetKeyboardTextEdit = CanvasWidgetTextMethods.canvasWidgetKeyboardTextEdit;
+    pub const canvasWidgetTextHistoryShortcut = CanvasWidgetTextMethods.canvasWidgetTextHistoryShortcut;
     pub const canEditCanvasWidgetText = CanvasWidgetTextMethods.canEditCanvasWidgetText;
     pub const applyCanvasWidgetTextPointer = CanvasWidgetTextMethods.applyCanvasWidgetTextPointer;
     pub const clearCanvasWidgetStaticTextSelection = CanvasWidgetTextMethods.clearCanvasWidgetStaticTextSelection;

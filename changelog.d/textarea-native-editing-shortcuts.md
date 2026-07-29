@@ -1,0 +1,1 @@
+fix: **Native textarea editing shortcuts**: Up/Down now moves or extends the caret across visual lines, Command+Left/Right uses the current line boundary, Command+Up/Down reaches the document boundary, and Command+Z / Command+Shift+Z provides bounded per-editor undo and redo while keeping controlled `TextBuffer` models synchronized.

@@ -176,6 +176,13 @@ pub const max_canvas_widget_semantics_per_view: usize = 1024;
 // a 1024-node view retains proportionally more text.
 pub const max_canvas_widget_text_bytes_per_view: usize = 65536;
 pub const max_canvas_widget_source_text_entries_per_view: usize = 256;
+/// Retained editor undo/redo is delta-based: changed bytes share this
+/// per-view pool and metadata stays bounded independently. Matching the
+/// live text budget guarantees that clearing a maximal editor can still
+/// be undone; an unusually large whole-document replacement whose removed
+/// plus inserted bytes exceed the pool simply starts a fresh history.
+pub const max_canvas_widget_text_history_bytes_per_view: usize = max_canvas_widget_text_bytes_per_view;
+pub const max_canvas_widget_text_history_entries_per_view: usize = 128;
 // Inline styled runs retained across all `.text` widgets of a view. Each
 // span is a small struct (style flags + slices into the widget text
 // bytes); per-paragraph capacity is `canvas.max_text_spans_per_paragraph`.

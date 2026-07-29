@@ -637,6 +637,34 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
             if (widget_keyboard_event) |keyboard_event| {
                 try CanvasWidgetEventMethods().dispatchCanvasWidgetCommandFromKeyboard(self, app, keyboard_event);
                 try self.dispatchEvent(app, .{ .canvas_widget_keyboard = keyboard_event });
+                // A logical undo/redo can require select -> replace ->
+                // restore-selection. Apply and dispatch each continuation
+                // only after the previous on-input Msg rebuilt the
+                // controlled tree, keeping runtime and model lockstep at
+                // every intermediate state. These synthetic edit carriers
+                // are key_down-shaped (not committed text), so a target
+                // removed by the rebuild can never leak replacement bytes
+                // through the app-level on_text fallback.
+                for (keyboard_event.history_followup_edits) |followup_edit| {
+                    const edit = followup_edit orelse continue;
+                    const view_index = runtimeFindViewIndex(self, keyboard_event.window_id, keyboard_event.view_label) orelse break;
+                    const target = keyboard_event.target orelse break;
+                    if (self.views[view_index].kind != .gpu_surface or
+                        !self.views[view_index].canEditCanvasWidgetText(target.id))
+                    {
+                        break;
+                    }
+                    var followup = keyboard_event;
+                    followup.keyboard = .{
+                        .phase = .key_down,
+                        .focused_id = keyboard_event.keyboard.focused_id,
+                        .edit = edit,
+                    };
+                    followup.history_followup_edits = .{ null, null };
+                    followup.history_replay = true;
+                    try CanvasWidgetEventMethods().updateCanvasWidgetTextFromKeyboard(self, &followup);
+                    try self.dispatchEvent(app, .{ .canvas_widget_keyboard = followup });
+                }
             } else if ((input_event.kind == .key_down or input_event.kind == .key_up) and
                 !widget_surface_dismissed and !terminal_key_lifetime_suppressed)
             {

@@ -417,12 +417,28 @@ pub fn textWordSelectionAtOffset(text: []const u8, offset: usize) TextSelection 
 /// text without a stray terminator). Scanning raw bytes for `\n` is
 /// UTF-8 safe — 0x0A never appears inside a multibyte sequence.
 pub fn textLineSelectionAtOffset(text: []const u8, offset: usize) TextSelection {
-    const cursor = @min(offset, text.len);
-    var start = cursor;
-    while (start > 0 and text[start - 1] != '\n') start -= 1;
-    var end = cursor;
-    while (end < text.len and text[end] != '\n') end += 1;
-    return .{ .anchor = start, .focus = end };
+    return .{
+        .anchor = textLineStartOffset(text, offset),
+        .focus = textLineEndOffset(text, offset),
+    };
+}
+
+/// Start of the hard-newline-delimited line containing `offset`. The
+/// offset is snapped to a UTF-8 boundary first; scanning for ASCII LF is
+/// byte-safe because it cannot occur inside a multibyte sequence.
+pub fn textLineStartOffset(text: []const u8, offset: usize) usize {
+    var cursor = snapTextOffset(text, offset);
+    while (cursor > 0 and text[cursor - 1] != '\n') cursor -= 1;
+    return cursor;
+}
+
+/// End of the hard-newline-delimited line containing `offset`, excluding
+/// its line break. CRLF documents exclude both bytes from the line.
+pub fn textLineEndOffset(text: []const u8, offset: usize) usize {
+    var cursor = snapTextOffset(text, offset);
+    while (cursor < text.len and text[cursor] != '\n') cursor += 1;
+    if (cursor > 0 and cursor <= text.len and text[cursor - 1] == '\r') return cursor - 1;
+    return cursor;
 }
 
 fn textOffsetStartsWord(text: []const u8, offset: usize) bool {
@@ -565,6 +581,10 @@ test "textLineSelectionAtOffset selects the newline-delimited line without its b
     try std.testing.expectEqualDeep(TextSelection{ .anchor = 18, .focus = 18 }, textLineSelectionAtOffset(text, 18));
     // The last line has no trailing newline; it still selects fully.
     try std.testing.expectEqualDeep(TextSelection{ .anchor = 19, .focus = 25 }, textLineSelectionAtOffset(text, 22));
+
+    try std.testing.expectEqual(@as(usize, 11), textLineStartOffset(text, 15));
+    try std.testing.expectEqual(@as(usize, 17), textLineEndOffset(text, 15));
+    try std.testing.expectEqual(@as(usize, 3), textLineEndOffset("one\r\ntwo", 1));
 }
 
 test "TextBuffer mirrors edits, truncates at capacity, and clears" {

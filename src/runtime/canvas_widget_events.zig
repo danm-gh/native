@@ -2020,7 +2020,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
         /// and clear-button stamping precedent, made the rule). Before
         /// the stamp, edits that only THIS derivation produced — Escape's
         /// search-field clear, Escape's composition cancel, the
-        /// single-line ArrowUp/Down caret jumps — mutated the editor
+        /// runtime's geometry-aware ArrowUp/Down caret jumps — mutated the editor
         /// while the app-side dispatch re-derived the key on its own and
         /// heard nothing: the field visibly cleared while `model.query`
         /// kept the stale term, and the next keystroke dispatched
@@ -2031,7 +2031,17 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             const index = runtimeFindViewIndex(self, keyboard_event.window_id, keyboard_event.view_label) orelse return;
             if (self.views[index].kind != .gpu_surface) return;
             const target = keyboard_event.target orelse return;
-            const derived = self.views[index].canvasWidgetKeyboardTextEdit(target, keyboard_event.keyboard) orelse return;
+            var history_edits: [3]?canvas.TextInputEvent = .{ null, null, null };
+            const history_shortcut = !keyboard_event.history_replay and
+                self.views[index].canvasWidgetTextHistoryShortcut(target, keyboard_event.keyboard, &history_edits);
+            const derived = if (history_shortcut)
+                history_edits[0].?
+            else
+                self.views[index].canvasWidgetKeyboardTextEdit(target, keyboard_event.keyboard) orelse return;
+            if (history_shortcut) {
+                keyboard_event.history_replay = true;
+                keyboard_event.history_followup_edits = .{ history_edits[1], history_edits[2] };
+            }
             // Single-line sanitization happens HERE — after derivation,
             // BEFORE the stamp — so the retained editor and the app's
             // `on_input` mirror hear byte-identical sanitized inserts
@@ -2051,7 +2061,10 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             };
             keyboard_event.keyboard.edit = edit;
 
-            const dirty = try self.views[index].applyCanvasWidgetTextEdit(target.id, edit) orelse return;
+            const dirty = if (keyboard_event.history_replay)
+                try self.views[index].applyCanvasWidgetTextEditWithoutHistory(target.id, edit) orelse return
+            else
+                try self.views[index].applyCanvasWidgetTextEdit(target.id, edit) orelse return;
             if (canvasDirtyRegionForView(self.views[index].frame, dirty)) |dirty_region| {
                 self.invalidateFor(.state, dirty_region);
             } else {

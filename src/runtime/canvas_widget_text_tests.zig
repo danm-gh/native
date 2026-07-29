@@ -805,6 +805,39 @@ test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(expected_left), retained.nodes[1].widget.text_selection.?);
+
+    // A CRLF hard line ends before both delimiter bytes. Command+Right
+    // must not leave the caret between CR and LF, where the next typed
+    // byte would split the line-ending pair.
+    var crlf_textarea = textarea;
+    crlf_textarea.text = "one\r\ntwo";
+    crlf_textarea.text_selection = canvas.TextSelection.collapsed(1);
+    var crlf_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const crlf_layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{crlf_textarea} },
+        geometry.RectF.init(0, 0, 240, 180),
+        &crlf_nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", crlf_layout);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowright",
+        .modifiers = .{ .command = true },
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(3), retained.nodes[1].widget.text_selection.?);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "x",
+        .text = "X",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("oneX\r\ntwo", retained.nodes[1].widget.text);
 }
 
 test "textarea visual navigation keeps an unbroken wrap boundary on its painted line" {
@@ -861,6 +894,30 @@ test "textarea visual navigation keeps an unbroken wrap boundary on its painted 
         harness.runtime.views[0].widget_tokens,
     ).?;
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), pointer_selection);
+
+    // A selected range beginning at the shared byte belongs visually to
+    // the downstream line. Plain Left collapses to that visible leading
+    // edge instead of jumping to the previous line's upstream stop.
+    _ = try harness.runtime.editCanvasWidgetText(
+        1,
+        "canvas",
+        2,
+        .{ .set_selection = .{
+            .anchor = second_line_start.offset,
+            .focus = second_line_start.offset + 1,
+        } },
+    );
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowleft",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(
+        canvas.TextSelection.collapsedAt(second_line_start),
+        retained.nodes[1].widget.text_selection.?,
+    );
 
     if (comptime builtin.os.tag == .macos) {
         _ = try harness.runtime.editCanvasWidgetText(
@@ -3145,6 +3202,24 @@ test "Shift-click extends a textarea selection from the placed caret" {
         .y = focus_point.y,
         .modifiers = .{ .shift = true },
     } });
+
+    // A rapid shifted second click is a shifted double-click, not a drag
+    // continuation. Its word-wise anchor comes from the standing caret;
+    // no stale/default multi-click anchor may pull the selection to byte 0.
+    const ms = std.time.ns_per_ms;
+    const beta_point = pointForTextOffset(widget, .{}, 7).?;
+    try dispatchTimedPointer(harness, app, .pointer_down, beta_point, 1_000 * ms);
+    try dispatchTimedPointer(harness, app, .pointer_up, beta_point, 1_030 * ms);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .timestamp_ns = 1_100 * ms,
+        .x = beta_point.x,
+        .y = beta_point.y,
+        .modifiers = .{ .shift = true },
+    } });
+    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 6, .focus = 10 }, try retainedTextSelection(harness, 1));
 }
 
 test "double-click selects the word run under the pointer; a slow second click only moves the caret" {

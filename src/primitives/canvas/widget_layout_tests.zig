@@ -2669,6 +2669,41 @@ fn doubledTextMeasure(context: ?*anyopaque, font_id: FontId, size: f32, text: []
 
 const doubled_text_measure = support.TextMeasureProvider{ .measure_fn = doubledTextMeasure };
 
+fn countingTextMeasure(context: ?*anyopaque, font_id: FontId, size: f32, text: []const u8) f32 {
+    const calls: *usize = @ptrCast(@alignCast(context.?));
+    calls.* += 1;
+    _ = font_id;
+    return size * @as(f32, @floatFromInt(text.len));
+}
+
+test "vertical scroll layout does not intrinsically remeasure its child" {
+    var calls: usize = 0;
+    const measure = support.TextMeasureProvider{
+        .context = &calls,
+        .measure_fn = countingTextMeasure,
+    };
+    const children = [_]Widget{.{
+        .id = 2,
+        .kind = .text,
+        .text = "transcript row",
+    }};
+    const scroll = Widget{
+        .id = 1,
+        .kind = .scroll_view,
+        .scroll_axes = .vertical,
+        .children = &children,
+    };
+
+    var nodes: [2]WidgetLayoutNode = undefined;
+    _ = try layoutWidgetTreeWithTokens(
+        scroll,
+        geometry.RectF.init(0, 0, 240, 120),
+        .{ .text_measure = &measure },
+        &nodes,
+    );
+    try std.testing.expectEqual(@as(usize, 0), calls);
+}
+
 test "intrinsic text sizing defaults to the estimator and honors an injected provider" {
     const widget = Widget{ .id = 1, .kind = .text, .text = "Refresh dashboard" };
     const default_tokens = DesignTokens{};

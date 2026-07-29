@@ -1059,8 +1059,8 @@ fn layoutScrollChildren(
     for (children) |child| {
         if (child.layout.anchor != null) continue;
         var child_frame = stackChildFrame(scrolled_content, child);
-        const intrinsic = intrinsicChildSize(child, tokens, depth + 1);
         if (axes == .horizontal and child.frame.width <= 0) {
+            const intrinsic = intrinsicChildSize(child, tokens, depth + 1);
             child_frame.width = @max(child_frame.width, intrinsic.width);
         }
         _ = try layoutWidgetDepth(child, child_frame, parent_index, depth + 1, output, len, tokens);

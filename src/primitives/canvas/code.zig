@@ -27,9 +27,9 @@ pub const Language = enum {
     sql,
 };
 
-/// Lexer state carried between logical source lines by `Ui.code`.
-/// Keeping it explicit lets the component reset its span budget per line
-/// without forgetting a multiline tag, string, or block comment.
+/// Lexer state carried between bounded source chunks by `Ui.code`.
+/// Keeping it explicit lets the component reset its span budget without
+/// forgetting a multiline tag, string, or block comment.
 pub const HighlightState = struct {
     html_in_tag: bool = false,
     html_expect_tag_name: bool = false,
@@ -177,6 +177,19 @@ fn stringQuote(language: Language, byte: u8) bool {
     };
 }
 
+fn backslashEscapesQuote(language: Language, state: HighlightState, quote: u8) bool {
+    if (quote != '\'') return true;
+    return switch (language) {
+        // These grammars treat single quotes literally (or escape them by
+        // doubling the quote), rather than with a backslash.
+        .shell, .sql => false,
+        // Plain HTML attributes do not use JavaScript escapes, but JSX
+        // expressions do.
+        .html => state.html_expression_depth > 0,
+        else => true,
+    };
+}
+
 fn lineCommentPrefix(language: Language, rest: []const u8) usize {
     if (rest.len == 0) return 0;
     return switch (language) {
@@ -232,9 +245,9 @@ pub fn highlight(
     return highlightWithState(source, language, storage, &state);
 }
 
-/// Stateful form used when one code surface emits one paragraph per
-/// logical line. A line gets the full span capacity while lexer context
-/// survives into the next line.
+/// Stateful form used when one code surface emits multiple bounded
+/// paragraphs. Each chunk gets the full span capacity while lexer context
+/// survives into the next chunk.
 pub fn highlightWithState(
     source: []const u8,
     language: Language,
@@ -248,6 +261,7 @@ pub fn highlightWithState(
     }
 
     var len: usize = 0;
+    var styling_full = false;
     var index: usize = 0;
     while (index < source.len) {
         const start = index;
@@ -271,7 +285,10 @@ pub fn highlightWithState(
         } else if (state.string_quote) |quote| {
             var closed = false;
             while (index < source.len) {
-                if (source[index] == '\\' and quote != '\'' and index + 1 < source.len) {
+                if (source[index] == '\\' and
+                    backslashEscapesQuote(language, state.*, quote) and
+                    index + 1 < source.len)
+                {
                     index += 2;
                     continue;
                 }
@@ -315,7 +332,11 @@ pub fn highlightWithState(
             state.html_expect_tag_name = true;
             state.html_expression_depth = 0;
             color = .info;
-        } else if (language == .html and state.html_in_tag and rest[0] == '>') {
+        } else if (language == .html and
+            state.html_in_tag and
+            state.html_expression_depth == 0 and
+            rest[0] == '>')
+        {
             index += 1;
             state.html_in_tag = false;
             state.html_expect_tag_name = false;
@@ -338,7 +359,10 @@ pub fn highlightWithState(
             index += 1;
             var closed = false;
             while (index < source.len) {
-                if (source[index] == '\\' and quote != '\'' and index + 1 < source.len) {
+                if (source[index] == '\\' and
+                    backslashEscapesQuote(language, state.*, quote) and
+                    index + 1 < source.len)
+                {
                     index += 2;
                     continue;
                 }
@@ -385,7 +409,12 @@ pub fn highlightWithState(
             index += 1;
         }
 
-        if (!appendSpan(storage, &len, source, start, index, color)) break;
+        // The last span already covers the entire unstyled remainder once
+        // capacity fills, but keep scanning it so state handed to the next
+        // paragraph still reflects comments, strings, and JSX expressions.
+        if (!styling_full and !appendSpan(storage, &len, source, start, index, color)) {
+            styling_full = true;
+        }
     }
     return storage[0..len];
 }

@@ -2311,11 +2311,10 @@ pub fn Ui(comptime Msg: type) type {
         /// Markdown fences lower through this same component.
         pub fn code(self: *Self, options: CodeOptions, source: []const u8) Node {
             const line_count = codeLineCount(source);
-            const line_widgets = line_count <= max_code_lines;
-            const content = if (line_widgets)
-                self.codeLines(source, options.language, options.wrap, options.line_numbers)
+            const content = if (options.line_numbers and line_count <= max_code_lines)
+                self.numberedCodeLines(source, options.language, options.wrap)
             else
-                self.codeParagraph(source, options.language, options.wrap, if (options.wrap) 1 else 0);
+                self.codeParagraphChunks(source, options.language, options.wrap);
             const body = if (options.wrap)
                 content
             else blk: {
@@ -2346,7 +2345,7 @@ pub fn Ui(comptime Msg: type) type {
         /// Line-number mode creates one paired row per logical source
         /// line, so a wrapped line grows beside its number while the next
         /// number remains attached to the next logical line.
-        fn codeLines(self: *Self, source: []const u8, language: code_model.Language, wrap: bool, line_numbers: bool) Node {
+        fn numberedCodeLines(self: *Self, source: []const u8, language: code_model.Language, wrap: bool) Node {
             const count = codeLineCount(source);
             const digits = decimalDigits(count);
             const rows = self.arena.alloc(Node, count) catch {
@@ -2357,11 +2356,7 @@ pub fn Ui(comptime Msg: type) type {
             var lines = std.mem.splitScalar(u8, source, '\n');
             var index: usize = 0;
             while (lines.next()) |line| : (index += 1) {
-                const code_line = self.codeParagraphWithState(line, language, wrap, if (line_numbers) 1 else 0, &highlight_state);
-                if (!line_numbers) {
-                    rows[index] = code_line;
-                    continue;
-                }
+                const code_line = self.codeParagraphWithState(line, language, wrap, 1, &highlight_state);
                 const number = self.codeLineNumber(index + 1, digits);
                 const marker = self.paragraph(.{
                     .style_tokens = .{ .foreground = .text_muted },
@@ -2375,9 +2370,50 @@ pub fn Ui(comptime Msg: type) type {
             return self.column(.{}, .{rows});
         }
 
-        fn codeParagraph(self: *Self, source: []const u8, language: code_model.Language, wrap: bool, grow: f32) Node {
+        /// Keep ordinary code in one text widget so static selection and copy
+        /// span logical lines. Only split when the paragraph layout's bounded
+        /// line capacity requires it; every chunk remains independently
+        /// visible instead of silently truncating a large source block.
+        fn codeParagraphChunks(self: *Self, source: []const u8, language: code_model.Language, wrap: bool) Node {
+            const count = codeLineCount(source);
+            if (count <= canvas.text_spans.max_text_span_lines_per_paragraph) {
+                var state: code_model.HighlightState = .{};
+                return self.codeParagraphWithState(source, language, wrap, if (wrap) 1 else 0, &state);
+            }
+
+            const chunk_count = (count + canvas.text_spans.max_text_span_lines_per_paragraph - 1) /
+                canvas.text_spans.max_text_span_lines_per_paragraph;
+            const chunks = self.arena.alloc(Node, chunk_count) catch {
+                self.failed = true;
+                return self.column(.{}, .{});
+            };
             var state: code_model.HighlightState = .{};
-            return self.codeParagraphWithState(source, language, wrap, grow, &state);
+            var chunk_index: usize = 0;
+            var chunk_start: usize = 0;
+            var chunk_lines: usize = 0;
+            var cursor: usize = 0;
+            while (cursor <= source.len) : (cursor += 1) {
+                if (cursor != source.len and source[cursor] != '\n') continue;
+                chunk_lines += 1;
+                if (chunk_lines < canvas.text_spans.max_text_span_lines_per_paragraph and cursor != source.len) continue;
+
+                // Keep the separating newline in the preceding paragraph.
+                // A trailing newline advances past the last painted line
+                // without adding an empty line to the paragraph's extent, so
+                // concatenating chunk text still recovers the exact source.
+                const chunk_end = if (cursor < source.len) cursor + 1 else cursor;
+                chunks[chunk_index] = self.codeParagraphWithState(
+                    source[chunk_start..chunk_end],
+                    language,
+                    wrap,
+                    0,
+                    &state,
+                );
+                chunk_index += 1;
+                chunk_start = cursor + 1;
+                chunk_lines = 0;
+            }
+            return self.column(.{ .grow = if (wrap) 1 else 0 }, .{chunks[0..chunk_index]});
         }
 
         fn codeParagraphWithState(self: *Self, source: []const u8, language: code_model.Language, wrap: bool, grow: f32, state: *code_model.HighlightState) Node {
@@ -2405,8 +2441,8 @@ pub fn Ui(comptime Msg: type) type {
             return result;
         }
 
-        /// Upper bound for allocating one widget per logical code line.
-        /// Larger sources retain every byte in one bounded paragraph.
+        /// Upper bound for allocating one numbered row per logical code line.
+        /// Larger sources fall back to unnumbered, capacity-bounded chunks.
         pub const max_code_lines: usize = 256;
 
         fn codeLineCount(source: []const u8) usize {

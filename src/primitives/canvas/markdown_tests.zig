@@ -244,7 +244,7 @@ test "language-tagged code fences highlight tokens and preserve indentation" {
     const layout = text_spans.layoutTextSpans(indented.spans, .{ .size = 14, .max_width = 10_000 }, &runs);
     var indented_keyword_x: ?f32 = null;
     for (layout.runs) |run| {
-        if (run.line_index == 0 and std.mem.eql(u8, run.text, "const")) indented_keyword_x = run.x;
+        if (run.line_index == 1 and std.mem.eql(u8, run.text, "const")) indented_keyword_x = run.x;
     }
     // Four source spaces occupy real horizontal advance before `const`.
     try testing.expect(indented_keyword_x != null);

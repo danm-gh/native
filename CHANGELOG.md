@@ -2,9 +2,24 @@
 
 All notable changes to the Native SDK (formerly zero-native) will be documented in this file.
 
-## 0.6.2
+## 0.6.3
 
 <!-- release:start -->
+
+### Bug Fixes
+
+- **Native textarea editing shortcuts**: Up/Down now moves or extends the caret across visual lines, Command+Left/Right uses the current line boundary even through unbroken soft wraps, Command+Up/Down reaches the document boundary, and Command+Z / Command+Shift+Z provides bounded per-editor undo and redo from either the keyboard or macOS Edit menu while keeping controlled `TextBuffer` models synchronized.
+- **Textarea indentation**: spaces typed at the start of an empty line now remain visible and advance the caret under word wrapping.
+- **Textarea pointer selection**: Shift-click now extends the selection from the existing caret instead of replacing it.
+- **Textarea line endings**: caret movement, deletion, and controlled selections now treat CRLF line endings as one indivisible boundary.
+
+### Contributors
+
+- @ctate
+
+<!-- release:end -->
+
+## 0.6.2
 
 ### New Features
 
@@ -25,8 +40,6 @@ All notable changes to the Native SDK (formerly zero-native) will be documented 
 - @ctate
 - @jasonkneen
 - @sepehr-safari
-
-<!-- release:end -->
 
 ## 0.6.1
 

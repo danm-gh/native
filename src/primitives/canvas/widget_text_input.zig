@@ -25,8 +25,8 @@ const nextTextLineEnd = text_model.nextTextLineEnd;
 const isTextBreakByte = text_model.isTextBreakByte;
 const textLineRange = text_model.textLineRange;
 const textLineCaretX = text_model.textLineCaretX;
-const layoutTextCaretRect = text_model.layoutTextCaretRect;
-const layoutTextOffsetForPoint = text_model.layoutTextOffsetForPoint;
+const layoutTextCaretRectWithAffinity = text_model.layoutTextCaretRectWithAffinity;
+const layoutTextCaretPositionForPoint = text_model.layoutTextCaretPositionForPoint;
 const TextLineIterator = text_model.TextLineIterator;
 
 pub fn widgetPlaceholder(widget: Widget) []const u8 {
@@ -128,15 +128,20 @@ pub fn persistWidgetTextInputPresentedText(builder: *Builder, raw: []const u8, p
 }
 
 pub fn textSelectionForWidgetPoint(widget: Widget, point: geometry.PointF, anchor: ?usize, tokens: DesignTokens) ?TextSelection {
-    const offset = textOffsetForWidgetPoint(widget, point, tokens) orelse return null;
+    const position = textCaretPositionForWidgetPoint(widget, point, tokens) orelse return null;
     const selection = if (anchor) |anchor_offset|
-        TextSelection{ .anchor = anchor_offset, .focus = offset }
+        TextSelection{ .anchor = anchor_offset, .focus = position.offset, .affinity = position.affinity }
     else
-        TextSelection.collapsed(offset);
+        TextSelection.collapsedAt(position);
     return snapTextSelection(widget.text, selection);
 }
 
 pub fn textOffsetForWidgetPoint(widget: Widget, point: geometry.PointF, tokens: DesignTokens) ?usize {
+    const position = textCaretPositionForWidgetPoint(widget, point, tokens) orelse return null;
+    return position.offset;
+}
+
+pub fn textCaretPositionForWidgetPoint(widget: Widget, point: geometry.PointF, tokens: DesignTokens) ?text_model.TextCaretPosition {
     if (!widget_access.widgetTextInputKind(widget.kind)) return null;
     if (widget.state.disabled) return null;
     const text_size = widgetTextInputSize(widget, tokens);
@@ -144,7 +149,7 @@ pub fn textOffsetForWidgetPoint(widget: Widget, point: geometry.PointF, tokens: 
     const layout_options = widgetTextInputLayoutOptions(widget, tokens, text_size, text_inset);
     const origin = widgetTextInputOrigin(widget, tokens, text_size, text_inset, layout_options);
     const draw_text = widgetTextInputDrawText(widget, tokens, text_size, origin, tokens.colors.text, layout_options);
-    return layoutTextOffsetForPoint(draw_text, layout_options, point);
+    return layoutTextCaretPositionForPoint(draw_text, layout_options, point);
 }
 
 pub fn widgetTextInputSize(widget: Widget, tokens: DesignTokens) f32 {
@@ -478,7 +483,8 @@ pub fn textGeometryForWidget(widget: Widget, tokens: DesignTokens) WidgetTextGeo
 
     if (widget_access.widgetTextSelectionRange(widget)) |range| {
         if (range.isCollapsed(widget.text.len)) {
-            value.caret_bounds = layoutTextCaretRect(draw_text, layout_options, range.start);
+            const affinity = if (widget.text_selection) |selection| selection.affinity else .upstream;
+            value.caret_bounds = layoutTextCaretRectWithAffinity(draw_text, layout_options, range.start, affinity);
         } else {
             const bounds = textRangeBounds(draw_text, layout_options, range);
             value.selection_bounds = bounds.bounds;

@@ -1198,6 +1198,10 @@ pub fn build(b: *std.Build) void {
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "- (void)selectAll:(id)sender" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "@selector(selectAll:)" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "emitSyntheticKeyDownWithKey:@\"a\" modifiers:(NativeSdkShortcutModifierPrimary | NativeSdkShortcutModifierCommand)" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "- (void)undo:(id)sender" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "- (void)redo:(id)sender" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "emitSyntheticKeyDownWithKey:@\"z\" modifiers:(NativeSdkShortcutModifierPrimary | NativeSdkShortcutModifierCommand)" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "emitSyntheticKeyDownWithKey:@\"z\" modifiers:(NativeSdkShortcutModifierPrimary | NativeSdkShortcutModifierCommand | NativeSdkShortcutModifierShift)" },
         // Modified horizontal navigation must bypass AppKit's selector
         // rewrite: the shared editor consumes the raw modifiers, and a
         // terminal translates them to its shell/protocol bindings.

@@ -140,19 +140,26 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 const moving_right = std.ascii.eqlIgnoreCase(keyboard.key, "arrowright");
                 if (moving_left or moving_right) {
                     var caret_widget = widget;
-                    caret_widget.text_selection = canvas.TextSelection.collapsed(selection.focus);
+                    caret_widget.text_selection = canvas.TextSelection.collapsedAt(.{
+                        .offset = selection.focus,
+                        .affinity = selection.affinity,
+                    });
                     const caret = canvas.textGeometryForWidget(caret_widget, self.widget_tokens).caret_bounds orelse return null;
                     const frame = widget.frame.normalized();
                     const target_x = if (moving_left) frame.x - 1 else frame.maxX() + 1;
-                    const target_offset = canvas.textOffsetForWidgetPoint(
+                    const target_position = canvas.textCaretPositionForWidgetPoint(
                         widget,
                         geometry.PointF.init(target_x, caret.y + caret.height * 0.5),
                         self.widget_tokens,
                     ) orelse return null;
                     return .{ .set_selection = if (keyboard.modifiers.shift)
-                        .{ .anchor = selection.anchor, .focus = target_offset }
+                        .{
+                            .anchor = selection.anchor,
+                            .focus = target_position.offset,
+                            .affinity = target_position.affinity,
+                        }
                     else
-                        canvas.TextSelection.collapsed(target_offset) };
+                        canvas.TextSelection.collapsedAt(target_position) };
                 }
                 if (std.ascii.eqlIgnoreCase(keyboard.key, "arrowup")) {
                     return .{ .move_caret = .{ .direction = .start, .extend = keyboard.modifiers.shift } };
@@ -179,12 +186,16 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 if (moving_up or moving_down) {
                     const selection = widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len);
                     var caret_widget = widget;
-                    caret_widget.text_selection = canvas.TextSelection.collapsed(selection.focus);
+                    caret_widget.text_selection = canvas.TextSelection.collapsedAt(.{
+                        .offset = selection.focus,
+                        .affinity = selection.affinity,
+                    });
                     const caret = canvas.textGeometryForWidget(caret_widget, self.widget_tokens).caret_bounds orelse return null;
                     const vertical_witness_matches =
                         self.canvas_widget_text_vertical_goal_id == target.id and
                         self.canvas_widget_text_vertical_goal_text_len == widget.text.len and
                         self.canvas_widget_text_vertical_goal_focus == selection.focus and
+                        self.canvas_widget_text_vertical_goal_affinity == selection.affinity and
                         self.canvas_widget_text_vertical_goal_frame.width == widget.frame.width and
                         self.canvas_widget_text_vertical_goal_frame.height == widget.frame.height;
                     const text_hash = textHistoryHash(widget.text);
@@ -199,7 +210,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                         caret.y - caret.height * 0.5
                     else
                         caret.y + caret.height * 1.5;
-                    const target_offset = canvas.textOffsetForWidgetPoint(
+                    const target_position = canvas.textCaretPositionForWidgetPoint(
                         widget,
                         geometry.PointF.init(widget.frame.x + goal_x, target_y),
                         self.widget_tokens,
@@ -208,12 +219,17 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                     self.canvas_widget_text_vertical_goal_x = goal_x;
                     self.canvas_widget_text_vertical_goal_text_len = widget.text.len;
                     self.canvas_widget_text_vertical_goal_text_hash = text_hash;
-                    self.canvas_widget_text_vertical_goal_focus = target_offset;
+                    self.canvas_widget_text_vertical_goal_focus = target_position.offset;
+                    self.canvas_widget_text_vertical_goal_affinity = target_position.affinity;
                     self.canvas_widget_text_vertical_goal_frame = widget.frame;
                     return .{ .set_selection = if (keyboard.modifiers.shift)
-                        .{ .anchor = selection.anchor, .focus = target_offset }
+                        .{
+                            .anchor = selection.anchor,
+                            .focus = target_position.offset,
+                            .affinity = target_position.affinity,
+                        }
                     else
-                        canvas.TextSelection.collapsed(target_offset) };
+                        canvas.TextSelection.collapsedAt(target_position) };
                 }
             }
 
@@ -686,6 +702,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             self.canvas_widget_text_vertical_goal_text_len = 0;
             self.canvas_widget_text_vertical_goal_text_hash = 0;
             self.canvas_widget_text_vertical_goal_focus = 0;
+            self.canvas_widget_text_vertical_goal_affinity = .upstream;
             self.canvas_widget_text_vertical_goal_frame = .{};
         }
 

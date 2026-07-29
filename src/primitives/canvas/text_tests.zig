@@ -1124,6 +1124,44 @@ test "text layout maps caret selection and points across wrapped fallback lines"
     try expectRectApprox(geometry.RectF.init(4, 10, 24.25, 28), folded[0].rect);
 }
 
+test "unbroken soft wraps preserve downstream caret affinity" {
+    const text = DrawText{
+        .font_id = 1,
+        .size = 10,
+        .origin = geometry.PointF.init(4, 20),
+        .color = Color.rgb8(0, 0, 0),
+        .text = "abcdefghijklmnopqrstuvwxyz",
+    };
+    const options = TextLayoutOptions{ .max_width = 30, .line_height = 14, .wrap = .word };
+    var lines: [8]TextLine = undefined;
+    const layout = try layoutTextRun(text, options, &lines);
+    try std.testing.expect(layout.lines.len > 1);
+
+    const first_range = text_model.textLineRange(text, layout.lines[0]);
+    const second_range = text_model.textLineRange(text, layout.lines[1]);
+    try std.testing.expectEqual(first_range.end, second_range.start);
+
+    const point = geometry.PointF.init(
+        layout.lines[1].bounds.x - 1,
+        layout.lines[1].bounds.y + layout.lines[1].bounds.height * 0.5,
+    );
+    const streamed = canvas.layoutTextCaretPositionForPoint(text, options, point).?;
+    const buffered = canvas.textCaretPositionForLayoutPoint(text, layout, point).?;
+    try std.testing.expectEqualDeep(
+        canvas.TextCaretPosition{ .offset = second_range.start, .affinity = .downstream },
+        streamed,
+    );
+    try std.testing.expectEqualDeep(streamed, buffered);
+
+    const upstream = canvas.layoutTextCaretRectWithAffinity(text, options, streamed.offset, .upstream).?;
+    const downstream = canvas.layoutTextCaretRectWithAffinity(text, options, streamed.offset, streamed.affinity).?;
+    try std.testing.expectApproxEqAbs(layout.lines[0].bounds.y, upstream.y, 0.001);
+    try std.testing.expectApproxEqAbs(layout.lines[1].bounds.y, downstream.y, 0.001);
+
+    const buffered_downstream = canvas.textCaretRectForLayoutWithAffinity(text, layout, streamed.offset, streamed.affinity).?;
+    try std.testing.expectApproxEqAbs(downstream.y, buffered_downstream.y, 0.001);
+}
+
 test "text layout maps caret selection and points across shaped glyph lines" {
     const glyphs = [_]Glyph{
         .{ .id = 1, .x = 2, .y = -3, .advance = 5 },

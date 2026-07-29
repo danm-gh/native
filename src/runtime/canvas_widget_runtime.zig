@@ -792,6 +792,21 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
         if (copy.widget.text_selection == null and copy.widget.text_composition == null) {
             copy.widget.text_selection = entry.text_selection;
             copy.widget.text_composition = entry.text_composition;
+        } else if (copy.widget.text_selection) |*source_selection| {
+            // Caret affinity is runtime geometry at a byte offset. Core
+            // and C-ABI controlled models historically echo only
+            // anchor/focus, so the bridge materializes `.upstream` on
+            // every rebuild. When those offsets faithfully echo the
+            // retained selection, keep the retained visual-line owner;
+            // changing either offset remains the source-authoritative
+            // way to move the selection.
+            if (entry.text_selection) |retained_selection| {
+                if (source_selection.anchor == retained_selection.anchor and
+                    source_selection.focus == retained_selection.focus)
+                {
+                    source_selection.affinity = retained_selection.affinity;
+                }
+            }
         }
     }
     return copy;
@@ -1174,7 +1189,7 @@ pub fn canvasWidgetTextEditUnchanged(previous: canvas.TextEditState, next: canva
 }
 
 pub fn canvasTextSelectionsEqual(a: canvas.TextSelection, b: canvas.TextSelection) bool {
-    return a.anchor == b.anchor and a.focus == b.focus;
+    return a.anchor == b.anchor and a.focus == b.focus and a.affinity == b.affinity;
 }
 
 pub fn textSelectionCollapsedAt(selection: ?canvas.TextSelection, offset: usize) bool {

@@ -4428,6 +4428,8 @@ test "reactions misuse fails the build with the pinned teaching messages" {
 pub const MirrorCaretDirection = enum(u8) { previous = 0, next = 1, previous_word = 2, next_word = 3, start = 4, end = 5 };
 pub const MirrorCaretMove = struct { direction: MirrorCaretDirection, extend: bool };
 pub const MirrorSelection = struct { anchor: i64, focus: i64 };
+pub const MirrorCaretAffinity = enum(u8) { upstream = 0, downstream = 1 };
+pub const MirrorSelectionWithAffinity = struct { anchor: i64, focus: i64, affinity: MirrorCaretAffinity };
 pub const MirrorTextInputEvent = union(enum) {
     insert_text: []const u8,
     delete_backward,
@@ -4455,6 +4457,20 @@ test "declaredTextInputUnion accepts the emitted mirror shape and rejects near-m
     try testing.expect(markup_view.declaredTextInputUnion(MirrorTextInputEvent));
     // The canvas union itself matches structurally too (usize numerics).
     try testing.expect(markup_view.declaredTextInputUnion(canvas.TextInputEvent));
+    const MirrorTextInputEventWithAffinity = union(enum) {
+        insert_text: []const u8,
+        delete_backward,
+        delete_forward,
+        delete_word_backward,
+        delete_word_forward,
+        clear,
+        move_caret: MirrorCaretMove,
+        set_selection: MirrorSelectionWithAffinity,
+        set_composition: struct { text: []const u8, cursor: ?i64 },
+        commit_composition,
+        cancel_composition,
+    };
+    try testing.expect(markup_view.declaredTextInputUnion(MirrorTextInputEventWithAffinity));
     // Near-misses stay out: a missing arm, a non-bytes insert payload, a
     // wrong caret vocabulary.
     const MissingArm = union(enum) {

@@ -38,12 +38,35 @@ pub const TextSelectionRect = struct {
     rect: geometry.RectF = .{},
 };
 
+/// Which painted line owns a caret whose byte offset is shared by the
+/// end of one soft-wrapped line and the start of the next.
+pub const TextCaretAffinity = enum {
+    upstream,
+    downstream,
+};
+
+pub const TextCaretPosition = struct {
+    offset: usize = 0,
+    affinity: TextCaretAffinity = .upstream,
+};
+
 pub const TextSelection = struct {
     anchor: usize = 0,
     focus: usize = 0,
+    /// Affinity belongs to the focus end. It only changes geometry at a
+    /// soft-wrap boundary; ordinary offsets render identically.
+    affinity: TextCaretAffinity = .upstream,
 
     pub fn collapsed(offset: usize) TextSelection {
         return .{ .anchor = offset, .focus = offset };
+    }
+
+    pub fn collapsedAt(position: TextCaretPosition) TextSelection {
+        return .{
+            .anchor = position.offset,
+            .focus = position.offset,
+            .affinity = position.affinity,
+        };
     }
 
     pub fn range(self: TextSelection, text_len: usize) TextRange {
@@ -277,6 +300,7 @@ pub fn snapTextSelection(text: []const u8, selection: TextSelection) TextSelecti
     return .{
         .anchor = snapTextOffset(text, selection.anchor),
         .focus = snapTextOffset(text, selection.focus),
+        .affinity = selection.affinity,
     };
 }
 

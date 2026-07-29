@@ -771,6 +771,7 @@ pub const RuntimeView = struct {
     canvas_widget_text_vertical_goal_text_len: usize = 0,
     canvas_widget_text_vertical_goal_text_hash: u64 = 0,
     canvas_widget_text_vertical_goal_focus: usize = 0,
+    canvas_widget_text_vertical_goal_affinity: canvas.TextCaretAffinity = .upstream,
     canvas_widget_text_vertical_goal_frame: geometry.RectF = .{},
 
     const CanvasWidgetTextMethods = view_widget_text.RuntimeViewCanvasWidgetText(RuntimeView);

@@ -1024,6 +1024,14 @@ pub fn Ui(comptime Msg: type) type {
                         },
                         .set_selection => |selection| blk: {
                             const Selection = @FieldType(Payload, "set_selection");
+                            if (comptime @hasField(Selection, "affinity")) {
+                                const Affinity = @FieldType(Selection, "affinity");
+                                break :blk @unionInit(Payload, "set_selection", .{
+                                    .anchor = num(@FieldType(Selection, "anchor"), selection.anchor),
+                                    .focus = num(@FieldType(Selection, "focus"), selection.focus),
+                                    .affinity = @field(Affinity, @tagName(selection.affinity)),
+                                });
+                            }
                             break :blk @unionInit(Payload, "set_selection", .{
                                 .anchor = num(@FieldType(Selection, "anchor"), selection.anchor),
                                 .focus = num(@FieldType(Selection, "focus"), selection.focus),

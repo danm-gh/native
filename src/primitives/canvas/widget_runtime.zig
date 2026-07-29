@@ -43,6 +43,7 @@ pub const max_widget_text_range_rects: usize = 4;
 pub const widgetControlHeight = widget_metrics.widgetControlHeight;
 pub const WidgetTextGeometry = widget_text_input.WidgetTextGeometry;
 pub const textSelectionForWidgetPoint = widget_text_input.textSelectionForWidgetPoint;
+pub const textCaretPositionForWidgetPoint = widget_text_input.textCaretPositionForWidgetPoint;
 pub const textOffsetForWidgetPoint = widget_text_input.textOffsetForWidgetPoint;
 pub const textInputViewportForWidget = widget_text_input.textInputViewportForWidget;
 pub const textInputClearButtonRect = widget_text_input.textInputClearButtonRect;

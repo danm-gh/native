@@ -116,6 +116,10 @@ pub const text_caret_direction_members = [_][]const u8{
     "previous", "next", "previous_word", "next_word", "start", "end",
 };
 
+pub const text_caret_affinity_members = [_][]const u8{
+    "upstream", "downstream",
+};
+
 /// A Msg arm payload union DECLARING the text-input event shape rather than
 /// being `canvas.TextInputEvent` by identity — the transpiled-core case,
 /// where the emitted module declares its own mirror union (type identity
@@ -125,7 +129,8 @@ pub const text_caret_direction_members = [_][]const u8{
 ///   - `insert_text` a bytes payload; the seven verb arms void;
 ///   - `move_caret` a record of `direction` (an enum with exactly the six
 ///     caret-direction member names) and `extend: bool`;
-///   - `set_selection` a record of numeric `anchor`/`focus`;
+///   - `set_selection` a record of numeric `anchor`/`focus`, optionally
+///     plus the native `upstream`/`downstream` caret-affinity enum;
 ///   - `set_composition` a record of bytes `text` and optional numeric
 ///     `cursor`.
 /// Numeric fields accept integer or float (the transpiler's number model
@@ -323,11 +328,23 @@ fn isSelectionRecord(comptime T: type) bool {
         .@"struct" => |s| s,
         else => return false,
     };
-    if (info.fields.len != 2) return false;
+    if (info.fields.len != 2 and info.fields.len != 3) return false;
     if (!@hasField(T, "anchor") or !@hasField(T, "focus")) return false;
     inline for (info.fields) |field| {
-        if (!isNumeric(field.type)) return false;
+        if (comptime std.mem.eql(u8, field.name, "affinity")) {
+            const members = switch (@typeInfo(field.type)) {
+                .@"enum" => |e| e.fields,
+                else => return false,
+            };
+            if (members.len != text_caret_affinity_members.len) return false;
+            inline for (text_caret_affinity_members) |name| {
+                if (!@hasField(field.type, name)) return false;
+            }
+        } else if (!isNumeric(field.type)) {
+            return false;
+        }
     }
+    if (info.fields.len == 3 and !@hasField(T, "affinity")) return false;
     return true;
 }
 

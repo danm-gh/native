@@ -7014,6 +7014,20 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
     [self emitSelectAllTextInputCommand];
 }
 
+// The runtime owns canvas-editor history, so Edit-menu actions take the
+// same Command+Z / Command+Shift+Z route as physical keyboard events.
+- (void)undo:(id)sender {
+    (void)sender;
+    if (![self focusedTextAccessibilityElement]) return;
+    [self emitSyntheticKeyDownWithKey:@"z" modifiers:(NativeSdkShortcutModifierPrimary | NativeSdkShortcutModifierCommand)];
+}
+
+- (void)redo:(id)sender {
+    (void)sender;
+    if (![self focusedTextAccessibilityElement]) return;
+    [self emitSyntheticKeyDownWithKey:@"z" modifiers:(NativeSdkShortcutModifierPrimary | NativeSdkShortcutModifierCommand | NativeSdkShortcutModifierShift)];
+}
+
 // Edit-menu clipboard actions on the canvas: the runtime already
 // resolves cmd+C/X/V key events against the focused editable widget or
 // the view's text selection, so the menu items ride the same path as
@@ -7039,7 +7053,11 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
-    if (menuItem.action == @selector(cut:) || menuItem.action == @selector(paste:) || menuItem.action == @selector(selectAll:)) {
+    if (menuItem.action == @selector(undo:) ||
+        menuItem.action == @selector(redo:) ||
+        menuItem.action == @selector(cut:) ||
+        menuItem.action == @selector(paste:) ||
+        menuItem.action == @selector(selectAll:)) {
         return [self focusedTextAccessibilityElement] != nil;
     }
     return YES;
@@ -8989,14 +9007,12 @@ static void NativeSdkApplyProcessDisplayName(NSString *displayName) {
     [mainMenu addItem:editMenuItem];
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
     [editMenuItem setSubmenu:editMenu];
-    if (self.hasWebContent) {
-        // Undo/Redo answer only inside web content (the webview's own
-        // editing stack); the canvas text editor has no undo stack, so
-        // canvas-only apps do not show items nothing can perform.
-        [editMenu addItem:[self menuItem:@"Undo" action:@selector(undo:) key:@"z" modifiers:NSEventModifierFlagCommand]];
-        [editMenu addItem:[self menuItem:@"Redo" action:@selector(redo:) key:@"Z" modifiers:NSEventModifierFlagCommand]];
-        [editMenu addItem:[NSMenuItem separatorItem]];
-    }
+    // Web content answers through its native responder. A focused canvas
+    // editor answers through NativeSdkGpuSurfaceView's synthetic-key
+    // bridge into the runtime's per-editor history.
+    [editMenu addItem:[self menuItem:@"Undo" action:@selector(undo:) key:@"z" modifiers:NSEventModifierFlagCommand]];
+    [editMenu addItem:[self menuItem:@"Redo" action:@selector(redo:) key:@"Z" modifiers:NSEventModifierFlagCommand]];
+    [editMenu addItem:[NSMenuItem separatorItem]];
     [editMenu addItem:[self menuItem:@"Cut" action:@selector(cut:) key:@"x" modifiers:NSEventModifierFlagCommand]];
     [editMenu addItem:[self menuItem:@"Copy" action:@selector(copy:) key:@"c" modifiers:NSEventModifierFlagCommand]];
     [editMenu addItem:[self menuItem:@"Paste" action:@selector(paste:) key:@"v" modifiers:NSEventModifierFlagCommand]];

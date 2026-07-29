@@ -765,6 +765,96 @@ test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(expected_left), retained.nodes[1].widget.text_selection.?);
 }
 
+test "textarea visual navigation keeps an unbroken wrap boundary on its painted line" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-textarea-wrap-affinity", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 200, 160),
+    });
+
+    const text = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 72, 120),
+        .text = text,
+        .text_selection = canvas.TextSelection.collapsed(0),
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, geometry.RectF.init(0, 0, 200, 160), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    var field = retained.nodes[1].widget;
+    const first_caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    const second_line_start = canvas.textCaretPositionForWidgetPoint(
+        field,
+        geometry.PointF.init(field.frame.x - 1, first_caret.y + first_caret.height * 1.5),
+        harness.runtime.views[0].widget_tokens,
+    ).?;
+    try std.testing.expectEqual(canvas.TextCaretAffinity.downstream, second_line_start.affinity);
+    try std.testing.expect(second_line_start.offset > 0);
+    try std.testing.expect(second_line_start.offset + 1 < text.len);
+
+    const pointer_selection = canvas.textSelectionForWidgetPoint(
+        field,
+        geometry.PointF.init(field.frame.x - 1, first_caret.y + first_caret.height * 1.5),
+        null,
+        harness.runtime.views[0].widget_tokens,
+    ).?;
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), pointer_selection);
+
+    _ = try harness.runtime.editCanvasWidgetText(
+        1,
+        "canvas",
+        2,
+        .{ .set_selection = canvas.TextSelection.collapsed(second_line_start.offset + 1) },
+    );
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowleft",
+        .modifiers = .{ .command = true },
+    } });
+
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    field = retained.nodes[1].widget;
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), field.text_selection.?);
+    const navigated_caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    try std.testing.expect(navigated_caret.y > first_caret.y);
+
+    // Controlled cores and the C ABI historically echo anchor/focus
+    // without an affinity slot. Reconcile retains the visual-line owner
+    // when that byte-identical selection comes back as the default
+    // upstream value.
+    var echoed = textarea;
+    echoed.text_selection = canvas.TextSelection.collapsed(second_line_start.offset);
+    var echoed_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const echoed_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{echoed} }, geometry.RectF.init(0, 0, 200, 160), &echoed_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", echoed_layout);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), retained.nodes[1].widget.text_selection.?);
+    const echoed_caret = canvas.textGeometryForWidget(retained.nodes[1].widget, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    try std.testing.expectApproxEqAbs(navigated_caret.y, echoed_caret.y, 0.001);
+}
+
 test "canvas textareas undo and redo keyboard edits" {
     const TestApp = struct {
         fn app(self: *@This()) App {

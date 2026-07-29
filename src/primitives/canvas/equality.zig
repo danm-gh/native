@@ -305,7 +305,9 @@ pub fn optionalF32Equal(a: ?f32, b: ?f32) bool {
 
 pub fn optionalTextSelectionsEqual(a: ?TextSelection, b: ?TextSelection) bool {
     if (a) |left| {
-        if (b) |right| return left.anchor == right.anchor and left.focus == right.focus;
+        if (b) |right| return left.anchor == right.anchor and
+            left.focus == right.focus and
+            left.affinity == right.affinity;
         return false;
     }
     return b == null;

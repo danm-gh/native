@@ -1104,6 +1104,26 @@ test "textarea visual navigation keeps an unbroken wrap boundary on its painted 
     try std.testing.expect(second_line_start.offset > 0);
     try std.testing.expect(second_line_start.offset + 1 < text.len);
 
+    // Left from the next scalar first visits the downstream start of this
+    // visual line, then the upstream end of the preceding visual line.
+    _ = try harness.runtime.editCanvasWidgetText(
+        1,
+        "canvas",
+        2,
+        .{ .set_selection = canvas.TextSelection.collapsed(second_line_start.offset + 1) },
+    );
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowleft",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(
+        canvas.TextSelection.collapsedAt(second_line_start),
+        retained.nodes[1].widget.text_selection.?,
+    );
+
     const pointer_selection = canvas.textSelectionForWidgetPoint(
         field,
         geometry.PointF.init(field.frame.x - 1, first_caret.y + first_caret.height * 1.5),

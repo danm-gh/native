@@ -266,6 +266,25 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                         }) };
                     }
                 }
+                if (selection.isCollapsed(widget.text.len) and moving_left) {
+                    var movement_scratch: [1]u8 = undefined;
+                    const moved = (canvas.TextEditState{
+                        .text = widget.text,
+                        .selection = selection,
+                        .composition = widget.text_composition,
+                    }).apply(
+                        .{ .move_caret = .{ .direction = .previous } },
+                        &movement_scratch,
+                    ) catch return null;
+                    const target_position = canvasWidgetTextSelectionStartPosition(
+                        self,
+                        widget,
+                        moved.selection.focus,
+                    );
+                    if (target_position.affinity == .downstream) {
+                        return .{ .set_selection = canvas.TextSelection.collapsedAt(target_position) };
+                    }
+                }
             }
 
             // Plain Up/Down follows the textarea's PAINTED visual lines,

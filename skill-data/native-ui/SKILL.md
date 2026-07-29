@@ -979,7 +979,7 @@ A source-bound highlighted surface shared with Markdown fences:
 - `source` is one required `{binding}` producing `[]const u8`; the element has no children.
 - `language` is a literal lexer name: Zig, JS/TS, JSX/TSX, JSON, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, or SQL. Omit it for plain monospace.
 - Wrapping is on by default. `wrap="false"` keeps logical lines intact inside one horizontal scroll region.
-- `line-numbers` is off by default. Wrapped logical lines stay paired with their number. Numbered mode is bounded to 128 logical lines; longer sources preserve all code and omit the gutter.
+- `line-numbers` is off by default. Wrapped logical lines stay paired with their number. Numbered mode is limited to 128 logical lines and a reserved share of the per-view node and text-span budgets; sources that exceed any bound preserve all code and omit the gutter.
 - Zig builder: `ui.code(.{ .language = .html, .line_numbers = true, .wrap = false }, model.snippet)`. The public lexer helpers are under `native_sdk.canvas.code`.
 
 ## Markdown in markup: `<markdown>`

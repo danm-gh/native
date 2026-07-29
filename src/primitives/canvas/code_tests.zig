@@ -37,6 +37,12 @@ fn countByKind(widget: canvas.Widget, kind: canvas.WidgetKind) usize {
     return count;
 }
 
+fn countTextSpans(widget: canvas.Widget) usize {
+    var count = widget.spans.len;
+    for (widget.children) |child| count += countTextSpans(child);
+    return count;
+}
+
 fn appendTextWidgets(widget: canvas.Widget, output: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
     if (widget.kind == .text) try output.appendSlice(allocator, widget.text);
     for (widget.children) |child| try appendTextWidgets(child, output, allocator);
@@ -323,6 +329,34 @@ test "numbered code stays below the retained widget node budget at its limit" {
         geometry.RectF.init(0, 0, 320, 20_000),
         &long_nodes,
     );
+}
+
+test "token-dense numbered code falls back below the retained span budget" {
+    const dense_line = "const a0 = 0; const a1 = 1; const a2 = 2;";
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    for (0..79) |line_index| {
+        if (line_index > 0) try source.append(testing.allocator, '\n');
+        try source.appendSlice(testing.allocator, dense_line);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const fallback = try ui.finalize(ui.code(.{
+        .language = .zig,
+        .line_numbers = true,
+    }, source.items));
+
+    // Numbered rendering would retain 1,027 spans: twelve highlighted
+    // spans plus one gutter span for each logical line.
+    try testing.expectEqual(@as(usize, 0), countByKind(fallback.root, .row));
+    try testing.expect(countTextSpans(fallback.root) <= Ui.max_code_spans_per_surface);
+
+    var recovered: std.ArrayListUnmanaged(u8) = .empty;
+    defer recovered.deinit(testing.allocator);
+    try appendTextWidgets(fallback.root, &recovered, testing.allocator);
+    try testing.expectEqualStrings(source.items, recovered.items);
 }
 
 test "unwrapped multiline intrinsic width is the widest logical line" {

@@ -2313,7 +2313,8 @@ pub fn Ui(comptime Msg: type) type {
             const line_count = codeLineCount(source);
             const numbered = options.line_numbers and
                 line_count <= max_code_lines and
-                numberedCodeNodeCount(source, options.wrap) <= max_numbered_code_nodes;
+                numberedCodeNodeCount(source, options.wrap) <= max_numbered_code_nodes and
+                numberedCodeSpansFit(source, options.language, options.wrap);
             const content = if (numbered)
                 self.numberedCodeLines(source, options.language, options.wrap)
             else
@@ -2364,8 +2365,7 @@ pub fn Ui(comptime Msg: type) type {
                 // their newline separator. End line-scoped lexer state
                 // explicitly; block comments, strings, and HTML/JSX
                 // structure intentionally continue into the next line.
-                highlight_state.line_comment = false;
-                highlight_state.preprocessor_line = false;
+                endCodeLineHighlight(&highlight_state);
                 const number = self.codeLineNumber(index + 1, digits);
                 const marker = self.paragraph(.{
                     .style_tokens = .{ .foreground = .text_muted },
@@ -2385,7 +2385,17 @@ pub fn Ui(comptime Msg: type) type {
         /// visible instead of silently truncating a large source block.
         fn codeParagraphChunks(self: *Self, source: []const u8, language: code_model.Language, wrap: bool) Node {
             var state: code_model.HighlightState = .{};
-            return self.codeParagraphChunksWithState(source, language, wrap, if (wrap) 1 else 0, &state);
+            var budget: CodeSpanBudget = .{
+                .remaining_chunks = codeParagraphChunkCount(source, wrap),
+            };
+            return self.codeParagraphChunksWithStateBudgeted(
+                source,
+                language,
+                wrap,
+                if (wrap) 1 else 0,
+                &state,
+                &budget,
+            );
         }
 
         fn codeParagraphChunksWithState(
@@ -2396,9 +2406,28 @@ pub fn Ui(comptime Msg: type) type {
             grow: f32,
             state: *code_model.HighlightState,
         ) Node {
+            return self.codeParagraphChunksWithStateBudgeted(
+                source,
+                language,
+                wrap,
+                grow,
+                state,
+                null,
+            );
+        }
+
+        fn codeParagraphChunksWithStateBudgeted(
+            self: *Self,
+            source: []const u8,
+            language: code_model.Language,
+            wrap: bool,
+            grow: f32,
+            state: *code_model.HighlightState,
+            budget: ?*CodeSpanBudget,
+        ) Node {
             const chunk_count = codeParagraphChunkCount(source, wrap);
             if (chunk_count == 1) {
-                return self.codeParagraphWithState(source, language, wrap, grow, state);
+                return self.codeParagraphWithState(source, language, wrap, grow, state, budget);
             }
             const chunks = self.arena.alloc(Node, chunk_count) catch {
                 self.failed = true;
@@ -2414,6 +2443,7 @@ pub fn Ui(comptime Msg: type) type {
                     wrap,
                     0,
                     state,
+                    budget,
                 );
                 chunk_index += 1;
                 chunk_start = chunk_end;
@@ -2421,12 +2451,37 @@ pub fn Ui(comptime Msg: type) type {
             return self.column(.{ .grow = grow }, .{chunks[0..chunk_index]});
         }
 
-        fn codeParagraphWithState(self: *Self, source: []const u8, language: code_model.Language, wrap: bool, grow: f32, state: *code_model.HighlightState) Node {
+        fn codeParagraphWithState(
+            self: *Self,
+            source: []const u8,
+            language: code_model.Language,
+            wrap: bool,
+            grow: f32,
+            state: *code_model.HighlightState,
+            budget: ?*CodeSpanBudget,
+        ) Node {
             var storage: [canvas.text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
-            const highlighted = if (source.len == 0) blk: {
+            var highlighted = if (source.len == 0) blk: {
                 storage[0] = .{ .text = " ", .monospace = true };
                 break :blk storage[0..1];
             } else code_model.highlightWithState(source, language, &storage, state);
+            if (budget) |span_budget| {
+                std.debug.assert(span_budget.remaining_chunks > 0);
+                span_budget.remaining_chunks -= 1;
+                const highlighted_total = span_budget.used +
+                    highlighted.len +
+                    span_budget.remaining_chunks;
+                if (highlighted_total <= max_code_spans_per_surface) {
+                    span_budget.used += highlighted.len;
+                } else {
+                    storage[0] = .{
+                        .text = if (source.len == 0) " " else source,
+                        .monospace = true,
+                    };
+                    highlighted = storage[0..1];
+                    span_budget.used += 1;
+                }
+            }
             return self.paragraph(.{ .wrap = wrap, .grow = grow }, highlighted);
         }
 
@@ -2448,11 +2503,17 @@ pub fn Ui(comptime Msg: type) type {
 
         /// Upper bound for allocating one numbered row per logical code line.
         /// A numbered line costs four retained widgets; 128 keeps a maximal
-        /// gutter near half of the 1024-node per-view budget. Larger sources
-        /// and unusually long numbered lines that would push the component
-        /// past that same half-view budget fall back to unnumbered chunks.
+        /// gutter near half of the 1024-node per-view budget. Code highlighting
+        /// likewise uses at most half of the 1024-span budget. Sources that
+        /// exceed either component share keep all text but omit the gutter.
         pub const max_code_lines: usize = 128;
         const max_numbered_code_nodes: usize = 520;
+        pub const max_code_spans_per_surface: usize = 512;
+
+        const CodeSpanBudget = struct {
+            used: usize = 0,
+            remaining_chunks: usize,
+        };
 
         fn numberedCodeNodeCount(source: []const u8, wrap: bool) usize {
             // Panel + content column, plus the horizontal-scroll wrapper,
@@ -2469,6 +2530,48 @@ pub fn Ui(comptime Msg: type) type {
                 if (count > max_numbered_code_nodes) return count;
             }
             return count;
+        }
+
+        fn numberedCodeSpansFit(source: []const u8, language: code_model.Language, wrap: bool) bool {
+            var count: usize = 0;
+            var state: code_model.HighlightState = .{};
+            var lines = std.mem.splitScalar(u8, source, '\n');
+            while (lines.next()) |line| {
+                count += highlightedCodeSpanCount(line, language, wrap, &state);
+                endCodeLineHighlight(&state);
+                // Every numbered row also retains one marker span.
+                count += 1;
+                if (count > max_code_spans_per_surface) return false;
+            }
+            return true;
+        }
+
+        fn highlightedCodeSpanCount(
+            source: []const u8,
+            language: code_model.Language,
+            wrap: bool,
+            state: *code_model.HighlightState,
+        ) usize {
+            if (source.len == 0) return 1;
+            var storage: [canvas.text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+            var count: usize = 0;
+            var chunk_start: usize = 0;
+            while (chunk_start < source.len) {
+                const chunk_end = codeParagraphChunkEnd(source, chunk_start, wrap);
+                count += code_model.highlightWithState(
+                    source[chunk_start..chunk_end],
+                    language,
+                    &storage,
+                    state,
+                ).len;
+                chunk_start = chunk_end;
+            }
+            return count;
+        }
+
+        fn endCodeLineHighlight(state: *code_model.HighlightState) void {
+            state.line_comment = false;
+            state.preprocessor_line = false;
         }
 
         fn codeParagraphChunkCount(source: []const u8, wrap: bool) usize {

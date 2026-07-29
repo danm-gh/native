@@ -926,6 +926,27 @@ test "textarea visual navigation keeps an unbroken wrap boundary on its painted 
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), retained.nodes[1].widget.text_selection.?);
     const echoed_caret = canvas.textGeometryForWidget(retained.nodes[1].widget, harness.runtime.views[0].widget_tokens).caret_bounds.?;
     try std.testing.expectApproxEqAbs(navigated_caret.y, echoed_caret.y, 0.001);
+
+    // A source that does carry affinity can deliberately move between
+    // the two painted caret stops without changing anchor/focus.
+    var explicit_downstream = textarea;
+    explicit_downstream.text_selection = canvas.TextSelection.collapsedAt(second_line_start);
+    var explicit_downstream_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const explicit_downstream_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{explicit_downstream} }, geometry.RectF.init(0, 0, 200, 160), &explicit_downstream_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", explicit_downstream_layout);
+
+    var explicit_upstream = textarea;
+    explicit_upstream.text_selection = canvas.TextSelection.collapsedAt(.{
+        .offset = second_line_start.offset,
+        .affinity = .upstream,
+    });
+    var explicit_upstream_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const explicit_upstream_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{explicit_upstream} }, geometry.RectF.init(0, 0, 200, 160), &explicit_upstream_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", explicit_upstream_layout);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(explicit_upstream.text_selection.?, retained.nodes[1].widget.text_selection.?);
+    const explicit_upstream_caret = canvas.textGeometryForWidget(retained.nodes[1].widget, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    try std.testing.expectApproxEqAbs(upstream_caret.y, explicit_upstream_caret.y, 0.001);
 }
 
 test "canvas textareas undo and redo keyboard edits" {
@@ -2848,6 +2869,18 @@ test "a widget text budget overflow on input degrades instead of exiting" {
         .y = 30,
     } });
 
+    // Seed a redo branch. A refused edit must not fork or evict it.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "!",
+        .text = "!",
+    } });
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(filler.len, retained.nodes[1].widget.text.len);
+
     const burst = [_]u8{'b'} ** 510;
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
@@ -2858,14 +2891,33 @@ test "a widget text budget overflow on input degrades instead of exiting" {
     } });
 
     // The edit was refused, the error recorded, the app still running.
-    const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqual(filler.len, retained.nodes[1].widget.text.len);
     const errors = harness.runtime.dispatchErrors();
     try std.testing.expect(errors.len >= 1);
     try std.testing.expectEqualStrings("gpu_surface_input", errors[errors.len - 1].event());
     try std.testing.expectEqualStrings("WidgetTextTooLarge", errors[errors.len - 1].error_name);
 
-    // The next interaction dispatches clean.
+    // The redo branch survived because the rejected edit never mutated
+    // history, and the next interaction dispatches clean.
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(filler.len + 1, retained.nodes[1].widget.text.len);
+    try std.testing.expect(std.mem.indexOfScalar(u8, retained.nodes[1].widget.text, '!') != null);
+
+    // The direct setter has the same preflight contract: an oversized
+    // replacement must not clear the timeline before it is refused.
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    const oversized = filler ++ burst;
+    try std.testing.expectError(
+        error.WidgetTextTooLarge,
+        harness.runtime.views[0].setCanvasWidgetTextValue(2, &oversized),
+    );
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(filler.len + 1, retained.nodes[1].widget.text.len);
+    try std.testing.expect(std.mem.indexOfScalar(u8, retained.nodes[1].widget.text, '!') != null);
+
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",

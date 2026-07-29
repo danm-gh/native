@@ -73,6 +73,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             };
             const next_state = try current_state.apply(edit, &edit_buffer);
             if (canvasWidgetTextEditUnchanged(current_state, next_state)) return null;
+            try validateCanvasWidgetTextStorageRewrite(self, index, next_state);
 
             const starts_composition = current_state.composition == null and next_state.composition != null;
             const history_recorded = record_history and
@@ -932,6 +933,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
         }
 
         pub fn rewriteCanvasWidgetTextStorage(self: *RuntimeView, edited_index: usize, next_state: canvas.TextEditState) anyerror!void {
+            try validateCanvasWidgetTextStorageRewrite(self, edited_index, next_state);
             var temp: [max_canvas_widget_text_bytes_per_view]u8 = undefined;
             var text_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange = undefined;
             var label_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange = undefined;
@@ -959,19 +961,40 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             self.widget_layout_nodes[edited_index].widget.text_composition = next_state.composition;
         }
 
+        /// Prove a retained text rewrite fits before any editor history is
+        /// forked, evicted, or cleared. The immediately following rewrite
+        /// charges these exact three slices for every retained node.
+        fn validateCanvasWidgetTextStorageRewrite(self: *const RuntimeView, edited_index: usize, next_state: canvas.TextEditState) anyerror!void {
+            var required_len: usize = 0;
+            for (self.widget_layout_nodes[0..self.widget_layout_node_count], 0..) |node, index| {
+                const text = if (index == edited_index) next_state.text else node.widget.text;
+                const values = [_][]const u8{
+                    text,
+                    node.widget.semantics.label,
+                    node.widget.command,
+                };
+                for (values) |value| {
+                    if (value.len > self.widget_text_bytes.len - required_len) return error.WidgetTextTooLarge;
+                    required_len += value.len;
+                }
+            }
+        }
+
         pub fn setCanvasWidgetTextValue(self: *RuntimeView, id: canvas.ObjectId, text: []const u8) anyerror!?geometry.RectF {
             const index = self.canvasWidgetNodeIndexById(id) orelse return null;
             const widget = self.widget_layout_nodes[index].widget;
             if (!canvasWidgetEditableTextKind(widget.kind) or widget.state.disabled) return null;
             if (std.mem.eql(u8, widget.text, text) and widget.text_composition == null and textSelectionCollapsedAt(widget.text_selection, text.len)) return null;
 
-            clearCanvasWidgetTextVerticalGoal(self);
-            clearCanvasWidgetTextHistory(self, id);
-            try self.rewriteCanvasWidgetTextStorage(index, .{
+            const next_state = canvas.TextEditState{
                 .text = text,
                 .selection = canvas.TextSelection.collapsed(text.len),
                 .composition = null,
-            });
+            };
+            try validateCanvasWidgetTextStorageRewrite(self, index, next_state);
+            clearCanvasWidgetTextVerticalGoal(self);
+            clearCanvasWidgetTextHistory(self, id);
+            try self.rewriteCanvasWidgetTextStorage(index, next_state);
             self.scrollCanvasTextInputCaretIntoView(index);
             try self.refreshCanvasWidgetSemantics();
             self.widget_revision += 1;

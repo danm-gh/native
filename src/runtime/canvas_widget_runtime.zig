@@ -151,6 +151,12 @@ pub const CanvasWidgetTextReconcileEntry = struct {
     text: []const u8 = &.{},
     source_text_len: usize = 0,
     source_text_hash: u64 = 0,
+    /// The selection declared by the previous SOURCE tree, distinct from
+    /// the runtime-owned selection in `text_selection`. Legacy controlled
+    /// models always materialize the default `.upstream` affinity, so an
+    /// unchanged source affinity is an echo; a changed affinity is an
+    /// explicit source-side visual-caret move.
+    source_text_selection: ?canvas.TextSelection = null,
     text_selection: ?canvas.TextSelection = null,
     text_composition: ?canvas.TextRange = null,
     value: f32 = 0,
@@ -246,6 +252,7 @@ pub const CanvasWidgetSourceTextEntry = struct {
     kind: canvas.WidgetKind = .text_field,
     text_len: usize = 0,
     text_hash: u64 = 0,
+    text_selection: ?canvas.TextSelection = null,
 };
 
 /// The SOURCE-side selected state (and value, for sliders) of one
@@ -588,13 +595,18 @@ pub fn collectCanvasWidgetTextReconcileEntries(
         if (node.widget.id == 0 or !canvasWidgetTextReconcileKind(node.widget)) continue;
         if (len >= output.len) break;
         const text_range = try appendWidgetTextStorageRange(text_storage, text_len, node.widget.text);
-        const source_text = canvasWidgetSourceTextByIdKind(source_entries, node.widget.id, node.widget.kind) orelse canvasWidgetSourceTextFingerprint(node.widget.text);
+        const source_entry = canvasWidgetSourceTextEntryByIdKind(source_entries, node.widget.id, node.widget.kind);
+        const source_text = if (source_entry) |entry|
+            CanvasWidgetSourceTextFingerprint{ .len = entry.text_len, .hash = entry.text_hash }
+        else
+            canvasWidgetSourceTextFingerprint(node.widget.text);
         output[len] = .{
             .id = node.widget.id,
             .kind = node.widget.kind,
             .text = text_storage[text_range.start..text_range.end],
             .source_text_len = source_text.len,
             .source_text_hash = source_text.hash,
+            .source_text_selection = if (source_entry) |entry| entry.text_selection else null,
             .text_selection = node.widget.text_selection,
             .text_composition = node.widget.text_composition,
             .value = node.widget.value,
@@ -632,12 +644,21 @@ pub fn canvasWidgetSourceTextByIdKind(
     id: canvas.ObjectId,
     kind: canvas.WidgetKind,
 ) ?CanvasWidgetSourceTextFingerprint {
+    const entry = canvasWidgetSourceTextEntryByIdKind(entries, id, kind) orelse return null;
+    return .{
+        .len = entry.text_len,
+        .hash = entry.text_hash,
+    };
+}
+
+fn canvasWidgetSourceTextEntryByIdKind(
+    entries: []const CanvasWidgetSourceTextEntry,
+    id: canvas.ObjectId,
+    kind: canvas.WidgetKind,
+) ?CanvasWidgetSourceTextEntry {
     for (entries) |entry| {
         if (entry.id != id or entry.kind != kind) continue;
-        return .{
-            .len = entry.text_len,
-            .hash = entry.text_hash,
-        };
+        return entry;
     }
     return null;
 }
@@ -804,7 +825,13 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
                 if (source_selection.anchor == retained_selection.anchor and
                     source_selection.focus == retained_selection.focus)
                 {
-                    source_selection.affinity = retained_selection.affinity;
+                    const source_affinity_changed = if (entry.source_text_selection) |previous_source_selection|
+                        source_selection.affinity != previous_source_selection.affinity
+                    else
+                        false;
+                    if (!source_affinity_changed) {
+                        source_selection.affinity = retained_selection.affinity;
+                    }
                 }
             }
         }

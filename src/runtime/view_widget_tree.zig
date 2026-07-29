@@ -174,6 +174,7 @@ pub fn RuntimeViewCanvasWidgetTree(comptime RuntimeView: type) type {
                     .kind = node.widget.kind,
                     .text_len = source_text.len,
                     .text_hash = source_text.hash,
+                    .text_selection = node.widget.text_selection,
                 };
                 entry_count += 1;
             }

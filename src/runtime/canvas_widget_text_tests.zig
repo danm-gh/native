@@ -624,6 +624,73 @@ test "runtime applies text input to canvas textareas" {
     try std.testing.expect(saw_textarea_clip);
 }
 
+test "textarea pointer and direct selection cannot split CRLF" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-textarea-crlf-pointer", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 260, 160),
+    });
+
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 180, 84),
+        .text = "one\r\ntwo",
+        // Exercise reconciliation from an externally supplied selection
+        // inside the two-byte delimiter too.
+        .text_selection = canvas.TextSelection.collapsed(4),
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, geometry.RectF.init(0, 0, 260, 160), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{
+        .set_selection = canvas.TextSelection.collapsed(4),
+    });
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(3), retained.nodes[1].widget.text_selection.?);
+
+    const field = retained.nodes[1].widget;
+    const caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    const line_end = geometry.PointF.init(field.frame.maxX() - 1, caret.y + caret.height * 0.5);
+    try std.testing.expectEqual(
+        @as(usize, 3),
+        canvas.textOffsetForWidgetPoint(field, line_end, harness.runtime.views[0].widget_tokens).?,
+    );
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = line_end.x,
+        .y = line_end.y,
+    } });
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(3), try retainedTextSelection(harness, 1));
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "x",
+        .text = "X",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("oneX\r\ntwo", retained.nodes[1].widget.text);
+}
+
 test "textarea vertical navigation retains its preferred column across short lines" {
     const TestApp = struct {
         fn app(self: *@This()) App {

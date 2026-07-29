@@ -17,7 +17,7 @@ const TextRange = text_model.TextRange;
 const TextSelection = text_model.TextSelection;
 const DesignTokens = token_model.DesignTokens;
 const Widget = widget_model.Widget;
-const snapTextSelection = text_model.snapTextSelection;
+const snapTextCaretSelection = text_model.snapTextCaretSelection;
 const snapTextOffset = text_model.snapTextOffset;
 const snapTextRange = text_model.snapTextRange;
 const measureTextWidthForFont = text_model.measureTextWidthForFont;
@@ -133,7 +133,7 @@ pub fn textSelectionForWidgetPoint(widget: Widget, point: geometry.PointF, ancho
         TextSelection{ .anchor = anchor_offset, .focus = position.offset, .affinity = position.affinity }
     else
         TextSelection.collapsedAt(position);
-    return snapTextSelection(widget.text, selection);
+    return snapTextCaretSelection(widget.text, selection);
 }
 
 pub fn textOffsetForWidgetPoint(widget: Widget, point: geometry.PointF, tokens: DesignTokens) ?usize {
@@ -149,7 +149,8 @@ pub fn textCaretPositionForWidgetPoint(widget: Widget, point: geometry.PointF, t
     const layout_options = widgetTextInputLayoutOptions(widget, tokens, text_size, text_inset);
     const origin = widgetTextInputOrigin(widget, tokens, text_size, text_inset, layout_options);
     const draw_text = widgetTextInputDrawText(widget, tokens, text_size, origin, tokens.colors.text, layout_options);
-    return layoutTextCaretPositionForPoint(draw_text, layout_options, point);
+    const position = layoutTextCaretPositionForPoint(draw_text, layout_options, point) orelse return null;
+    return text_model.snapTextCaretPosition(widget.text, position);
 }
 
 pub fn widgetTextInputSize(widget: Widget, tokens: DesignTokens) f32 {

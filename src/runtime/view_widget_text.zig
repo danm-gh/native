@@ -54,21 +54,6 @@ pub const CanvasWidgetTextHistoryAvailability = struct {
 
 const max_text_history_edits_per_shortcut = 3;
 
-/// Hit testing exposes the LF-side end of a painted hard line. CRLF text
-/// must keep its caret before CR so the next edit cannot split the pair.
-fn textCaretPositionOutsideCrLf(text: []const u8, position: canvas.TextCaretPosition) canvas.TextCaretPosition {
-    var normalized = position;
-    if (normalized.offset > 0 and
-        normalized.offset < text.len and
-        text[normalized.offset] == '\n' and
-        text[normalized.offset - 1] == '\r')
-    {
-        normalized.offset -= 1;
-        normalized.affinity = .upstream;
-    }
-    return normalized;
-}
-
 pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
     return struct {
         pub fn applyCanvasWidgetTextEdit(self: *RuntimeView, target_id: canvas.ObjectId, edit: canvas.TextInputEvent) anyerror!?geometry.RectF {
@@ -171,11 +156,11 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                         const caret = canvas.textGeometryForWidget(caret_widget, self.widget_tokens).caret_bounds orelse return null;
                         const frame = widget.frame.normalized();
                         const target_x = if (moving_left) frame.x - 1 else frame.maxX() + 1;
-                        const target_position = textCaretPositionOutsideCrLf(widget.text, canvas.textCaretPositionForWidgetPoint(
+                        const target_position = canvas.textCaretPositionForWidgetPoint(
                             widget,
                             geometry.PointF.init(target_x, caret.y + caret.height * 0.5),
                             self.widget_tokens,
-                        ) orelse return null);
+                        ) orelse return null;
                         return .{ .set_selection = if (keyboard.modifiers.shift)
                             .{
                                 .anchor = selection.anchor,
@@ -309,11 +294,11 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                         caret.y - caret.height * 0.5
                     else
                         caret.y + caret.height * 1.5;
-                    const target_position = textCaretPositionOutsideCrLf(widget.text, canvas.textCaretPositionForWidgetPoint(
+                    const target_position = canvas.textCaretPositionForWidgetPoint(
                         widget,
                         geometry.PointF.init(widget.frame.x + goal_x, target_y),
                         self.widget_tokens,
-                    ) orelse return null);
+                    ) orelse return null;
                     self.canvas_widget_text_vertical_goal_id = target.id;
                     self.canvas_widget_text_vertical_goal_x = goal_x;
                     self.canvas_widget_text_vertical_goal_text_len = widget.text.len;
@@ -555,7 +540,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             // the first preedit is empty (and the before/after text is
             // byte-identical). The removed side is the selection the IME
             // replaced when it opened.
-            const before_selection = canvas.snapTextSelection(before.text, before.selection);
+            const before_selection = canvas.snapTextCaretSelection(before.text, before.selection);
             const delta = if (provisional_composition) blk: {
                 const inserted = after.composition orelse return false;
                 const removed = before_selection.range(before.text.len);

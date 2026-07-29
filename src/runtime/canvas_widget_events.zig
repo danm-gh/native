@@ -2044,23 +2044,24 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 keyboard_event.history_replay_serial = shortcut.serial;
                 keyboard_event.history_replay_redo = shortcut.redo;
             }
-            // Single-line sanitization happens HERE — after derivation,
+            // New single-line input is sanitized HERE — after derivation,
             // BEFORE the stamp — so the retained editor and the app's
-            // `on_input` mirror hear byte-identical sanitized inserts
-            // (clipboard paste from both entry points, typed and
-            // automation text_input, IME composition — every insertion
-            // source flows through this one seam). Pre-stamped pastes
-            // arrive already sanitized (`clampCanvasWidgetPasteText`
-            // strips BEFORE clamping so capacity never counts stripped
-            // bytes); re-sanitizing them is a no-op. A suppressed edit (an
-            // insert that was ONLY line breaks) also clears any raw
-            // pre-stamped paste so the app can never hear bytes the
-            // editor refused; the app-side fallback derivation applies
-            // the same sanitize rule, so both derivations still agree.
-            const edit = canvas.sanitizedSingleLineTextInputEvent(target.kind, derived) orelse {
-                keyboard_event.keyboard.edit = null;
-                return;
-            };
+            // `on_input` mirror hear byte-identical sanitized inserts.
+            // Clipboard paste, typed and automation text_input, and IME
+            // composition all flow through this seam. History replay is
+            // the deliberate exception below: its payload is retained
+            // state rather than new input.
+            // History payloads are retained bytes, not new user input:
+            // replay them exactly so Undo can restore a model-provided
+            // single-line value that contains raw line breaks. Every
+            // non-history insertion still crosses the sanitizer below.
+            const edit = if (keyboard_event.history_replay)
+                derived
+            else
+                canvas.sanitizedSingleLineTextInputEvent(target.kind, derived) orelse {
+                    keyboard_event.keyboard.edit = null;
+                    return;
+                };
             keyboard_event.keyboard.edit = edit;
 
             const dirty = if (keyboard_event.history_replay)

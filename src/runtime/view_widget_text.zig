@@ -47,6 +47,11 @@ pub const CanvasWidgetTextHistoryShortcutResult = struct {
     redo: bool,
 };
 
+pub const CanvasWidgetTextHistoryAvailability = struct {
+    can_undo: bool = false,
+    can_redo: bool = false,
+};
+
 const max_text_history_edits_per_shortcut = 3;
 
 /// Hit testing exposes the LF-side end of a painted hard line. CRLF text
@@ -399,6 +404,36 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 .serial = entry.serial,
                 .redo = redo,
             };
+        }
+
+        /// Availability for native Edit-menu validation. A direction is
+        /// exposed only when its nearest history boundary still matches the
+        /// retained bytes; controlled source replacement can otherwise leave
+        /// an entry mounted but stale until the next shortcut retires it.
+        pub fn canvasWidgetTextHistoryAvailability(
+            self: *const RuntimeView,
+            target_id: canvas.ObjectId,
+        ) CanvasWidgetTextHistoryAvailability {
+            const node_index = self.canvasWidgetNodeIndexById(target_id) orelse return .{};
+            const widget = self.widget_layout_nodes[node_index].widget;
+            if (!canvasWidgetEditableTextKind(widget.kind) or
+                widget.state.disabled or
+                widget.text_composition != null)
+            {
+                return .{};
+            }
+
+            const current_hash = textHistoryHash(widget.text);
+            var availability: CanvasWidgetTextHistoryAvailability = .{};
+            if (canvasWidgetTextHistoryIndex(self, target_id, widget.kind, false)) |history_index| {
+                const entry = self.canvas_widget_text_history_entries[history_index];
+                availability.can_undo = widget.text.len == entry.after_text_len and current_hash == entry.after_hash;
+            }
+            if (canvasWidgetTextHistoryIndex(self, target_id, widget.kind, true)) |history_index| {
+                const entry = self.canvas_widget_text_history_entries[history_index];
+                availability.can_redo = widget.text.len == entry.before_text_len and current_hash == entry.before_hash;
+            }
+            return availability;
         }
 
         /// Derive the next edit of a compound history replay from the

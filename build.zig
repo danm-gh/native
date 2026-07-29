@@ -1140,6 +1140,10 @@ pub fn build(b: *std.Build) void {
         // An assistive client's AXFocused WRITE must move the app's
         // real focus, not just flip a flag on the snapshot element.
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "setAccessibilityFocused" },
+        // Native Edit-menu validation follows the retained editor's actual
+        // history directions instead of merely checking text focus.
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "focusedText.canUndo" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "focusedText.canRedo" },
     });
     addFileContainsCheckStep(b, file_contains_checker, test_step, "test-appkit-gpu-widget-accessibility-text-ranges", "Verify AppKit GPU widget accessibility publishes text selection ranges", &.{
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "accessibilitySelectedTextRange" },

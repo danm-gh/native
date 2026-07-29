@@ -1400,22 +1400,19 @@ pub fn Ui(comptime Msg: type) type {
                     // consumers, tests); the textarea newline mapping
                     // resolves BEFORE it because the generic key mapping
                     // has no Enter case.
-                    const edit = if (keyboard.edit != null)
-                        keyboard.edit
-                    else
-                        canvas.widgetKeyboardNewlineTextEditEvent(widget.kind, keyboard) orelse keyboard.textEditEvent();
-                    if (edit) |text_edit| {
-                        // Single-line kinds sanitize the edit with the
-                        // SAME rule the runtime seam applies before
-                        // stamping (strip line breaks; suppress inserts
-                        // that strip to nothing), so the fallback
-                        // derivation for events that never crossed the
-                        // runtime can never feed a model mirror bytes
-                        // the retained editor would refuse. Stamped
-                        // edits are already sanitized and pass through
-                        // untouched.
-                        if (canvas.sanitizedSingleLineTextInputEvent(widget.kind, text_edit)) |sanitized| {
-                            if (self.msgForTextEdit(target_id, sanitized)) |msg| return msg;
+                    if (keyboard.edit) |stamped| {
+                        // Runtime stamps are authoritative. In particular,
+                        // history replay can restore exact model-provided
+                        // bytes that the new-input sanitizer would strip.
+                        if (self.msgForTextEdit(target_id, stamped)) |msg| return msg;
+                    } else {
+                        const locally_derived = canvas.widgetKeyboardNewlineTextEditEvent(widget.kind, keyboard) orelse keyboard.textEditEvent();
+                        if (locally_derived) |text_edit| {
+                            // Direct Tree consumers still sanitize locally:
+                            // these bytes have not crossed the runtime seam.
+                            if (canvas.sanitizedSingleLineTextInputEvent(widget.kind, text_edit)) |sanitized| {
+                                if (self.msgForTextEdit(target_id, sanitized)) |msg| return msg;
+                            }
                         }
                     }
                 }

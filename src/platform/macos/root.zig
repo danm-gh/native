@@ -375,6 +375,8 @@ const widget_state_collapsed: u32 = 1 << 5;
 const widget_state_required: u32 = 1 << 6;
 const widget_state_read_only: u32 = 1 << 7;
 const widget_state_invalid: u32 = 1 << 8;
+const widget_state_can_undo: u32 = 1 << 9;
+const widget_state_can_redo: u32 = 1 << 10;
 const widget_action_focus: u32 = 1 << 0;
 const widget_action_press: u32 = 1 << 1;
 const widget_action_toggle: u32 = 1 << 2;
@@ -1917,6 +1919,8 @@ fn widgetStateFlags(node: platform_mod.WidgetAccessibilityNode) u32 {
     if (node.required) flags |= widget_state_required;
     if (node.read_only) flags |= widget_state_read_only;
     if (node.invalid) flags |= widget_state_invalid;
+    if (node.can_undo) flags |= widget_state_can_undo;
+    if (node.can_redo) flags |= widget_state_can_redo;
     return flags;
 }
 
@@ -2651,13 +2655,15 @@ test "mac widget accessibility maps retained action flags" {
 }
 
 test "mac widget accessibility maps widget state flags" {
-    const expanded = widgetStateFlags(.{ .enabled = true, .expanded = true, .required = true, .read_only = true, .invalid = true });
+    const expanded = widgetStateFlags(.{ .enabled = true, .expanded = true, .required = true, .read_only = true, .invalid = true, .can_undo = true, .can_redo = true });
     try std.testing.expect(expanded & widget_state_enabled != 0);
     try std.testing.expect(expanded & widget_state_expanded != 0);
     try std.testing.expect(expanded & widget_state_collapsed == 0);
     try std.testing.expect(expanded & widget_state_required != 0);
     try std.testing.expect(expanded & widget_state_read_only != 0);
     try std.testing.expect(expanded & widget_state_invalid != 0);
+    try std.testing.expect(expanded & widget_state_can_undo != 0);
+    try std.testing.expect(expanded & widget_state_can_redo != 0);
 
     const collapsed = widgetStateFlags(.{ .enabled = true, .expanded = false });
     try std.testing.expect(collapsed & widget_state_enabled != 0);

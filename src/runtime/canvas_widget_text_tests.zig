@@ -861,6 +861,17 @@ test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(3), retained.nodes[1].widget.text_selection.?);
 
+    // The following plain Right crosses the entire hard-line delimiter,
+    // rather than exposing the byte between CR and LF as a caret stop.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowright",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(5), retained.nodes[1].widget.text_selection.?);
+
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",
@@ -869,7 +880,7 @@ test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
         .text = "X",
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expectEqualStrings("oneX\r\ntwo", retained.nodes[1].widget.text);
+    try std.testing.expectEqualStrings("one\r\nXtwo", retained.nodes[1].widget.text);
 }
 
 test "textarea visual navigation keeps an unbroken wrap boundary on its painted line" {
@@ -1095,6 +1106,59 @@ test "textarea visual navigation keeps an unbroken wrap boundary on its painted 
     _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", first_controlled_layout);
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualDeep(first_controlled.text_selection.?, retained.nodes[1].widget.text_selection.?);
+}
+
+test "single-line history replay restores exact retained bytes" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-input-exact-history", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 240, 100),
+    });
+    const input = canvas.Widget{
+        .id = 2,
+        .kind = .input,
+        .frame = geometry.RectF.init(12, 16, 180, 32),
+        // Single-line presentation tolerates raw model-provided bytes even
+        // though newly entered line breaks are sanitized.
+        .text = "a\nb",
+        .text_selection = canvas.TextSelection.collapsed(2),
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{input} }, geometry.RectF.init(0, 0, 240, 100), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].keyboard_active = true;
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "backspace",
+    } });
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("ab", retained.nodes[1].widget.text);
+    try std.testing.expect(harness.runtime.views[0].canvasWidgetTextHistoryAvailability(2).can_undo);
+
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\nb", retained.nodes[1].widget.text);
+    try std.testing.expect(!harness.runtime.views[0].canvasWidgetTextHistoryAvailability(2).can_undo);
+    try std.testing.expect(harness.runtime.views[0].canvasWidgetTextHistoryAvailability(2).can_redo);
 }
 
 test "canvas textareas undo and redo keyboard edits" {

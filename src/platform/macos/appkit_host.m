@@ -405,6 +405,8 @@ static NSMutableDictionary *NativeSdkCredentialQuery(NSString *service, NSString
 @property(nonatomic, assign) NativeSdkMetalSurfaceView *surfaceView;
 @property(nonatomic, assign) uint64_t widgetId;
 @property(nonatomic, assign) uint32_t actionFlags;
+@property(nonatomic, assign) BOOL canUndo;
+@property(nonatomic, assign) BOOL canRedo;
 - (BOOL)emitSetTextAccessibilityValue:(id)value;
 - (BOOL)emitSetSelectionAccessibilityValue:(id)value;
 @end
@@ -5538,6 +5540,8 @@ static BOOL NativeSdkCompositeBlurWriteRegion(NSDictionary *command, CGFloat sca
         element.accessibilityEnabled = (node.state_flags & NATIVE_SDK_APPKIT_WIDGET_STATE_ENABLED) != 0;
         element.accessibilityFocused = (node.state_flags & NATIVE_SDK_APPKIT_WIDGET_STATE_FOCUSED) != 0;
         element.accessibilitySelected = (node.state_flags & NATIVE_SDK_APPKIT_WIDGET_STATE_SELECTED) != 0;
+        element.canUndo = (node.state_flags & NATIVE_SDK_APPKIT_WIDGET_STATE_CAN_UNDO) != 0;
+        element.canRedo = (node.state_flags & NATIVE_SDK_APPKIT_WIDGET_STATE_CAN_REDO) != 0;
         if ((node.state_flags & NATIVE_SDK_APPKIT_WIDGET_STATE_EXPANDED) != 0) {
             element.accessibilityExpanded = YES;
         } else if ((node.state_flags & NATIVE_SDK_APPKIT_WIDGET_STATE_COLLAPSED) != 0) {
@@ -7053,12 +7057,18 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
-    if (menuItem.action == @selector(undo:) ||
-        menuItem.action == @selector(redo:) ||
-        menuItem.action == @selector(cut:) ||
+    NativeSdkWidgetAccessibilityElement *focusedText =
+        (NativeSdkWidgetAccessibilityElement *)[self focusedTextAccessibilityElement];
+    if (menuItem.action == @selector(undo:)) {
+        return focusedText != nil && focusedText.canUndo;
+    }
+    if (menuItem.action == @selector(redo:)) {
+        return focusedText != nil && focusedText.canRedo;
+    }
+    if (menuItem.action == @selector(cut:) ||
         menuItem.action == @selector(paste:) ||
         menuItem.action == @selector(selectAll:)) {
-        return [self focusedTextAccessibilityElement] != nil;
+        return focusedText != nil;
     }
     return YES;
 }

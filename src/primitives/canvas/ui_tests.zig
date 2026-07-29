@@ -382,6 +382,12 @@ test "single-line keyboard fallback derivation sanitizes line breaks like the ru
     // A STAMPED edit (the runtime already sanitized it) passes through.
     const stamped = canvas.WidgetKeyboardEvent{ .phase = .key_down, .edit = .{ .insert_text = "clean" } };
     try testing.expectEqualStrings("clean", tree.msgForKeyboard(field.id, stamped).?.draft.insert_text);
+
+    // History replay stamps retained bytes, not new input. A raw newline
+    // already present in a controlled single-line value must survive the
+    // app-side mirror unchanged.
+    const stamped_history = canvas.WidgetKeyboardEvent{ .phase = .key_down, .edit = .{ .insert_text = "\n" } };
+    try testing.expectEqualStrings("\n", tree.msgForKeyboard(field.id, stamped_history).?.draft.insert_text);
 }
 
 test "typed handlers imply accessibility actions" {

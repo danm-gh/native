@@ -221,7 +221,7 @@ fn deleteBackwardTextEdit(state: TextEditState, output: []u8) Error!TextEditStat
 
     const caret = snapTextOffset(state.text, state.selection.focus);
     if (caret == 0) return .{ .text = state.text, .selection = TextSelection.collapsed(0), .composition = null };
-    return replaceTextEditRange(state, TextRange.init(previousTextOffset(state.text, caret), caret), "", output, null, 0);
+    return replaceTextEditRange(state, TextRange.init(previousTextCaretOffset(state.text, caret), caret), "", output, null, 0);
 }
 
 fn deleteForwardTextEdit(state: TextEditState, output: []u8) Error!TextEditState {
@@ -230,7 +230,7 @@ fn deleteForwardTextEdit(state: TextEditState, output: []u8) Error!TextEditState
 
     const caret = snapTextOffset(state.text, state.selection.focus);
     if (caret >= state.text.len) return .{ .text = state.text, .selection = TextSelection.collapsed(state.text.len), .composition = null };
-    return replaceTextEditRange(state, TextRange.init(caret, nextTextOffset(state.text, caret)), "", output, null, 0);
+    return replaceTextEditRange(state, TextRange.init(caret, nextTextCaretOffset(state.text, caret)), "", output, null, 0);
 }
 
 fn deleteWordBackwardTextEdit(state: TextEditState, output: []u8) Error!TextEditState {
@@ -255,8 +255,8 @@ fn moveTextCaret(state: TextEditState, move: TextCaretMove) TextEditState {
     const range = state.selection.range(state.text.len);
     const focus = snapTextOffset(state.text, state.selection.focus);
     const target = switch (move.direction) {
-        .previous => if (!move.extend and !range.isCollapsed(state.text.len)) range.start else previousTextOffset(state.text, focus),
-        .next => if (!move.extend and !range.isCollapsed(state.text.len)) range.end else nextTextOffset(state.text, focus),
+        .previous => if (!move.extend and !range.isCollapsed(state.text.len)) range.start else previousTextCaretOffset(state.text, focus),
+        .next => if (!move.extend and !range.isCollapsed(state.text.len)) range.end else nextTextCaretOffset(state.text, focus),
         .previous_word => if (!move.extend and !range.isCollapsed(state.text.len)) range.start else previousTextWordOffset(state.text, focus),
         .next_word => if (!move.extend and !range.isCollapsed(state.text.len)) range.end else nextTextWordOffset(state.text, focus),
         .start => 0,
@@ -334,6 +334,24 @@ pub fn nextTextOffset(text: []const u8, offset: usize) usize {
     // bytes advance one byte instead: the fallback-scalar rule.
     if (next <= offset) return @min(text.len, offset + 1);
     return next;
+}
+
+/// Caret editing treats CRLF as one hard-line boundary even though layout
+/// still walks both scalar bytes to recognize and paint that boundary.
+fn previousTextCaretOffset(text: []const u8, offset: usize) usize {
+    const previous = previousTextOffset(text, offset);
+    if (previous > 0 and text[previous] == '\n' and text[previous - 1] == '\r') {
+        return previous - 1;
+    }
+    return previous;
+}
+
+fn nextTextCaretOffset(text: []const u8, offset: usize) usize {
+    const cursor = snapTextOffset(text, offset);
+    if (cursor < text.len and text[cursor] == '\r' and cursor + 1 < text.len and text[cursor + 1] == '\n') {
+        return cursor + 2;
+    }
+    return nextTextOffset(text, cursor);
 }
 
 pub fn previousTextWordOffset(text: []const u8, offset: usize) usize {
@@ -611,6 +629,31 @@ test "textLineSelectionAtOffset selects the newline-delimited line without its b
     try std.testing.expectEqual(@as(usize, 3), textLineEndOffset("one\r\ntwo", 1));
     // A bare CR at EOF is content, not the first half of a CRLF break.
     try std.testing.expectEqual(@as(usize, 4), textLineEndOffset("one\r", 1));
+}
+
+test "caret movement and deletion cross CRLF atomically" {
+    const text = "one\r\ntwo";
+    var scratch: [32]u8 = undefined;
+
+    const before_break = TextEditState{
+        .text = text,
+        .selection = TextSelection.collapsed(3),
+    };
+    const moved_next = try before_break.apply(.{ .move_caret = .{ .direction = .next } }, &scratch);
+    try std.testing.expectEqualDeep(TextSelection.collapsed(5), moved_next.selection);
+    const deleted_forward = try before_break.apply(.delete_forward, &scratch);
+    try std.testing.expectEqualStrings("onetwo", deleted_forward.text);
+    try std.testing.expectEqualDeep(TextSelection.collapsed(3), deleted_forward.selection);
+
+    const after_break = TextEditState{
+        .text = text,
+        .selection = TextSelection.collapsed(5),
+    };
+    const moved_previous = try after_break.apply(.{ .move_caret = .{ .direction = .previous } }, &scratch);
+    try std.testing.expectEqualDeep(TextSelection.collapsed(3), moved_previous.selection);
+    const deleted_backward = try after_break.apply(.delete_backward, &scratch);
+    try std.testing.expectEqualStrings("onetwo", deleted_backward.text);
+    try std.testing.expectEqualDeep(TextSelection.collapsed(3), deleted_backward.selection);
 }
 
 test "TextBuffer mirrors edits, truncates at capacity, and clears" {

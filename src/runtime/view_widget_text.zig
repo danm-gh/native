@@ -21,6 +21,7 @@ const textSelectionCollapsedAt = canvas_widget_runtime.textSelectionCollapsedAt;
 
 pub const CanvasWidgetTextHistoryEntry = struct {
     target_id: canvas.ObjectId = 0,
+    target_kind: canvas.WidgetKind = .text,
     byte_start: usize = 0,
     removed_len: usize = 0,
     inserted_len: usize = 0,
@@ -70,7 +71,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 (starts_composition or
                     (current_state.composition == null and
                         !std.mem.eql(u8, current_state.text, next_state.text))) and
-                recordCanvasWidgetTextHistory(self, target_id, current_state, next_state, starts_composition);
+                recordCanvasWidgetTextHistory(self, target_id, widget.kind, current_state, next_state, starts_composition);
             self.rewriteCanvasWidgetTextStorage(index, next_state) catch |err| {
                 if (history_recorded) removeCanvasWidgetTextHistoryEntry(self, self.canvas_widget_text_history_entry_count - 1);
                 return err;
@@ -90,13 +91,16 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             const widget = self.widget_layout_nodes[index].widget;
             if (!canvasWidgetEditableTextKind(widget.kind) or widget.state.disabled) return null;
 
-            const plain_vertical_navigation = widget.kind == .textarea and
-                keyboard.phase == .key_down and
+            const plain_vertical_navigation_key = widget.kind == .textarea and
+                (keyboard.phase == .key_down or keyboard.phase == .key_up) and
                 keyboard.text.len == 0 and
                 !keyboard.modifiers.hasNavigationModifier() and
                 (std.ascii.eqlIgnoreCase(keyboard.key, "arrowup") or
                     std.ascii.eqlIgnoreCase(keyboard.key, "arrowdown"));
-            if (!plain_vertical_navigation) clearCanvasWidgetTextVerticalGoal(self);
+            // A physical arrow gesture ends with key_up. Keep the preferred
+            // x coordinate through that release so separately pressed arrows
+            // form the same vertical-navigation run as auto-repeat keydowns.
+            if (!plain_vertical_navigation_key) clearCanvasWidgetTextVerticalGoal(self);
 
             if (keyboard.phase == .key_down and !keyboard.modifiers.shift and !keyboard.modifiers.hasNavigationModifier() and canvasWidgetEscapeKey(keyboard.key)) {
                 if (widget.text_composition != null) return .cancel_composition;
@@ -252,7 +256,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             clearCanvasWidgetTextVerticalGoal(self);
 
             const redo = keyboard.modifiers.shift;
-            const history_index = canvasWidgetTextHistoryIndex(self, target.id, redo) orelse return false;
+            const history_index = canvasWidgetTextHistoryIndex(self, target.id, widget.kind, redo) orelse return false;
             const entry = self.canvas_widget_text_history_entries[history_index];
             const expected_len = if (redo) entry.before_text_len else entry.after_text_len;
             const expected_hash = if (redo) entry.before_hash else entry.after_hash;
@@ -277,12 +281,13 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
         fn recordCanvasWidgetTextHistory(
             self: *RuntimeView,
             target_id: canvas.ObjectId,
+            target_kind: canvas.WidgetKind,
             before: canvas.TextEditState,
             after: canvas.TextEditState,
             provisional_composition: bool,
         ) bool {
             const before_hash = textHistoryHash(before.text);
-            if (!canvasWidgetTextHistoryMatchesState(self, target_id, before.text.len, before_hash)) {
+            if (!canvasWidgetTextHistoryMatchesState(self, target_id, target_kind, before.text.len, before_hash)) {
                 clearCanvasWidgetTextHistory(self, target_id);
             }
 
@@ -345,6 +350,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             const after_hash = textHistoryHash(after.text);
             self.canvas_widget_text_history_entries[self.canvas_widget_text_history_entry_count] = .{
                 .target_id = target_id,
+                .target_kind = target_kind,
                 .byte_start = byte_start,
                 .removed_len = removed_len,
                 .inserted_len = inserted_len,
@@ -369,12 +375,14 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
         fn canvasWidgetTextHistoryMatchesState(
             self: *const RuntimeView,
             target_id: canvas.ObjectId,
+            target_kind: canvas.WidgetKind,
             text_len: usize,
             text_hash: u64,
         ) bool {
             var latest_applied: ?usize = null;
             for (self.canvas_widget_text_history_entries[0..self.canvas_widget_text_history_entry_count], 0..) |entry, index| {
                 if (entry.target_id != target_id) continue;
+                if (entry.target_kind != target_kind) return false;
                 if (entry.provisional_composition) return false;
                 if (entry.applied) latest_applied = index;
             }
@@ -383,7 +391,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 return text_len == entry.after_text_len and text_hash == entry.after_hash;
             }
             for (self.canvas_widget_text_history_entries[0..self.canvas_widget_text_history_entry_count]) |entry| {
-                if (entry.target_id != target_id or entry.provisional_composition or entry.applied) continue;
+                if (entry.target_id != target_id or entry.target_kind != target_kind or entry.provisional_composition or entry.applied) continue;
                 return text_len == entry.before_text_len and text_hash == entry.before_hash;
             }
             return true;
@@ -497,10 +505,10 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             return null;
         }
 
-        fn canvasWidgetTextHistoryIndex(self: *const RuntimeView, target_id: canvas.ObjectId, redo: bool) ?usize {
+        fn canvasWidgetTextHistoryIndex(self: *const RuntimeView, target_id: canvas.ObjectId, target_kind: canvas.WidgetKind, redo: bool) ?usize {
             if (redo) {
                 for (self.canvas_widget_text_history_entries[0..self.canvas_widget_text_history_entry_count], 0..) |entry, index| {
-                    if (entry.target_id == target_id and !entry.applied and !entry.provisional_composition) return index;
+                    if (entry.target_id == target_id and entry.target_kind == target_kind and !entry.applied and !entry.provisional_composition) return index;
                 }
                 return null;
             }
@@ -508,7 +516,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             while (index > 0) {
                 index -= 1;
                 const entry = self.canvas_widget_text_history_entries[index];
-                if (entry.target_id == target_id and entry.applied and !entry.provisional_composition) return index;
+                if (entry.target_id == target_id and entry.target_kind == target_kind and entry.applied and !entry.provisional_composition) return index;
             }
             return null;
         }
@@ -527,6 +535,26 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             while (index > 0) {
                 index -= 1;
                 if (self.canvas_widget_text_history_entries[index].target_id == target_id) {
+                    removeCanvasWidgetTextHistoryEntry(self, index);
+                }
+            }
+        }
+
+        /// History belongs to one mounted editor incarnation. Widget ids are
+        /// stable structural handles, but an id can disappear or return as a
+        /// different kind across rebuilds; neither case may inherit edits
+        /// from the retired control.
+        pub fn pruneCanvasWidgetTextHistory(self: *RuntimeView) void {
+            var index = self.canvas_widget_text_history_entry_count;
+            while (index > 0) {
+                index -= 1;
+                const entry = self.canvas_widget_text_history_entries[index];
+                const node_index = self.canvasWidgetNodeIndexById(entry.target_id) orelse {
+                    removeCanvasWidgetTextHistoryEntry(self, index);
+                    continue;
+                };
+                const widget = self.widget_layout_nodes[node_index].widget;
+                if (widget.kind != entry.target_kind or !canvasWidgetEditableTextKind(widget.kind)) {
                     removeCanvasWidgetTextHistoryEntry(self, index);
                 }
             }

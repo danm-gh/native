@@ -627,6 +627,15 @@ test "textarea vertical navigation retains its preferred column across short lin
     var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(12), retained.nodes[1].widget.text_selection.?);
 
+    // A real discrete key press includes its release. The release must not
+    // end the vertical run or the next press would inherit the short line's
+    // column instead of the original preferred column.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_up,
+        .key = "arrowdown",
+    } });
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",
@@ -950,6 +959,88 @@ test "canvas textareas undo and redo keyboard edits" {
     try dispatchTextareaHistoryShortcut(harness, app, true);
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualStrings("external!", retained.nodes[1].widget.text);
+}
+
+test "canvas editor history retires when its widget unmounts or changes kind" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-editor-history-lifecycle", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    const frame = geometry.RectF.init(0, 0, 260, 160);
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = frame,
+    });
+
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 180, 84),
+        .text = "base",
+    };
+    var textarea_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const textarea_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, frame, &textarea_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", textarea_layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .text_input,
+        .text = "!",
+    } });
+
+    // Reusing the structural id for a different editor kind creates a new
+    // control, even when its source text equals the old history boundary.
+    const input = canvas.Widget{
+        .id = 2,
+        .kind = .input,
+        .frame = textarea.frame,
+        .text = "base!",
+    };
+    var input_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const input_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{input} }, frame, &input_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", input_layout);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("base!", retained.nodes[1].widget.text);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .text_input,
+        .text = "?",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("base!?", retained.nodes[1].widget.text);
+
+    // An absent adoption retires the input's timeline. Remounting the same
+    // id and kind with matching bytes must not resurrect it.
+    var empty_nodes: [1]canvas.WidgetLayoutNode = undefined;
+    const empty_layout = try canvas.layoutWidgetTree(.{ .kind = .stack }, frame, &empty_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", empty_layout);
+
+    var remount_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    var remounted = input;
+    remounted.text = "base!?";
+    const remount_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{remounted} }, frame, &remount_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", remount_layout);
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("base!?", retained.nodes[1].widget.text);
 }
 
 fn dispatchTextareaHistoryShortcut(harness: *TestHarness(), app: App, redo: bool) !void {

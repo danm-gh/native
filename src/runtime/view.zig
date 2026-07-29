@@ -774,6 +774,7 @@ pub const RuntimeView = struct {
     pub const applyCanvasWidgetTextEditWithoutHistory = CanvasWidgetTextMethods.applyCanvasWidgetTextEditWithoutHistory;
     pub const canvasWidgetKeyboardTextEdit = CanvasWidgetTextMethods.canvasWidgetKeyboardTextEdit;
     pub const canvasWidgetTextHistoryShortcut = CanvasWidgetTextMethods.canvasWidgetTextHistoryShortcut;
+    pub const pruneCanvasWidgetTextHistory = CanvasWidgetTextMethods.pruneCanvasWidgetTextHistory;
     pub const canEditCanvasWidgetText = CanvasWidgetTextMethods.canEditCanvasWidgetText;
     pub const applyCanvasWidgetTextPointer = CanvasWidgetTextMethods.applyCanvasWidgetTextPointer;
     pub const clearCanvasWidgetStaticTextSelection = CanvasWidgetTextMethods.clearCanvasWidgetStaticTextSelection;

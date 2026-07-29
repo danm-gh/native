@@ -349,6 +349,7 @@ pub fn RuntimeViewCanvasWidgetTree(comptime RuntimeView: type) type {
             if (self.canvas_widget_pressed_id != 0 and !canvasWidgetInteractionTargetExists(self.widgetLayoutTree(), self.canvas_widget_pressed_id)) {
                 self.canvas_widget_pressed_id = 0;
             }
+            self.pruneCanvasWidgetTextHistory();
             self.canvas_widget_cursor = self.canvasWidgetCursorForId(self.canvas_widget_hovered_id);
             self.widget_revision += 1;
         }

@@ -2067,6 +2067,13 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 try self.views[index].applyCanvasWidgetTextEditWithoutHistory(target.id, edit) orelse return
             else
                 try self.views[index].applyCanvasWidgetTextEdit(target.id, edit) orelse return;
+            if (keyboard_event.history_replay) {
+                self.views[index].commitCanvasWidgetTextHistoryReplayIfComplete(
+                    target,
+                    keyboard_event.history_replay_serial,
+                    keyboard_event.history_replay_redo,
+                );
+            }
             if (canvasDirtyRegionForView(self.views[index].frame, dirty)) |dirty_region| {
                 self.invalidateFor(.state, dirty_region);
             } else {

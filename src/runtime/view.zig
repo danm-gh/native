@@ -780,6 +780,7 @@ pub const RuntimeView = struct {
     pub const canvasWidgetKeyboardTextEdit = CanvasWidgetTextMethods.canvasWidgetKeyboardTextEdit;
     pub const canvasWidgetTextHistoryShortcut = CanvasWidgetTextMethods.canvasWidgetTextHistoryShortcut;
     pub const canvasWidgetTextHistoryReplayNext = CanvasWidgetTextMethods.canvasWidgetTextHistoryReplayNext;
+    pub const commitCanvasWidgetTextHistoryReplayIfComplete = CanvasWidgetTextMethods.commitCanvasWidgetTextHistoryReplayIfComplete;
     pub const pruneCanvasWidgetTextHistory = CanvasWidgetTextMethods.pruneCanvasWidgetTextHistory;
     pub const clearCanvasWidgetTextVerticalGoal = CanvasWidgetTextMethods.clearCanvasWidgetTextVerticalGoal;
     pub const canEditCanvasWidgetText = CanvasWidgetTextMethods.canEditCanvasWidgetText;

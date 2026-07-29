@@ -349,7 +349,6 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 buildCanvasWidgetTextUndoEdits(entry, removed, inserted, widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len), &output, &edit_count);
             }
             if (edit_count == 0) return null;
-            self.canvas_widget_text_history_entries[history_index].applied = redo;
             return .{
                 .edit = output[0].?,
                 .serial = entry.serial,
@@ -384,7 +383,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             if (entry.target_id != target.id or
                 entry.target_kind != target.kind or
                 entry.provisional_composition or
-                entry.applied != redo)
+                entry.applied == redo)
             {
                 return null;
             }
@@ -395,7 +394,10 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             const desired_hash = if (redo) entry.after_hash else entry.before_hash;
             const desired_selection = if (redo) entry.after_selection else entry.before_selection;
             if (widget.text.len == desired_len and current_hash == desired_hash) {
-                if (canvasTextSelectionsEqual(selection, desired_selection)) return null;
+                if (canvasTextSelectionsEqual(selection, desired_selection)) {
+                    self.canvas_widget_text_history_entries[history_index].applied = redo;
+                    return null;
+                }
                 return .{ .set_selection = desired_selection };
             }
 
@@ -418,6 +420,44 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             return if (edit_count > 0) output[0] else null;
         }
 
+        /// Commit a pending undo/redo direction only after one replay edit
+        /// applied successfully and reached the entry's complete target
+        /// state. A storage-budget refusal therefore leaves `applied`
+        /// untouched, so the same shortcut remains available after capacity
+        /// is freed. Compound replays call this after every select/replace/
+        /// restore step; only the final one can satisfy all three witnesses.
+        pub fn commitCanvasWidgetTextHistoryReplayIfComplete(
+            self: *RuntimeView,
+            target: canvas.WidgetFocusTarget,
+            serial: u64,
+            redo: bool,
+        ) void {
+            if (serial == 0) return;
+            const node_index = self.canvasWidgetNodeIndexById(target.id) orelse return;
+            const widget = self.widget_layout_nodes[node_index].widget;
+            if (widget.kind != target.kind) return;
+            const history_index = canvasWidgetTextHistoryIndexForSerial(self, serial) orelse return;
+            const entry = self.canvas_widget_text_history_entries[history_index];
+            if (entry.target_id != target.id or
+                entry.target_kind != target.kind or
+                entry.provisional_composition or
+                entry.applied == redo)
+            {
+                return;
+            }
+            const desired_len = if (redo) entry.after_text_len else entry.before_text_len;
+            const desired_hash = if (redo) entry.after_hash else entry.before_hash;
+            const desired_selection = if (redo) entry.after_selection else entry.before_selection;
+            const selection = widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len);
+            if (widget.text.len != desired_len or
+                textHistoryHash(widget.text) != desired_hash or
+                !canvasTextSelectionsEqual(selection, desired_selection))
+            {
+                return;
+            }
+            self.canvas_widget_text_history_entries[history_index].applied = redo;
+        }
+
         fn recordCanvasWidgetTextHistory(
             self: *RuntimeView,
             target_id: canvas.ObjectId,
@@ -435,9 +475,10 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             // the first preedit is empty (and the before/after text is
             // byte-identical). The removed side is the selection the IME
             // replaced when it opened.
+            const before_selection = canvas.snapTextSelection(before.text, before.selection);
             const delta = if (provisional_composition) blk: {
                 const inserted = after.composition orelse return false;
-                const removed = before.selection.range(before.text.len);
+                const removed = before_selection.range(before.text.len);
                 break :blk CanvasWidgetTextHistoryDelta{
                     .prefix_len = removed.start,
                     .before_end = removed.end,
@@ -503,7 +544,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 .after_text_len = after.text.len,
                 .before_hash = before_hash,
                 .after_hash = after_hash,
-                .before_selection = before.selection,
+                .before_selection = before_selection,
                 .after_selection = after.selection,
                 .provisional_composition = provisional_composition,
             };

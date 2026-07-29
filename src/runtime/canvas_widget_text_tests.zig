@@ -1399,6 +1399,66 @@ fn dispatchTextareaHistoryShortcut(harness: *TestHarness(), app: App, redo: bool
     } });
 }
 
+test "IME history snaps source selections at UTF-8 boundaries" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-ime-history-snap", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 260, 160),
+    });
+
+    // Source selections are byte offsets, and the editor promises to snap a
+    // continuation-byte offset before applying an edit. History must record
+    // that same normalized replacement range or Undo can splice back only a
+    // suffix of the scalar and leave invalid UTF-8 behind.
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 180, 84),
+        .text = "éx",
+        .text_selection = .{ .anchor = 1, .focus = 3 },
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, geometry.RectF.init(0, 0, 260, 160), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "Q",
+        .composition_cursor = 1,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_commit_composition,
+    } });
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+
+    const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("éx", retained.nodes[1].widget.text);
+    try std.testing.expectEqualDeep(
+        canvas.TextSelection{ .anchor = 0, .focus = 3 },
+        retained.nodes[1].widget.text_selection.?,
+    );
+}
+
 test "plain Enter inserts a newline in a canvas textarea; chorded Enter never edits" {
     const TestApp = struct {
         fn app(self: *@This()) App {
@@ -2913,6 +2973,41 @@ test "a widget text budget overflow on input degrades instead of exiting" {
         error.WidgetTextTooLarge,
         harness.runtime.views[0].setCanvasWidgetTextValue(2, &oversized),
     );
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(filler.len + 1, retained.nodes[1].widget.text.len);
+    try std.testing.expect(std.mem.indexOfScalar(u8, retained.nodes[1].widget.text, '!') != null);
+
+    // A replay itself can become too large after another widget consumes
+    // capacity between Undo and Redo. Refusing that Redo must leave its
+    // direction pending; after the blocker unmounts, the same Redo succeeds.
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(filler.len, retained.nodes[1].widget.text.len);
+
+    const blocker = [_]u8{'c'} ** 505;
+    const blocking_text = canvas.Widget{
+        .id = 3,
+        .kind = .text,
+        .frame = geometry.RectF.init(12, 112, 180, 24),
+        .text = &blocker,
+    };
+    var blocked_nodes: [3]canvas.WidgetLayoutNode = undefined;
+    const blocked_layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{ textarea, blocking_text } },
+        geometry.RectF.init(0, 0, 260, 160),
+        &blocked_nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", blocked_layout);
+    const errors_before_replay = harness.runtime.dispatchErrors().len;
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(filler.len, retained.nodes[1].widget.text.len);
+    const replay_errors = harness.runtime.dispatchErrors();
+    try std.testing.expectEqual(errors_before_replay + 1, replay_errors.len);
+    try std.testing.expectEqualStrings("WidgetTextTooLarge", replay_errors[replay_errors.len - 1].error_name);
+
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
     try dispatchTextareaHistoryShortcut(harness, app, true);
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqual(filler.len + 1, retained.nodes[1].widget.text.len);

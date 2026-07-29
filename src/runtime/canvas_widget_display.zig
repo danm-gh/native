@@ -41,6 +41,7 @@ pub fn RuntimeCanvasWidgetDisplay(comptime Runtime: type) type {
             const index = runtimeFindViewIndex(self, window_id, label) orelse return error.ViewNotFound;
             if (self.views[index].kind != .gpu_surface) return error.InvalidViewOptions;
             if (!std.meta.eql(self.views[index].widget_tokens, tokens)) {
+                self.views[index].clearCanvasWidgetTextVerticalGoal();
                 self.views[index].widget_tokens = tokens;
                 self.views[index].widget_revision += 1;
             }

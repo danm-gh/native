@@ -643,24 +643,24 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                 // controlled tree, keeping runtime and model lockstep at
                 // every intermediate state. These synthetic edit carriers
                 // are key_down-shaped (not committed text), so a target
-                // removed by the rebuild can never leak replacement bytes
-                // through the app-level on_text fallback.
-                for (keyboard_event.history_followup_edits) |followup_edit| {
-                    const edit = followup_edit orelse continue;
+                // removed, hidden, or replaced with another editor kind by
+                // the rebuild can never receive stale replacement bytes.
+                for (0..2) |_| {
+                    if (keyboard_event.history_replay_serial == 0) break;
                     const view_index = runtimeFindViewIndex(self, keyboard_event.window_id, keyboard_event.view_label) orelse break;
                     const target = keyboard_event.target orelse break;
-                    if (self.views[view_index].kind != .gpu_surface or
-                        !self.views[view_index].canEditCanvasWidgetText(target.id))
-                    {
-                        break;
-                    }
+                    if (self.views[view_index].kind != .gpu_surface) break;
+                    const edit = self.views[view_index].canvasWidgetTextHistoryReplayNext(
+                        target,
+                        keyboard_event.history_replay_serial,
+                        keyboard_event.history_replay_redo,
+                    ) orelse break;
                     var followup = keyboard_event;
                     followup.keyboard = .{
                         .phase = .key_down,
                         .focused_id = keyboard_event.keyboard.focused_id,
                         .edit = edit,
                     };
-                    followup.history_followup_edits = .{ null, null };
                     followup.history_replay = true;
                     try CanvasWidgetEventMethods().updateCanvasWidgetTextFromKeyboard(self, &followup);
                     try self.dispatchEvent(app, .{ .canvas_widget_keyboard = followup });

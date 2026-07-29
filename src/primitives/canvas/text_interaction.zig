@@ -437,7 +437,7 @@ pub fn textLineStartOffset(text: []const u8, offset: usize) usize {
 pub fn textLineEndOffset(text: []const u8, offset: usize) usize {
     var cursor = snapTextOffset(text, offset);
     while (cursor < text.len and text[cursor] != '\n') cursor += 1;
-    if (cursor > 0 and cursor <= text.len and text[cursor - 1] == '\r') return cursor - 1;
+    if (cursor > 0 and cursor < text.len and text[cursor - 1] == '\r') return cursor - 1;
     return cursor;
 }
 
@@ -585,6 +585,8 @@ test "textLineSelectionAtOffset selects the newline-delimited line without its b
     try std.testing.expectEqual(@as(usize, 11), textLineStartOffset(text, 15));
     try std.testing.expectEqual(@as(usize, 17), textLineEndOffset(text, 15));
     try std.testing.expectEqual(@as(usize, 3), textLineEndOffset("one\r\ntwo", 1));
+    // A bare CR at EOF is content, not the first half of a CRLF break.
+    try std.testing.expectEqual(@as(usize, 4), textLineEndOffset("one\r", 1));
 }
 
 test "TextBuffer mirrors edits, truncates at capacity, and clears" {

@@ -636,6 +636,17 @@ test "textarea vertical navigation retains its preferred column across short lin
         .kind = .key_up,
         .key = "arrowdown",
     } });
+
+    // The preferred x is widget-local: moving the textarea between discrete
+    // presses must retain the original long-line column instead of hit-testing
+    // the next line at the old screen coordinate.
+    var moved_textarea = textarea;
+    moved_textarea.frame.x = 32;
+    moved_textarea.text_selection = canvas.TextSelection.collapsed(12);
+    var moved_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const moved_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{moved_textarea} }, geometry.RectF.init(0, 0, 320, 180), &moved_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", moved_layout);
+
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",
@@ -667,6 +678,12 @@ test "textarea vertical navigation retains its preferred column across short lin
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(20), retained.nodes[1].widget.text_selection.?);
+
+    // Typography changes alter caret geometry even when frame/text/focus do
+    // not, so they terminate the standing preferred-column run.
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_text_vertical_goal_id);
+    _ = try harness.runtime.setCanvasWidgetDesignTokens(1, "canvas", .{ .typography = .{ .body_size = 18 } });
+    try std.testing.expectEqual(@as(canvas.ObjectId, 0), harness.runtime.views[0].canvas_widget_text_vertical_goal_id);
 }
 
 test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
@@ -959,6 +976,114 @@ test "canvas textareas undo and redo keyboard edits" {
     try dispatchTextareaHistoryShortcut(harness, app, true);
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualStrings("external!", retained.nodes[1].widget.text);
+}
+
+test "compound editor history re-resolves bytes and identity after rebuilds" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-editor-history-replay-lifetime", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    const frame = geometry.RectF.init(0, 0, 320, 180);
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = frame,
+    });
+
+    const earlier_editor = canvas.Widget{
+        .id = 2,
+        .kind = .input,
+        .frame = geometry.RectF.init(12, 16, 120, 32),
+        .text = "b",
+    };
+    const textarea = canvas.Widget{
+        .id = 3,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 56, 180, 84),
+        .text = "old",
+    };
+    var nodes: [3]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{ earlier_editor, textarea } }, frame, &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    const view = &harness.runtime.views[0];
+
+    // Put a one-byte entry before the textarea's larger replacement entry.
+    // Removing it during the compound replay forces overlapping history-byte
+    // compaction, the case that used to corrupt a retained follow-up slice.
+    _ = try view.applyCanvasWidgetTextEdit(2, .{ .insert_text = "!" });
+    _ = try view.applyCanvasWidgetTextEdit(3, .{ .set_selection = .{ .anchor = 0, .focus = 3 } });
+    _ = try view.applyCanvasWidgetTextEdit(3, .{ .insert_text = "NEW" });
+    view.focused = true;
+    view.canvas_widget_focused_id = 3;
+
+    var target = view.widgetLayoutTree().focusTargetById(3).?;
+    const shortcut = view.canvasWidgetTextHistoryShortcut(target, .{
+        .phase = .key_down,
+        .key = "z",
+        .modifiers = .{ .super = true },
+    }).?;
+    switch (shortcut.edit) {
+        .set_selection => |selection| try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 0, .focus = 3 }, selection),
+        else => return error.TestUnexpectedResult,
+    }
+    _ = try view.applyCanvasWidgetTextEditWithoutHistory(3, shortcut.edit);
+
+    // The first controlled on-input rebuild unmounts the earlier editor.
+    // History compacts, then the replacement bytes are resolved at their new
+    // location immediately before the continuation is applied.
+    var rebuilt_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    var rebuilt_textarea = textarea;
+    rebuilt_textarea.text = "NEW";
+    const rebuilt_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{rebuilt_textarea} }, frame, &rebuilt_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", rebuilt_layout);
+
+    const replacement = view.canvasWidgetTextHistoryReplayNext(target, shortcut.serial, shortcut.redo).?;
+    switch (replacement) {
+        .insert_text => |text| try std.testing.expectEqualStrings("old", text),
+        else => return error.TestUnexpectedResult,
+    }
+    _ = try view.applyCanvasWidgetTextEditWithoutHistory(3, replacement);
+    const restore_selection = view.canvasWidgetTextHistoryReplayNext(target, shortcut.serial, shortcut.redo).?;
+    _ = try view.applyCanvasWidgetTextEditWithoutHistory(3, restore_selection);
+    try std.testing.expect(view.canvasWidgetTextHistoryReplayNext(target, shortcut.serial, shortcut.redo) == null);
+    try std.testing.expectEqualStrings("old", view.widgetLayoutTree().findById(3).?.widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 0, .focus = 3 }, view.widgetLayoutTree().findById(3).?.widget.text_selection.?);
+
+    // Start another compound replacement, then let its first selection Msg
+    // rebuild the same structural id as a different editable kind. The replay
+    // token belongs to the retired textarea and must not edit the new input.
+    _ = try view.setCanvasWidgetTextValue(3, "old\n");
+    _ = try view.applyCanvasWidgetTextEdit(3, .{ .set_selection = .{ .anchor = 0, .focus = 4 } });
+    _ = try view.applyCanvasWidgetTextEdit(3, .{ .insert_text = "next" });
+    target = view.widgetLayoutTree().focusTargetById(3).?;
+    const retiring_shortcut = view.canvasWidgetTextHistoryShortcut(target, .{
+        .phase = .key_down,
+        .key = "z",
+        .modifiers = .{ .super = true },
+    }).?;
+    _ = try view.applyCanvasWidgetTextEditWithoutHistory(3, retiring_shortcut.edit);
+
+    const replacement_input = canvas.Widget{
+        .id = 3,
+        .kind = .input,
+        .frame = textarea.frame,
+        .text = "next",
+    };
+    var input_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const input_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{replacement_input} }, frame, &input_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", input_layout);
+    try std.testing.expect(view.canvasWidgetTextHistoryReplayNext(target, retiring_shortcut.serial, retiring_shortcut.redo) == null);
+    try std.testing.expectEqualStrings("next", view.widgetLayoutTree().findById(3).?.widget.text);
 }
 
 test "canvas editor history retires when its widget unmounts or changes kind" {

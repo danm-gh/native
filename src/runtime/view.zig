@@ -761,20 +761,26 @@ pub const RuntimeView = struct {
     canvas_widget_text_history_entry_count: usize = 0,
     canvas_widget_text_history_bytes: [max_canvas_widget_text_history_bytes_per_view]u8 = undefined,
     canvas_widget_text_history_byte_count: usize = 0,
+    canvas_widget_text_history_next_serial: u64 = 1,
     /// Native textarea Up/Down retains its painted x coordinate while a
     /// consecutive vertical-navigation run crosses shorter visual lines.
     canvas_widget_text_vertical_goal_id: canvas.ObjectId = 0,
+    /// Preferred x in widget-local coordinates, so moving a textarea does
+    /// not move the logical column with respect to its text container.
     canvas_widget_text_vertical_goal_x: f32 = 0,
     canvas_widget_text_vertical_goal_text_len: usize = 0,
     canvas_widget_text_vertical_goal_text_hash: u64 = 0,
     canvas_widget_text_vertical_goal_focus: usize = 0,
+    canvas_widget_text_vertical_goal_frame: geometry.RectF = .{},
 
     const CanvasWidgetTextMethods = view_widget_text.RuntimeViewCanvasWidgetText(RuntimeView);
     pub const applyCanvasWidgetTextEdit = CanvasWidgetTextMethods.applyCanvasWidgetTextEdit;
     pub const applyCanvasWidgetTextEditWithoutHistory = CanvasWidgetTextMethods.applyCanvasWidgetTextEditWithoutHistory;
     pub const canvasWidgetKeyboardTextEdit = CanvasWidgetTextMethods.canvasWidgetKeyboardTextEdit;
     pub const canvasWidgetTextHistoryShortcut = CanvasWidgetTextMethods.canvasWidgetTextHistoryShortcut;
+    pub const canvasWidgetTextHistoryReplayNext = CanvasWidgetTextMethods.canvasWidgetTextHistoryReplayNext;
     pub const pruneCanvasWidgetTextHistory = CanvasWidgetTextMethods.pruneCanvasWidgetTextHistory;
+    pub const clearCanvasWidgetTextVerticalGoal = CanvasWidgetTextMethods.clearCanvasWidgetTextVerticalGoal;
     pub const canEditCanvasWidgetText = CanvasWidgetTextMethods.canEditCanvasWidgetText;
     pub const applyCanvasWidgetTextPointer = CanvasWidgetTextMethods.applyCanvasWidgetTextPointer;
     pub const clearCanvasWidgetStaticTextSelection = CanvasWidgetTextMethods.clearCanvasWidgetStaticTextSelection;

@@ -2031,16 +2031,18 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             const index = runtimeFindViewIndex(self, keyboard_event.window_id, keyboard_event.view_label) orelse return;
             if (self.views[index].kind != .gpu_surface) return;
             const target = keyboard_event.target orelse return;
-            var history_edits: [3]?canvas.TextInputEvent = .{ null, null, null };
-            const history_shortcut = !keyboard_event.history_replay and
-                self.views[index].canvasWidgetTextHistoryShortcut(target, keyboard_event.keyboard, &history_edits);
-            const derived = if (history_shortcut)
-                history_edits[0].?
+            const history_shortcut = if (!keyboard_event.history_replay)
+                self.views[index].canvasWidgetTextHistoryShortcut(target, keyboard_event.keyboard)
+            else
+                null;
+            const derived = if (history_shortcut) |shortcut|
+                shortcut.edit
             else
                 self.views[index].canvasWidgetKeyboardTextEdit(target, keyboard_event.keyboard) orelse return;
-            if (history_shortcut) {
+            if (history_shortcut) |shortcut| {
                 keyboard_event.history_replay = true;
-                keyboard_event.history_followup_edits = .{ history_edits[1], history_edits[2] };
+                keyboard_event.history_replay_serial = shortcut.serial;
+                keyboard_event.history_replay_redo = shortcut.redo;
             }
             // Single-line sanitization happens HERE — after derivation,
             // BEFORE the stamp — so the retained editor and the app's

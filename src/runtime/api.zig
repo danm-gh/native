@@ -95,14 +95,15 @@ pub const CanvasWidgetKeyboardEvent = struct {
     /// tail so an edit that unmounts the hovered listener never
     /// strands its leave.
     standalone: bool = false,
-    /// Runtime-internal continuation edits for one logical undo/redo.
-    /// Most history steps need one ordinary TextInputEvent; replacing a
-    /// multi-byte range may need select -> insert -> restore-selection so
-    /// controlled app buffers receive the exact same state transition.
-    history_followup_edits: [2]?canvas.TextInputEvent = .{ null, null },
     /// Continuation edits replay an existing history entry and must not
     /// themselves create a new entry.
     history_replay: bool = false,
+    /// Stable retained-history identity for a compound undo/redo. Follow-up
+    /// edits are re-derived from this entry after every controlled-tree
+    /// rebuild instead of retaining borrowed slices into the compactable
+    /// history byte pool.
+    history_replay_serial: u64 = 0,
+    history_replay_redo: bool = false,
 };
 
 /// A scroll container's offset changed from a user gesture (wheel,

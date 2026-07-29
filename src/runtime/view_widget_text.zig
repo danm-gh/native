@@ -20,6 +20,7 @@ const canvasTextSelectionsEqual = canvas_widget_runtime.canvasTextSelectionsEqua
 const textSelectionCollapsedAt = canvas_widget_runtime.textSelectionCollapsedAt;
 
 pub const CanvasWidgetTextHistoryEntry = struct {
+    serial: u64 = 0,
     target_id: canvas.ObjectId = 0,
     target_kind: canvas.WidgetKind = .text,
     byte_start: usize = 0,
@@ -37,6 +38,12 @@ pub const CanvasWidgetTextHistoryEntry = struct {
     /// change many times before commit. The entry stays out of undo/redo
     /// lookup until the composition resolves.
     provisional_composition: bool = false,
+};
+
+pub const CanvasWidgetTextHistoryShortcutResult = struct {
+    edit: canvas.TextInputEvent,
+    serial: u64,
+    redo: bool,
 };
 
 const max_text_history_edits_per_shortcut = 3;
@@ -177,7 +184,9 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                     const vertical_witness_matches =
                         self.canvas_widget_text_vertical_goal_id == target.id and
                         self.canvas_widget_text_vertical_goal_text_len == widget.text.len and
-                        self.canvas_widget_text_vertical_goal_focus == selection.focus;
+                        self.canvas_widget_text_vertical_goal_focus == selection.focus and
+                        self.canvas_widget_text_vertical_goal_frame.width == widget.frame.width and
+                        self.canvas_widget_text_vertical_goal_frame.height == widget.frame.height;
                     const text_hash = textHistoryHash(widget.text);
                     const continues_vertical_navigation =
                         vertical_witness_matches and
@@ -185,14 +194,14 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                     const goal_x = if (continues_vertical_navigation)
                         self.canvas_widget_text_vertical_goal_x
                     else
-                        caret.x;
+                        caret.x - widget.frame.x;
                     const target_y = if (moving_up)
                         caret.y - caret.height * 0.5
                     else
                         caret.y + caret.height * 1.5;
                     const target_offset = canvas.textOffsetForWidgetPoint(
                         widget,
-                        geometry.PointF.init(goal_x, target_y),
+                        geometry.PointF.init(widget.frame.x + goal_x, target_y),
                         self.widget_tokens,
                     ) orelse return null;
                     self.canvas_widget_text_vertical_goal_id = target.id;
@@ -200,6 +209,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                     self.canvas_widget_text_vertical_goal_text_len = widget.text.len;
                     self.canvas_widget_text_vertical_goal_text_hash = text_hash;
                     self.canvas_widget_text_vertical_goal_focus = target_offset;
+                    self.canvas_widget_text_vertical_goal_frame = widget.frame;
                     return .{ .set_selection = if (keyboard.modifiers.shift)
                         .{ .anchor = selection.anchor, .focus = target_offset }
                     else
@@ -233,49 +243,114 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
         }
 
         /// Resolve Command/Ctrl+Z against the focused editor's delta
-        /// history. `output` is one logical step expressed as ordinary
-        /// TextInputEvents so both the retained editor and a controlled
-        /// app-side TextBuffer reach byte-identical text and selection.
+        /// history. The returned first edit and replay serial express one
+        /// logical step as ordinary TextInputEvents so both the retained
+        /// editor and a controlled app-side TextBuffer reach byte-identical
+        /// text and selection.
         pub fn canvasWidgetTextHistoryShortcut(
             self: *RuntimeView,
             target: canvas.WidgetFocusTarget,
             keyboard: canvas.WidgetKeyboardEvent,
-            output: *[max_text_history_edits_per_shortcut]?canvas.TextInputEvent,
-        ) bool {
-            output.* = .{ null, null, null };
+        ) ?CanvasWidgetTextHistoryShortcutResult {
             if (keyboard.phase != .key_down or
                 !keyboard.modifiers.super or
                 keyboard.modifiers.alt or
                 !std.ascii.eqlIgnoreCase(keyboard.key, "z"))
             {
-                return false;
+                return null;
             }
-            const node_index = self.canvasWidgetNodeIndexById(target.id) orelse return false;
+            const node_index = self.canvasWidgetNodeIndexById(target.id) orelse return null;
             const widget = self.widget_layout_nodes[node_index].widget;
-            if (!canvasWidgetEditableTextKind(widget.kind) or widget.state.disabled or widget.text_composition != null) return false;
+            if (!canvasWidgetEditableTextKind(widget.kind) or widget.state.disabled or widget.text_composition != null) return null;
             clearCanvasWidgetTextVerticalGoal(self);
 
             const redo = keyboard.modifiers.shift;
-            const history_index = canvasWidgetTextHistoryIndex(self, target.id, widget.kind, redo) orelse return false;
+            const history_index = canvasWidgetTextHistoryIndex(self, target.id, widget.kind, redo) orelse return null;
             const entry = self.canvas_widget_text_history_entries[history_index];
             const expected_len = if (redo) entry.before_text_len else entry.after_text_len;
             const expected_hash = if (redo) entry.before_hash else entry.after_hash;
             if (widget.text.len != expected_len or textHistoryHash(widget.text) != expected_hash) {
                 clearCanvasWidgetTextHistory(self, target.id);
-                return false;
+                return null;
             }
 
             const removed = canvasWidgetTextHistoryRemoved(self, entry);
             const inserted = canvasWidgetTextHistoryInserted(self, entry);
+            var output: [max_text_history_edits_per_shortcut]?canvas.TextInputEvent = .{ null, null, null };
             var edit_count: usize = 0;
             if (redo) {
-                buildCanvasWidgetTextRedoEdits(entry, removed, inserted, widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len), output, &edit_count);
-                self.canvas_widget_text_history_entries[history_index].applied = true;
+                buildCanvasWidgetTextRedoEdits(entry, removed, inserted, widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len), &output, &edit_count);
             } else {
-                buildCanvasWidgetTextUndoEdits(entry, removed, inserted, widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len), output, &edit_count);
-                self.canvas_widget_text_history_entries[history_index].applied = false;
+                buildCanvasWidgetTextUndoEdits(entry, removed, inserted, widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len), &output, &edit_count);
             }
-            return edit_count > 0;
+            if (edit_count == 0) return null;
+            self.canvas_widget_text_history_entries[history_index].applied = redo;
+            return .{
+                .edit = output[0].?,
+                .serial = entry.serial,
+                .redo = redo,
+            };
+        }
+
+        /// Derive the next edit of a compound history replay from the
+        /// retained entry's current location. The preceding edit may have
+        /// rebuilt the controlled tree and compacted history bytes, so no
+        /// borrowed payload survives across this call boundary.
+        pub fn canvasWidgetTextHistoryReplayNext(
+            self: *RuntimeView,
+            target: canvas.WidgetFocusTarget,
+            serial: u64,
+            redo: bool,
+        ) ?canvas.TextInputEvent {
+            if (serial == 0 or self.canvas_widget_focused_id != target.id) {
+                if (serial != 0) clearCanvasWidgetTextHistory(self, target.id);
+                return null;
+            }
+            const node_index = self.canvasWidgetNodeIndexById(target.id) orelse return null;
+            const widget = self.widget_layout_nodes[node_index].widget;
+            if (widget.kind != target.kind or
+                !self.canEditCanvasWidgetText(target.id) or
+                widget.text_composition != null)
+            {
+                return null;
+            }
+            const history_index = canvasWidgetTextHistoryIndexForSerial(self, serial) orelse return null;
+            const entry = self.canvas_widget_text_history_entries[history_index];
+            if (entry.target_id != target.id or
+                entry.target_kind != target.kind or
+                entry.provisional_composition or
+                entry.applied != redo)
+            {
+                return null;
+            }
+
+            const selection = widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len);
+            const current_hash = textHistoryHash(widget.text);
+            const desired_len = if (redo) entry.after_text_len else entry.before_text_len;
+            const desired_hash = if (redo) entry.after_hash else entry.before_hash;
+            const desired_selection = if (redo) entry.after_selection else entry.before_selection;
+            if (widget.text.len == desired_len and current_hash == desired_hash) {
+                if (canvasTextSelectionsEqual(selection, desired_selection)) return null;
+                return .{ .set_selection = desired_selection };
+            }
+
+            const source_len = if (redo) entry.before_text_len else entry.after_text_len;
+            const source_hash = if (redo) entry.before_hash else entry.after_hash;
+            if (widget.text.len != source_len or current_hash != source_hash) {
+                clearCanvasWidgetTextHistory(self, target.id);
+                return null;
+            }
+
+            const removed = canvasWidgetTextHistoryRemoved(self, entry);
+            const inserted = canvasWidgetTextHistoryInserted(self, entry);
+            var output: [max_text_history_edits_per_shortcut]?canvas.TextInputEvent = .{ null, null, null };
+            var edit_count: usize = 0;
+            if (redo) {
+                buildCanvasWidgetTextRedoEdits(entry, removed, inserted, selection, &output, &edit_count);
+            } else {
+                buildCanvasWidgetTextUndoEdits(entry, removed, inserted, selection, &output, &edit_count);
+            }
+            return if (edit_count > 0) output[0] else null;
         }
 
         fn recordCanvasWidgetTextHistory(
@@ -348,7 +423,11 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             );
             self.canvas_widget_text_history_byte_count = inserted_end;
             const after_hash = textHistoryHash(after.text);
+            const serial = self.canvas_widget_text_history_next_serial;
+            self.canvas_widget_text_history_next_serial +%= 1;
+            if (self.canvas_widget_text_history_next_serial == 0) self.canvas_widget_text_history_next_serial = 1;
             self.canvas_widget_text_history_entries[self.canvas_widget_text_history_entry_count] = .{
+                .serial = serial,
                 .target_id = target_id,
                 .target_kind = target_kind,
                 .byte_start = byte_start,
@@ -521,6 +600,13 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             return null;
         }
 
+        fn canvasWidgetTextHistoryIndexForSerial(self: *const RuntimeView, serial: u64) ?usize {
+            for (self.canvas_widget_text_history_entries[0..self.canvas_widget_text_history_entry_count], 0..) |entry, index| {
+                if (entry.serial == serial) return index;
+            }
+            return null;
+        }
+
         fn canvasWidgetTextHistoryRemoved(self: *const RuntimeView, entry: CanvasWidgetTextHistoryEntry) []const u8 {
             return self.canvas_widget_text_history_bytes[entry.byte_start .. entry.byte_start + entry.removed_len];
         }
@@ -558,6 +644,15 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                     removeCanvasWidgetTextHistoryEntry(self, index);
                 }
             }
+            if (self.canvas_widget_text_vertical_goal_id != 0) {
+                const node_index = self.canvasWidgetNodeIndexById(self.canvas_widget_text_vertical_goal_id) orelse {
+                    clearCanvasWidgetTextVerticalGoal(self);
+                    return;
+                };
+                if (self.widget_layout_nodes[node_index].widget.kind != .textarea) {
+                    clearCanvasWidgetTextVerticalGoal(self);
+                }
+            }
         }
 
         fn removeCanvasWidgetTextHistoryEntry(self: *RuntimeView, remove_index: usize) void {
@@ -585,12 +680,13 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             self.canvas_widget_text_history_byte_count = write_byte;
         }
 
-        fn clearCanvasWidgetTextVerticalGoal(self: *RuntimeView) void {
+        pub fn clearCanvasWidgetTextVerticalGoal(self: *RuntimeView) void {
             self.canvas_widget_text_vertical_goal_id = 0;
             self.canvas_widget_text_vertical_goal_x = 0;
             self.canvas_widget_text_vertical_goal_text_len = 0;
             self.canvas_widget_text_vertical_goal_text_hash = 0;
             self.canvas_widget_text_vertical_goal_focus = 0;
+            self.canvas_widget_text_vertical_goal_frame = .{};
         }
 
         pub fn canEditCanvasWidgetText(self: *const RuntimeView, id: canvas.ObjectId) bool {

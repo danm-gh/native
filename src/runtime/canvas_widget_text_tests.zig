@@ -724,6 +724,38 @@ test "textarea vertical navigation retains its preferred column across short lin
     try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_text_vertical_goal_id);
     _ = try harness.runtime.setCanvasWidgetDesignTokens(1, "canvas", .{ .typography = .{ .body_size = 18 } });
     try std.testing.expectEqual(@as(canvas.ObjectId, 0), harness.runtime.views[0].canvas_widget_text_vertical_goal_id);
+
+    // A vertical hit at the painted end of a CRLF line lands on LF in
+    // layout coordinates. Normalize it before CR so typing cannot split
+    // the two-byte line ending.
+    var crlf_textarea = textarea;
+    crlf_textarea.text = "one\r\n0123456789";
+    crlf_textarea.text_selection = canvas.TextSelection.collapsed(13);
+    var crlf_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const crlf_layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{crlf_textarea} },
+        geometry.RectF.init(0, 0, 320, 180),
+        &crlf_nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", crlf_layout);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowup",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(3), retained.nodes[1].widget.text_selection.?);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "x",
+        .text = "X",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("oneX\r\n0123456789", retained.nodes[1].widget.text);
 }
 
 test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
@@ -1028,6 +1060,41 @@ test "textarea visual navigation keeps an unbroken wrap boundary on its painted 
     try std.testing.expectEqualDeep(explicit_upstream.text_selection.?, retained.nodes[1].widget.text_selection.?);
     const explicit_upstream_caret = canvas.textGeometryForWidget(retained.nodes[1].widget, harness.runtime.views[0].widget_tokens).caret_bounds.?;
     try std.testing.expectApproxEqAbs(upstream_caret.y, explicit_upstream_caret.y, 0.001);
+
+    // A newly controlled source can explicitly choose the downstream
+    // stop even when its previous source tree omitted selection entirely.
+    // Legacy two-field echoes still arrive as the default upstream value.
+    var uncontrolled = textarea;
+    uncontrolled.id = 3;
+    uncontrolled.text_selection = null;
+    var uncontrolled_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const uncontrolled_layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{uncontrolled} },
+        geometry.RectF.init(0, 0, 200, 160),
+        &uncontrolled_nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", uncontrolled_layout);
+    _ = try harness.runtime.editCanvasWidgetText(
+        1,
+        "canvas",
+        3,
+        .{ .set_selection = canvas.TextSelection.collapsedAt(.{
+            .offset = second_line_start.offset,
+            .affinity = .upstream,
+        }) },
+    );
+
+    var first_controlled = uncontrolled;
+    first_controlled.text_selection = canvas.TextSelection.collapsedAt(second_line_start);
+    var first_controlled_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const first_controlled_layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{first_controlled} },
+        geometry.RectF.init(0, 0, 200, 160),
+        &first_controlled_nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", first_controlled_layout);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(first_controlled.text_selection.?, retained.nodes[1].widget.text_selection.?);
 }
 
 test "canvas textareas undo and redo keyboard edits" {

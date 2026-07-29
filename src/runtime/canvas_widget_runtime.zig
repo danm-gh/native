@@ -828,7 +828,9 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
                     const source_affinity_changed = if (entry.source_text_selection) |previous_source_selection|
                         source_selection.affinity != previous_source_selection.affinity
                     else
-                        false;
+                        // The legacy shape can only materialize upstream;
+                        // a first downstream value is therefore explicit.
+                        source_selection.affinity != .upstream;
                     if (!source_affinity_changed) {
                         source_selection.affinity = retained_selection.affinity;
                     }

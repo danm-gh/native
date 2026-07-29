@@ -483,6 +483,22 @@ test "static text drag selection highlights, copies, and clears" {
     // With nothing selected, copy leaves the clipboard untouched.
     try harness.runtime.dispatchPlatformEvent(app, keyInput("c", cmd));
     try std.testing.expectEqualStrings(body, try harness.runtime.readClipboard(&clipboard_buffer));
+
+    // Shift is an editable-text extension gesture. It must not prevent a
+    // fresh static-text drag from establishing its own press anchor.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = 13,
+        .y = 18,
+        .modifiers = .{ .shift = true },
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_drag, 211, 75));
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 0, .focus = body.len }, retained.nodes[1].widget.text_selection.?);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_selected_text_id);
+    try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_up, 211, 75));
 }
 
 test "span paragraph drag selection copies the concatenated bytes" {

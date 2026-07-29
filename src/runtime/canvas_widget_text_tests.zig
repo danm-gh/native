@@ -825,6 +825,64 @@ test "textarea vertical navigation retains its preferred column across short lin
     try std.testing.expectEqualStrings("oneX\r\n0123456789", retained.nodes[1].widget.text);
 }
 
+test "textarea unshifted vertical navigation starts at the selection's leading edge" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-textarea-selection-vertical", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 260, 160),
+    });
+
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 180, 100),
+        .text = "012345\n678901\n234567",
+        .text_selection = .{ .anchor = 2, .focus = 4 },
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, geometry.RectF.init(0, 0, 260, 160), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+
+    // NSTextView collapses a non-empty selection to its normalized start
+    // before preserving that edge's painted column for Up or Down.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowdown",
+    } });
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(9), retained.nodes[1].widget.text_selection.?);
+
+    _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{
+        .set_selection = .{ .anchor = 9, .focus = 11 },
+    });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowup",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(2), retained.nodes[1].widget.text_selection.?);
+}
+
 test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
     if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
 
@@ -904,6 +962,47 @@ test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(expected_left), retained.nodes[1].widget.text_selection.?);
+
+    // Without Shift, Cocoa first collapses a non-empty selection toward
+    // the command's direction, then finds that edge's visual line boundary.
+    // The active focus may be on a different line and in either orientation.
+    var selected_textarea = textarea;
+    selected_textarea.frame.width = 180;
+    selected_textarea.text = "abcdef\nuvwxyz\nmnopqr";
+    selected_textarea.text_selection = .{ .anchor = 2, .focus = 11 };
+    var selected_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    var selected_layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{selected_textarea} },
+        geometry.RectF.init(0, 0, 240, 180),
+        &selected_nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", selected_layout);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowleft",
+        .modifiers = .{ .command = true },
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(0), retained.nodes[1].widget.text_selection.?);
+
+    selected_textarea.text_selection = .{ .anchor = 11, .focus = 2 };
+    selected_layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{selected_textarea} },
+        geometry.RectF.init(0, 0, 240, 180),
+        &selected_nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", selected_layout);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowright",
+        .modifiers = .{ .command = true },
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(13), retained.nodes[1].widget.text_selection.?);
 
     // A CRLF hard line ends before both delimiter bytes. Command+Right
     // must not leave the caret between CR and LF, where the next typed

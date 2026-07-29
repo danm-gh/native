@@ -100,6 +100,34 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             return self.canvasWidgetDirtyBounds(index, unionRects(previous_bounds, self.widget_layout_nodes[index].frame) orelse self.widget_layout_nodes[index].frame);
         }
 
+        /// The leading edge of a non-empty selection. At a soft-wrap
+        /// boundary one byte offset has two painted caret stops; selected
+        /// text beginning there starts on the downstream visual line.
+        fn canvasWidgetTextSelectionStartPosition(self: *RuntimeView, widget: canvas.Widget, offset: usize) canvas.TextCaretPosition {
+            const upstream_position = canvas.TextCaretPosition{
+                .offset = offset,
+                .affinity = .upstream,
+            };
+            var upstream_widget = widget;
+            upstream_widget.text_selection = canvas.TextSelection.collapsedAt(upstream_position);
+            var downstream_widget = widget;
+            downstream_widget.text_selection = canvas.TextSelection.collapsedAt(.{
+                .offset = offset,
+                .affinity = .downstream,
+            });
+            if (canvas.textGeometryForWidget(upstream_widget, self.widget_tokens).caret_bounds) |upstream_caret| {
+                if (canvas.textGeometryForWidget(downstream_widget, self.widget_tokens).caret_bounds) |downstream_caret| {
+                    if (downstream_caret.y > upstream_caret.y) {
+                        return .{
+                            .offset = offset,
+                            .affinity = .downstream,
+                        };
+                    }
+                }
+            }
+            return upstream_position;
+        }
+
         pub fn canvasWidgetKeyboardTextEdit(self: *RuntimeView, target: canvas.WidgetFocusTarget, keyboard: canvas.WidgetKeyboardEvent) ?canvas.TextInputEvent {
             const index = self.canvasWidgetNodeIndexById(target.id) orelse return null;
             const widget = self.widget_layout_nodes[index].widget;
@@ -148,11 +176,19 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                     const moving_left = std.ascii.eqlIgnoreCase(keyboard.key, "arrowleft");
                     const moving_right = std.ascii.eqlIgnoreCase(keyboard.key, "arrowright");
                     if (moving_left or moving_right) {
+                        const range = selection.range(widget.text.len);
+                        const origin_position = if (!keyboard.modifiers.shift and !selection.isCollapsed(widget.text.len))
+                            if (moving_left)
+                                canvasWidgetTextSelectionStartPosition(self, widget, range.start)
+                            else
+                                canvas.TextCaretPosition{ .offset = range.end, .affinity = .upstream }
+                        else
+                            canvas.TextCaretPosition{
+                                .offset = selection.focus,
+                                .affinity = selection.affinity,
+                            };
                         var caret_widget = widget;
-                        caret_widget.text_selection = canvas.TextSelection.collapsedAt(.{
-                            .offset = selection.focus,
-                            .affinity = selection.affinity,
-                        });
+                        caret_widget.text_selection = canvas.TextSelection.collapsedAt(origin_position);
                         const caret = canvas.textGeometryForWidget(caret_widget, self.widget_tokens).caret_bounds orelse return null;
                         const frame = widget.frame.normalized();
                         const target_x = if (moving_left) frame.x - 1 else frame.maxX() + 1;
@@ -196,32 +232,11 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 if (!selection.isCollapsed(widget.text.len) and (moving_left or moving_right)) {
                     const range = selection.range(widget.text.len);
                     const target_offset = if (moving_left) range.start else range.end;
-                    var target_affinity: canvas.TextCaretAffinity = .upstream;
-                    if (moving_left) {
-                        // A non-empty selection beginning at a shared
-                        // soft-wrap byte starts on the downstream line.
-                        // Collapsing Left must land on that visible edge,
-                        // not jump to the previous line's upstream stop.
-                        var upstream_widget = widget;
-                        upstream_widget.text_selection = canvas.TextSelection.collapsedAt(.{
-                            .offset = target_offset,
-                            .affinity = .upstream,
-                        });
-                        var downstream_widget = widget;
-                        downstream_widget.text_selection = canvas.TextSelection.collapsedAt(.{
-                            .offset = target_offset,
-                            .affinity = .downstream,
-                        });
-                        if (canvas.textGeometryForWidget(upstream_widget, self.widget_tokens).caret_bounds) |upstream_caret| {
-                            if (canvas.textGeometryForWidget(downstream_widget, self.widget_tokens).caret_bounds) |downstream_caret| {
-                                if (downstream_caret.y > upstream_caret.y) target_affinity = .downstream;
-                            }
-                        }
-                    }
-                    return .{ .set_selection = canvas.TextSelection.collapsedAt(.{
-                        .offset = target_offset,
-                        .affinity = target_affinity,
-                    }) };
+                    const target_position = if (moving_left)
+                        canvasWidgetTextSelectionStartPosition(self, widget, target_offset)
+                    else
+                        canvas.TextCaretPosition{ .offset = target_offset, .affinity = .upstream };
+                    return .{ .set_selection = canvas.TextSelection.collapsedAt(target_position) };
                 }
                 if (selection.isCollapsed(widget.text.len) and
                     ((moving_left and selection.affinity == .downstream) or
@@ -269,11 +284,16 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 const moving_down = std.ascii.eqlIgnoreCase(keyboard.key, "arrowdown");
                 if (moving_up or moving_down) {
                     const selection = widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len);
+                    const range = selection.range(widget.text.len);
+                    const origin_position = if (!keyboard.modifiers.shift and !selection.isCollapsed(widget.text.len))
+                        canvasWidgetTextSelectionStartPosition(self, widget, range.start)
+                    else
+                        canvas.TextCaretPosition{
+                            .offset = selection.focus,
+                            .affinity = selection.affinity,
+                        };
                     var caret_widget = widget;
-                    caret_widget.text_selection = canvas.TextSelection.collapsedAt(.{
-                        .offset = selection.focus,
-                        .affinity = selection.affinity,
-                    });
+                    caret_widget.text_selection = canvas.TextSelection.collapsedAt(origin_position);
                     const caret = canvas.textGeometryForWidget(caret_widget, self.widget_tokens).caret_bounds orelse return null;
                     const vertical_witness_matches =
                         self.canvas_widget_text_vertical_goal_id == target.id and
@@ -883,7 +903,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             const widget = self.widget_layout_nodes[index].widget;
             if (widget.state.disabled) return null;
             if (canvas.widgetStaticTextSelectable(widget)) {
-                return applyCanvasWidgetStaticTextPointer(self, index, target_id, point, dragging or shift_extend);
+                return applyCanvasWidgetStaticTextPointer(self, index, target_id, point, dragging);
             }
             if (!canvasWidgetEditableTextKind(widget.kind)) return null;
 

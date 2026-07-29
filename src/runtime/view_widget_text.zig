@@ -583,10 +583,28 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             const delta = if (provisional_composition) blk: {
                 const inserted = after.composition orelse return false;
                 const removed = before_selection.range(before.text.len);
+                var prefix_len = removed.start;
+                var before_end = removed.end;
+                var after_end = inserted.end;
+                // A later preedit rewrite can complete a CRLF with either
+                // adjacent delimiter even when the first preview did not.
+                // Retain that shared context from the start so the committed
+                // history replacement never addresses only half of the pair.
+                if (prefix_len > 0 and before.text[prefix_len - 1] == '\r') {
+                    prefix_len -= 1;
+                }
+                if (before_end < before.text.len and
+                    after_end < after.text.len and
+                    before.text[before_end] == '\n' and
+                    after.text[after_end] == '\n')
+                {
+                    before_end += 1;
+                    after_end += 1;
+                }
                 break :blk CanvasWidgetTextHistoryDelta{
-                    .prefix_len = removed.start,
-                    .before_end = removed.end,
-                    .after_end = inserted.end,
+                    .prefix_len = prefix_len,
+                    .before_end = before_end,
+                    .after_end = after_end,
                 };
             } else canvasWidgetTextHistoryDelta(before.text, after.text);
             const removed_len = delta.before_end - delta.prefix_len;

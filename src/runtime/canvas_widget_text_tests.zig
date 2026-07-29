@@ -1431,6 +1431,117 @@ test "textarea history replays newly completed CRLF atomically" {
     try std.testing.expectEqualStrings("a\nb", retained.nodes[2].widget.text);
 }
 
+test "textarea IME history replays CRLF completion atomically" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-ime-crlf-history", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 240, 160),
+    });
+    const before_lf = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 180, 48),
+        .text = "a\rb",
+        .text_selection = canvas.TextSelection.collapsed(2),
+    };
+    const before_cr = canvas.Widget{
+        .id = 3,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 84, 180, 48),
+        .text = "a\nb",
+        .text_selection = canvas.TextSelection.collapsed(1),
+    };
+    var nodes: [3]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{ before_lf, before_cr } },
+        geometry.RectF.init(0, 0, 240, 160),
+        &nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].keyboard_active = true;
+
+    // A later preedit rewrite completing an existing CR with LF must have
+    // retained the CR as shared context from the first preview: Undo restores
+    // it instead of deleting it too.
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "X",
+        .composition_cursor = 1,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "\n",
+        .composition_cursor = 1,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_commit_composition,
+    } });
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\r\nb", retained.nodes[1].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\rb", retained.nodes[1].widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(2), retained.nodes[1].widget.text_selection.?);
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\r\nb", retained.nodes[1].widget.text);
+
+    // The reverse boundary has the same requirement: a later rewrite to CR
+    // before an existing LF must not leave Undo selecting an unsplittable half.
+    harness.runtime.views[0].canvas_widget_focused_id = 3;
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "X",
+        .composition_cursor = 1,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "\r",
+        .composition_cursor = 1,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_commit_composition,
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\r\nb", retained.nodes[2].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\nb", retained.nodes[2].widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(1), retained.nodes[2].widget.text_selection.?);
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\r\nb", retained.nodes[2].widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(1), retained.nodes[2].widget.text_selection.?);
+}
+
 test "canvas textareas undo and redo keyboard edits" {
     const TestApp = struct {
         fn app(self: *@This()) App {

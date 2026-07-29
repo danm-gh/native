@@ -658,11 +658,12 @@ test "textarea pointer and direct selection cannot split CRLF" {
     const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, geometry.RectF.init(0, 0, 260, 160), &nodes);
     _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
 
-    _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{
-        .set_selection = canvas.TextSelection.collapsed(4),
-    });
     var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(3), retained.nodes[1].widget.text_selection.?);
+    try std.testing.expectEqualDeep(
+        canvas.TextRange.init(3, 3),
+        runtimeViewWidgetSemantics(&harness.runtime.views[0])[0].text_selection.?,
+    );
 
     const field = retained.nodes[1].widget;
     const caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
@@ -671,6 +672,13 @@ test "textarea pointer and direct selection cannot split CRLF" {
         @as(usize, 3),
         canvas.textOffsetForWidgetPoint(field, line_end, harness.runtime.views[0].widget_tokens).?,
     );
+
+    _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{
+        .set_selection = canvas.TextSelection.collapsed(4),
+    });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(3), retained.nodes[1].widget.text_selection.?);
+
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",

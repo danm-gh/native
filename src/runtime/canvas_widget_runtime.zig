@@ -776,8 +776,10 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
     previous: *const CanvasWidgetTextEntryIndex,
 ) canvas.WidgetLayoutNode {
     var copy = node;
-    if (copy.widget.id == 0) return copy;
-    if (copy.widget.state.disabled or canvasWidgetLayoutNodeHidden(layout, node_index)) return copy;
+    if (copy.widget.id == 0) return canvasWidgetLayoutNodeWithCaretSafeSelection(copy);
+    if (copy.widget.state.disabled or canvasWidgetLayoutNodeHidden(layout, node_index)) {
+        return canvasWidgetLayoutNodeWithCaretSafeSelection(copy);
+    }
 
     if (copy.widget.kind == .text) {
         // Static text selections survive rebuilds only while the source
@@ -787,7 +789,7 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
                 copy.widget.text_selection = entry.text_selection;
             }
         }
-        return copy;
+        return canvasWidgetLayoutNodeWithCaretSafeSelection(copy);
     }
     if (!canvasWidgetEditableTextKind(copy.widget.kind)) return copy;
 
@@ -801,7 +803,9 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
         const next_source_text = canvasWidgetSourceTextFingerprint(copy.widget.text);
         const source_unchanged = entry.source_text_len == next_source_text.len and entry.source_text_hash == next_source_text.hash;
         const source_matches_runtime_text = std.mem.eql(u8, entry.text, copy.widget.text);
-        if (!source_unchanged and !source_matches_runtime_text) return copy;
+        if (!source_unchanged and !source_matches_runtime_text) {
+            return canvasWidgetLayoutNodeWithCaretSafeSelection(copy);
+        }
         if (source_unchanged) copy.widget.text = entry.text;
         // The retained scroll offset rides `value` for every editable
         // text kind: the textarea's vertical offset and the single-line
@@ -837,6 +841,15 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
                 }
             }
         }
+    }
+    return canvasWidgetLayoutNodeWithCaretSafeSelection(copy);
+}
+
+fn canvasWidgetLayoutNodeWithCaretSafeSelection(node: canvas.WidgetLayoutNode) canvas.WidgetLayoutNode {
+    var copy = node;
+    if (!canvasWidgetEditableTextKind(copy.widget.kind)) return copy;
+    if (copy.widget.text_selection) |selection| {
+        copy.widget.text_selection = canvas.snapTextCaretSelection(copy.widget.text, selection);
     }
     return copy;
 }

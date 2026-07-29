@@ -1,4 +1,5 @@
 const support = @import("test_support.zig");
+const builtin = @import("builtin");
 const std = support.std;
 const geometry = support.geometry;
 const trace = support.trace;
@@ -436,52 +437,67 @@ test "runtime applies text input to canvas textareas" {
     try std.testing.expectEqualStrings("First!\nSecond", retained.nodes[1].widget.text);
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(13), retained.nodes[1].widget.text_selection.?);
 
-    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = "canvas",
-        .kind = .key_down,
-        .key = "arrowleft",
-        .modifiers = .{ .command = true, .shift = true },
-    } });
-    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 13, .focus = 7 }, retained.nodes[1].widget.text_selection.?);
+    if (comptime builtin.os.tag == .macos) {
+        try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = .key_down,
+            .key = "arrowleft",
+            .modifiers = .{ .command = true, .shift = true },
+        } });
+        retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+        try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 13, .focus = 7 }, retained.nodes[1].widget.text_selection.?);
 
-    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = "canvas",
-        .kind = .key_down,
-        .key = "arrowright",
-        .modifiers = .{ .command = true },
-    } });
-    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(13), retained.nodes[1].widget.text_selection.?);
+        try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = .key_down,
+            .key = "arrowright",
+            .modifiers = .{ .command = true },
+        } });
+        retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+        try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(13), retained.nodes[1].widget.text_selection.?);
 
-    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = "canvas",
-        .kind = .key_down,
-        .key = "arrowleft",
-        .modifiers = .{ .command = true },
-    } });
-    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(7), retained.nodes[1].widget.text_selection.?);
+        try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = .key_down,
+            .key = "arrowleft",
+            .modifiers = .{ .command = true },
+        } });
+        retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+        try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(7), retained.nodes[1].widget.text_selection.?);
 
+        try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = .key_down,
+            .key = "arrowup",
+            .modifiers = .{ .command = true },
+        } });
+        retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+        try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(0), retained.nodes[1].widget.text_selection.?);
+
+        try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = .key_down,
+            .key = "arrowdown",
+            .modifiers = .{ .command = true },
+        } });
+        retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+        try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(13), retained.nodes[1].widget.text_selection.?);
+    }
+
+    // On Ctrl-primary hosts the runtime folds Primary into `super`, so
+    // Ctrl arrives with BOTH bits set. It must not enter the macOS-only
+    // Command+Up document-boundary mapping.
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",
         .kind = .key_down,
         .key = "arrowup",
-        .modifiers = .{ .command = true },
-    } });
-    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(0), retained.nodes[1].widget.text_selection.?);
-
-    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = "canvas",
-        .kind = .key_down,
-        .key = "arrowdown",
-        .modifiers = .{ .command = true },
+        .modifiers = .{ .primary = true, .control = true },
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(13), retained.nodes[1].widget.text_selection.?);
@@ -687,6 +703,8 @@ test "textarea vertical navigation retains its preferred column across short lin
 }
 
 test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
+    if (comptime builtin.os.tag != .macos) return error.SkipZigTest;
+
     const TestApp = struct {
         fn app(self: *@This()) App {
             return .{ .context = self, .name = "gpu-widget-textarea-command-visual-line", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
@@ -820,25 +838,80 @@ test "textarea visual navigation keeps an unbroken wrap boundary on its painted 
     ).?;
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), pointer_selection);
 
-    _ = try harness.runtime.editCanvasWidgetText(
-        1,
-        "canvas",
-        2,
-        .{ .set_selection = canvas.TextSelection.collapsed(second_line_start.offset + 1) },
-    );
+    if (comptime builtin.os.tag == .macos) {
+        _ = try harness.runtime.editCanvasWidgetText(
+            1,
+            "canvas",
+            2,
+            .{ .set_selection = canvas.TextSelection.collapsed(second_line_start.offset + 1) },
+        );
+        try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = .key_down,
+            .key = "arrowleft",
+            .modifiers = .{ .command = true },
+        } });
+    } else {
+        _ = try harness.runtime.editCanvasWidgetText(
+            1,
+            "canvas",
+            2,
+            .{ .set_selection = canvas.TextSelection.collapsedAt(second_line_start) },
+        );
+    }
+
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    field = retained.nodes[1].widget;
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), field.text_selection.?);
+    var navigated_caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    try std.testing.expect(navigated_caret.y > first_caret.y);
+
+    // Plain Left/Right traverses both painted caret stops at the shared
+    // soft-wrap byte offset before moving to another scalar.
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",
         .kind = .key_down,
         .key = "arrowleft",
-        .modifiers = .{ .command = true },
     } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    field = retained.nodes[1].widget;
+    try std.testing.expectEqualDeep(
+        canvas.TextSelection.collapsedAt(.{ .offset = second_line_start.offset, .affinity = .upstream }),
+        field.text_selection.?,
+    );
+    const upstream_caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    try std.testing.expectApproxEqAbs(first_caret.y, upstream_caret.y, 0.001);
 
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowright",
+    } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     field = retained.nodes[1].widget;
     try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), field.text_selection.?);
-    const navigated_caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
-    try std.testing.expect(navigated_caret.y > first_caret.y);
+    navigated_caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    try std.testing.expect(navigated_caret.y > upstream_caret.y);
+
+    // The single-codepoint undo fast path must restore the downstream
+    // affinity recorded before typing, not just the shared byte offset.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "Q",
+        .text = "Q",
+    } });
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    field = retained.nodes[1].widget;
+    try std.testing.expectEqualStrings(text, field.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsedAt(second_line_start), field.text_selection.?);
+    navigated_caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    try std.testing.expect(navigated_caret.y > upstream_caret.y);
 
     // Controlled cores and the C ABI historically echo anchor/focus
     // without an affinity slot. Reconcile retains the visual-line owner
@@ -993,6 +1066,43 @@ test "canvas textareas undo and redo keyboard edits" {
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualStrings("alpha!?XYZ漢字", retained.nodes[1].widget.text);
     try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 0, .focus = 5 }, retained.nodes[1].widget.text_selection.?);
+
+    // A live preedit can temporarily equal the bytes it replaced while
+    // only its cursor changes. That intermediate no-op must keep the
+    // provisional transaction alive for a later changed commit.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "alpha",
+        .composition_cursor = 0,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "alpha",
+        .composition_cursor = 5,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "omega",
+        .composition_cursor = 5,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_commit_composition,
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("omega!?XYZ漢字", retained.nodes[1].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("alpha!?XYZ漢字", retained.nodes[1].widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 0, .focus = 5 }, retained.nodes[1].widget.text_selection.?);
+
     _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{ .set_selection = canvas.TextSelection.collapsed(retained.nodes[1].widget.text.len) });
 
     // A cancelled preedit with no net text change drops only its

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const geometry = @import("geometry");
 const canvas = @import("canvas");
 const canvas_frame_helpers = @import("canvas_frame.zig");
@@ -129,43 +130,90 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             // Command+Up/Down reaches the document boundary. Return an
             // explicit selection for the line moves so the exact target is
             // stamped onto on-input and controlled TextBuffers mirror it.
+            if (comptime builtin.os.tag == .macos) {
+                if (widget.kind == .textarea and
+                    keyboard.phase == .key_down and
+                    keyboard.text.len == 0 and
+                    keyboard.modifiers.super and
+                    !keyboard.modifiers.control and
+                    !keyboard.modifiers.alt)
+                {
+                    const selection = widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len);
+                    const moving_left = std.ascii.eqlIgnoreCase(keyboard.key, "arrowleft");
+                    const moving_right = std.ascii.eqlIgnoreCase(keyboard.key, "arrowright");
+                    if (moving_left or moving_right) {
+                        var caret_widget = widget;
+                        caret_widget.text_selection = canvas.TextSelection.collapsedAt(.{
+                            .offset = selection.focus,
+                            .affinity = selection.affinity,
+                        });
+                        const caret = canvas.textGeometryForWidget(caret_widget, self.widget_tokens).caret_bounds orelse return null;
+                        const frame = widget.frame.normalized();
+                        const target_x = if (moving_left) frame.x - 1 else frame.maxX() + 1;
+                        const target_position = canvas.textCaretPositionForWidgetPoint(
+                            widget,
+                            geometry.PointF.init(target_x, caret.y + caret.height * 0.5),
+                            self.widget_tokens,
+                        ) orelse return null;
+                        return .{ .set_selection = if (keyboard.modifiers.shift)
+                            .{
+                                .anchor = selection.anchor,
+                                .focus = target_position.offset,
+                                .affinity = target_position.affinity,
+                            }
+                        else
+                            canvas.TextSelection.collapsedAt(target_position) };
+                    }
+                    if (std.ascii.eqlIgnoreCase(keyboard.key, "arrowup")) {
+                        return .{ .move_caret = .{ .direction = .start, .extend = keyboard.modifiers.shift } };
+                    }
+                    if (std.ascii.eqlIgnoreCase(keyboard.key, "arrowdown")) {
+                        return .{ .move_caret = .{ .direction = .end, .extend = keyboard.modifiers.shift } };
+                    }
+                }
+            }
+
+            // A soft-wrap boundary has two painted caret stops at one byte
+            // offset. Plain horizontal movement crosses that visual seam
+            // before advancing to another scalar: Right moves upstream ->
+            // downstream, and Left moves downstream -> upstream. Shift
+            // variants keep their ordinary byte-extending selection rule.
             if (widget.kind == .textarea and
                 keyboard.phase == .key_down and
                 keyboard.text.len == 0 and
-                keyboard.modifiers.super and
-                !keyboard.modifiers.alt)
+                !keyboard.modifiers.shift and
+                !keyboard.modifiers.hasNavigationModifier())
             {
-                const selection = widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len);
                 const moving_left = std.ascii.eqlIgnoreCase(keyboard.key, "arrowleft");
                 const moving_right = std.ascii.eqlIgnoreCase(keyboard.key, "arrowright");
-                if (moving_left or moving_right) {
-                    var caret_widget = widget;
-                    caret_widget.text_selection = canvas.TextSelection.collapsedAt(.{
+                const selection = widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len);
+                if (selection.isCollapsed(widget.text.len) and
+                    ((moving_left and selection.affinity == .downstream) or
+                        (moving_right and selection.affinity == .upstream)))
+                {
+                    var current_widget = widget;
+                    current_widget.text_selection = canvas.TextSelection.collapsedAt(.{
                         .offset = selection.focus,
                         .affinity = selection.affinity,
                     });
-                    const caret = canvas.textGeometryForWidget(caret_widget, self.widget_tokens).caret_bounds orelse return null;
-                    const frame = widget.frame.normalized();
-                    const target_x = if (moving_left) frame.x - 1 else frame.maxX() + 1;
-                    const target_position = canvas.textCaretPositionForWidgetPoint(
-                        widget,
-                        geometry.PointF.init(target_x, caret.y + caret.height * 0.5),
-                        self.widget_tokens,
-                    ) orelse return null;
-                    return .{ .set_selection = if (keyboard.modifiers.shift)
-                        .{
-                            .anchor = selection.anchor,
-                            .focus = target_position.offset,
-                            .affinity = target_position.affinity,
-                        }
+                    const current_caret = canvas.textGeometryForWidget(current_widget, self.widget_tokens).caret_bounds orelse return null;
+                    const next_affinity: canvas.TextCaretAffinity = if (moving_left) .upstream else .downstream;
+                    var next_widget = widget;
+                    next_widget.text_selection = canvas.TextSelection.collapsedAt(.{
+                        .offset = selection.focus,
+                        .affinity = next_affinity,
+                    });
+                    const next_caret = canvas.textGeometryForWidget(next_widget, self.widget_tokens).caret_bounds orelse return null;
+                    const crosses_wrap = if (moving_left)
+                        next_caret.y < current_caret.y
                     else
-                        canvas.TextSelection.collapsedAt(target_position) };
-                }
-                if (std.ascii.eqlIgnoreCase(keyboard.key, "arrowup")) {
-                    return .{ .move_caret = .{ .direction = .start, .extend = keyboard.modifiers.shift } };
-                }
-                if (std.ascii.eqlIgnoreCase(keyboard.key, "arrowdown")) {
-                    return .{ .move_caret = .{ .direction = .end, .extend = keyboard.modifiers.shift } };
+                        next_caret.y > current_caret.y;
+                    if (crosses_wrap) {
+                        return .{ .set_selection = canvas.TextSelection.collapsedAt(.{
+                            .offset = selection.focus,
+                            .affinity = next_affinity,
+                        }) };
+                    }
                 }
             }
 
@@ -569,11 +617,11 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             self.canvas_widget_text_history_entries[provisional_index].after_text_len = after.text.len;
             self.canvas_widget_text_history_entries[provisional_index].after_hash = after_hash;
             self.canvas_widget_text_history_entries[provisional_index].after_selection = after.selection;
+            if (after.composition != null) return;
             if (after.text.len == provisional.before_text_len and after_hash == provisional.before_hash) {
                 removeCanvasWidgetTextHistoryEntry(self, provisional_index);
                 return;
             }
-            if (after.composition != null) return;
 
             // The composition committed a net edit, so it now forks Redo.
             // Remove that branch before exposing the provisional entry to
@@ -1005,14 +1053,14 @@ fn buildCanvasWidgetTextUndoEdits(
     if (removed.len == 0 and
         historySingleCodepoint(inserted) and
         historySelectionCollapsedAt(current_selection, prefix + inserted.len) and
-        historySelectionCollapsedAt(entry.before_selection, prefix))
+        canvasTextSelectionsEqual(entry.before_selection, canvas.TextSelection.collapsed(prefix)))
     {
         appendCanvasWidgetTextHistoryEdit(output, count, .delete_backward);
         return;
     }
     if (inserted.len == 0 and
         historySelectionCollapsedAt(current_selection, prefix) and
-        historySelectionCollapsedAt(entry.before_selection, prefix + removed.len))
+        canvasTextSelectionsEqual(entry.before_selection, canvas.TextSelection.collapsed(prefix + removed.len)))
     {
         appendCanvasWidgetTextHistoryEdit(output, count, .{ .insert_text = removed });
         return;
@@ -1040,7 +1088,7 @@ fn buildCanvasWidgetTextRedoEdits(
     const prefix = entry.prefix_len;
     if (removed.len == 0 and
         historySelectionCollapsedAt(current_selection, prefix) and
-        historySelectionCollapsedAt(entry.after_selection, prefix + inserted.len))
+        canvasTextSelectionsEqual(entry.after_selection, canvas.TextSelection.collapsed(prefix + inserted.len)))
     {
         appendCanvasWidgetTextHistoryEdit(output, count, .{ .insert_text = inserted });
         return;
@@ -1048,7 +1096,7 @@ fn buildCanvasWidgetTextRedoEdits(
     if (historySingleCodepoint(removed) and
         inserted.len == 0 and
         historySelectionCollapsedAt(current_selection, prefix + removed.len) and
-        historySelectionCollapsedAt(entry.after_selection, prefix))
+        canvasTextSelectionsEqual(entry.after_selection, canvas.TextSelection.collapsed(prefix)))
     {
         appendCanvasWidgetTextHistoryEdit(output, count, .delete_backward);
         return;
@@ -1056,7 +1104,7 @@ fn buildCanvasWidgetTextRedoEdits(
     if (historySingleCodepoint(removed) and
         inserted.len == 0 and
         historySelectionCollapsedAt(current_selection, prefix) and
-        historySelectionCollapsedAt(entry.after_selection, prefix))
+        canvasTextSelectionsEqual(entry.after_selection, canvas.TextSelection.collapsed(prefix)))
     {
         appendCanvasWidgetTextHistoryEdit(output, count, .delete_forward);
         return;

@@ -507,7 +507,7 @@ test "runtime applies text input to canvas textareas" {
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqual(textarea_revision + 2, harness.runtime.views[0].widget_revision);
-    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(11), retained.nodes[1].widget.text_selection.?);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(13), retained.nodes[1].widget.text_selection.?);
 
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
@@ -518,7 +518,7 @@ test "runtime applies text input to canvas textareas" {
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqual(textarea_revision + 3, harness.runtime.views[0].widget_revision);
-    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 11, .focus = 6 }, retained.nodes[1].widget.text_selection.?);
+    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 13, .focus = 6 }, retained.nodes[1].widget.text_selection.?);
 
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
@@ -529,7 +529,7 @@ test "runtime applies text input to canvas textareas" {
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqual(textarea_revision + 4, harness.runtime.views[0].widget_revision);
-    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(11), retained.nodes[1].widget.text_selection.?);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(13), retained.nodes[1].widget.text_selection.?);
 
     const text_geometry = try harness.runtime.canvasWidgetTextGeometry(1, "canvas", 2);
     try std.testing.expect(text_geometry.caret_bounds != null);
@@ -582,6 +582,161 @@ test "runtime applies text input to canvas textareas" {
         }
     }
     try std.testing.expect(saw_textarea_clip);
+}
+
+test "textarea vertical navigation retains its preferred column across short lines" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-textarea-vertical-goal", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 320, 180),
+    });
+
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 260, 120),
+        .text = "0123456789\nx\n0123456789",
+        .text_selection = canvas.TextSelection.collapsed(8),
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, geometry.RectF.init(0, 0, 320, 180), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowdown",
+    } });
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(12), retained.nodes[1].widget.text_selection.?);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowdown",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(21), retained.nodes[1].widget.text_selection.?);
+
+    // A horizontal move ends the vertical run. The next Up/Down pair
+    // begins with the new column instead of reviving the old goal.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowleft",
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowup",
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowdown",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(20), retained.nodes[1].widget.text_selection.?);
+}
+
+test "textarea Command Left and Right stop at painted soft-wrap boundaries" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-textarea-command-visual-line", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 240, 180),
+    });
+
+    const text = "alpha beta gamma delta epsilon zeta";
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 92, 140),
+        .text = text,
+        .text_selection = canvas.TextSelection.collapsed(2),
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, geometry.RectF.init(0, 0, 240, 180), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    var field = retained.nodes[1].widget;
+    var caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    const expected_right = canvas.textOffsetForWidgetPoint(
+        field,
+        geometry.PointF.init(field.frame.maxX() + 1, caret.y + caret.height * 0.5),
+        harness.runtime.views[0].widget_tokens,
+    ).?;
+    try std.testing.expect(expected_right > field.text_selection.?.focus);
+    try std.testing.expect(expected_right < text.len);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowright",
+        .modifiers = .{ .command = true },
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(expected_right), retained.nodes[1].widget.text_selection.?);
+
+    _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{ .set_selection = canvas.TextSelection.collapsed(text.len - 2) });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    field = retained.nodes[1].widget;
+    caret = canvas.textGeometryForWidget(field, harness.runtime.views[0].widget_tokens).caret_bounds.?;
+    const expected_left = canvas.textOffsetForWidgetPoint(
+        field,
+        geometry.PointF.init(field.frame.x - 1, caret.y + caret.height * 0.5),
+        harness.runtime.views[0].widget_tokens,
+    ).?;
+    try std.testing.expect(expected_left > 0);
+    try std.testing.expect(expected_left < field.text_selection.?.focus);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "arrowleft",
+        .modifiers = .{ .command = true },
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(expected_left), retained.nodes[1].widget.text_selection.?);
 }
 
 test "canvas textareas undo and redo keyboard edits" {
@@ -669,6 +824,132 @@ test "canvas textareas undo and redo keyboard edits" {
     try dispatchTextareaHistoryShortcut(harness, app, true);
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualStrings("alpha!?XYZ", retained.nodes[1].widget.text);
+
+    // Every preedit rewrite belongs to one transaction. Commit produces
+    // one undoable step containing only the final composed text.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "é",
+        .composition_cursor = 2,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "漢字",
+        .composition_cursor = 6,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_commit_composition,
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("alpha!?XYZ漢字", retained.nodes[1].widget.text);
+    try std.testing.expect(retained.nodes[1].widget.text_composition == null);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("alpha!?XYZ", retained.nodes[1].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("alpha!?XYZ漢字", retained.nodes[1].widget.text);
+
+    // A composition that replaces a selection retains the removed bytes
+    // in the same transaction, so Undo restores both text and selection.
+    _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{ .set_selection = .{ .anchor = 0, .focus = 5 } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "Ω",
+        .composition_cursor = 2,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_commit_composition,
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("Ω!?XYZ漢字", retained.nodes[1].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("alpha!?XYZ漢字", retained.nodes[1].widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 0, .focus = 5 }, retained.nodes[1].widget.text_selection.?);
+    _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{ .set_selection = canvas.TextSelection.collapsed(retained.nodes[1].widget.text.len) });
+
+    // A cancelled preedit with no net text change drops only its
+    // provisional step; the ordinary edit immediately before it remains.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "q",
+        .text = "Q",
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "draft",
+        .composition_cursor = 5,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_cancel_composition,
+    } });
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("alpha!?XYZ漢字", retained.nodes[1].widget.text);
+
+    // Canceling a no-op preedit also preserves a standing Redo branch.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_set_composition,
+        .text = "draft",
+        .composition_cursor = 5,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .ime_cancel_composition,
+    } });
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("alpha!?XYZ漢字Q", retained.nodes[1].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("alpha!?XYZ漢字", retained.nodes[1].widget.text);
+
+    // A source-driven controlled replacement starts a new timeline on
+    // the next edit. Exhausting Undo must not consume that edit's Redo
+    // branch while rejecting history from the previous buffer.
+    const replacement = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = textarea.frame,
+        .text = "external",
+    };
+    var replacement_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const replacement_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{replacement} }, geometry.RectF.init(0, 0, 260, 160), &replacement_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", replacement_layout);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "!",
+        .text = "!",
+    } });
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("external", retained.nodes[1].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("external!", retained.nodes[1].widget.text);
 }
 
 fn dispatchTextareaHistoryShortcut(harness: *TestHarness(), app: App, redo: bool) !void {

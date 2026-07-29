@@ -761,6 +761,13 @@ pub const RuntimeView = struct {
     canvas_widget_text_history_entry_count: usize = 0,
     canvas_widget_text_history_bytes: [max_canvas_widget_text_history_bytes_per_view]u8 = undefined,
     canvas_widget_text_history_byte_count: usize = 0,
+    /// Native textarea Up/Down retains its painted x coordinate while a
+    /// consecutive vertical-navigation run crosses shorter visual lines.
+    canvas_widget_text_vertical_goal_id: canvas.ObjectId = 0,
+    canvas_widget_text_vertical_goal_x: f32 = 0,
+    canvas_widget_text_vertical_goal_text_len: usize = 0,
+    canvas_widget_text_vertical_goal_text_hash: u64 = 0,
+    canvas_widget_text_vertical_goal_focus: usize = 0,
 
     const CanvasWidgetTextMethods = view_widget_text.RuntimeViewCanvasWidgetText(RuntimeView);
     pub const applyCanvasWidgetTextEdit = CanvasWidgetTextMethods.applyCanvasWidgetTextEdit;

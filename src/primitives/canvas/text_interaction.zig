@@ -166,12 +166,12 @@ fn normalizeTextEditState(state: TextEditState) TextEditState {
     return .{
         .text = state.text,
         .selection = snapTextCaretSelection(state.text, state.selection),
-        .composition = if (state.composition) |range| snapTextCaretRange(state.text, range) else null,
+        .composition = if (state.composition) |range| snapTextRange(state.text, range) else null,
     };
 }
 
 fn activeTextReplaceRange(state: TextEditState) TextRange {
-    if (state.composition) |range| return snapTextCaretRange(state.text, range);
+    if (state.composition) |range| return snapTextRange(state.text, range);
     return state.selection.range(state.text.len);
 }
 
@@ -332,14 +332,6 @@ pub fn snapTextCaretSelection(text: []const u8, selection: TextSelection) TextSe
         .focus = focus.offset,
         .affinity = focus.affinity,
     };
-}
-
-fn snapTextCaretRange(text: []const u8, range: TextRange) TextRange {
-    const normalized = range.normalized(text.len);
-    return TextRange.init(
-        snapTextCaretOffset(text, normalized.start),
-        snapTextCaretOffset(text, normalized.end),
-    ).normalized(text.len);
 }
 
 fn snapTextCaretOffset(text: []const u8, offset: usize) usize {

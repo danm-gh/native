@@ -748,6 +748,29 @@ test "text edit state tracks ime composition ranges" {
     try std.testing.expect(state.composition == null);
 }
 
+test "ime composition owns exact bytes when its preview completes CRLF" {
+    var preview_storage: [64]u8 = undefined;
+    var update_storage: [64]u8 = undefined;
+    var cancel_storage: [64]u8 = undefined;
+
+    const initial = TextEditState{
+        .text = "a\nb",
+        .selection = TextSelection.collapsed(1),
+    };
+    const preview = try initial.apply(.{ .set_composition = .{ .text = "\r", .cursor = 1 } }, &preview_storage);
+    try std.testing.expectEqualStrings("a\r\nb", preview.text);
+    try std.testing.expectEqualDeep(TextRange.init(1, 2), preview.composition.?);
+
+    const updated = try preview.apply(.{ .set_composition = .{ .text = "X", .cursor = 1 } }, &update_storage);
+    try std.testing.expectEqualStrings("aX\nb", updated.text);
+    try std.testing.expectEqualDeep(TextRange.init(1, 2), updated.composition.?);
+
+    const cancelled = try preview.apply(.cancel_composition, &cancel_storage);
+    try std.testing.expectEqualStrings("a\nb", cancelled.text);
+    try std.testing.expectEqualDeep(TextSelection.collapsed(1), cancelled.selection);
+    try std.testing.expect(cancelled.composition == null);
+}
+
 test "text bounds follow utf8 scalar fallback and shaped y offsets" {
     // Metric boxes inflate by the ink allowance (left/bottom 0.1em,
     // right 0.35em) so real glyph outlines never clip at the bounds.

@@ -1150,7 +1150,10 @@ fn canvasWidgetTextHistoryDelta(before: []const u8, after: []const u8) CanvasWid
     var prefix_len: usize = 0;
     const shared_len = @min(before.len, after.len);
     while (prefix_len < shared_len and before[prefix_len] == after[prefix_len]) prefix_len += 1;
-    prefix_len = @min(canvas.snapTextOffset(before, prefix_len), canvas.snapTextOffset(after, prefix_len));
+    prefix_len = @min(
+        canvas.snapTextCaretPosition(before, .{ .offset = prefix_len }).offset,
+        canvas.snapTextCaretPosition(after, .{ .offset = prefix_len }).offset,
+    );
 
     var suffix_len: usize = 0;
     while (suffix_len < before.len - prefix_len and
@@ -1160,13 +1163,14 @@ fn canvasWidgetTextHistoryDelta(before: []const u8, after: []const u8) CanvasWid
         suffix_len += 1;
     }
     // A common byte suffix can begin inside a shared UTF-8 sequence when
-    // two codepoints share continuation bytes. Shrink it until both
-    // replacement ends are scalar boundaries.
+    // two codepoints share continuation bytes, or between the CR and LF
+    // when this edit completed a CRLF. Shrink it until both replacement
+    // ends are caret-safe boundaries.
     while (suffix_len > 0) {
         const before_end = before.len - suffix_len;
         const after_end = after.len - suffix_len;
-        if (canvas.snapTextOffset(before, before_end) == before_end and
-            canvas.snapTextOffset(after, after_end) == after_end)
+        if (canvas.snapTextCaretPosition(before, .{ .offset = before_end }).offset == before_end and
+            canvas.snapTextCaretPosition(after, .{ .offset = after_end }).offset == after_end)
         {
             break;
         }

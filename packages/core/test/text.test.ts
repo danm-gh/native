@@ -61,3 +61,27 @@ test("text reducer snaps editable endpoints out of CRLF", () => {
   assert.equal(decoder.decode(inserted.text), "oneX\r\ntwo");
   assert.deepEqual(inserted.selection, { anchor: 4, focus: 4 });
 });
+
+test("text reducer retains exact composition ownership across CRLF", () => {
+  const initial = state("a\nb", 1);
+  const preview = apply(initial, {
+    kind: "set_composition",
+    text: encoder.encode("\r"),
+    cursor: 1,
+  });
+  assert.equal(decoder.decode(preview.text), "a\r\nb");
+  assert.deepEqual(preview.composition, { start: 1, end: 2 });
+
+  const updated = apply(preview, {
+    kind: "set_composition",
+    text: encoder.encode("X"),
+    cursor: 1,
+  });
+  assert.equal(decoder.decode(updated.text), "aX\nb");
+  assert.deepEqual(updated.composition, { start: 1, end: 2 });
+
+  const cancelled = apply(preview, { kind: "cancel_composition" });
+  assert.equal(decoder.decode(cancelled.text), "a\nb");
+  assert.deepEqual(cancelled.selection, { anchor: 1, focus: 1 });
+  assert.equal(cancelled.composition, null);
+});

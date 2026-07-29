@@ -234,17 +234,6 @@ function snapTextRange(text: Uint8Array, range: TextRange): TextRange {
   );
 }
 
-function snapTextCaretRange(text: Uint8Array, range: TextRange): TextRange {
-  const normalized = rangeNormalized(range, text.length);
-  return rangeNormalized(
-    {
-      start: snapTextCaretOffset(text, normalized.start),
-      end: snapTextCaretOffset(text, normalized.end),
-    },
-    text.length,
-  );
-}
-
 interface TextReplaceResult {
   readonly text: Uint8Array;
   readonly insertedStart: number;
@@ -276,12 +265,12 @@ function normalizeTextEditState(state: TextEditState): TextEditState {
     text: state.text,
     selection: snapTextCaretSelection(state.text, state.selection),
     composition:
-      state.composition !== null ? snapTextCaretRange(state.text, state.composition) : null,
+      state.composition !== null ? snapTextRange(state.text, state.composition) : null,
   };
 }
 
 function activeTextReplaceRange(state: TextEditState): TextRange {
-  if (state.composition !== null) return snapTextCaretRange(state.text, state.composition);
+  if (state.composition !== null) return snapTextRange(state.text, state.composition);
   return selectionRange(state.selection, state.text.length);
 }
 

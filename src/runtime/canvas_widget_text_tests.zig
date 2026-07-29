@@ -1228,6 +1228,82 @@ test "single-line history replay restores exact retained bytes" {
     try std.testing.expect(harness.runtime.views[0].canvasWidgetTextHistoryAvailability(2).can_redo);
 }
 
+test "textarea history replays newly completed CRLF atomically" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-crlf-history", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 240, 160),
+    });
+    const after_cr = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 180, 48),
+        .text = "a\rb",
+        .text_selection = canvas.TextSelection.collapsed(2),
+    };
+    const before_lf = canvas.Widget{
+        .id = 3,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 84, 180, 48),
+        .text = "a\nb",
+        .text_selection = canvas.TextSelection.collapsed(1),
+    };
+    var nodes: [3]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &.{ after_cr, before_lf } },
+        geometry.RectF.init(0, 0, 240, 160),
+        &nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].keyboard_active = true;
+
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "x",
+        .text = "\n",
+    } });
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\r\nb", retained.nodes[1].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\rb", retained.nodes[1].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, true);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\r\nb", retained.nodes[1].widget.text);
+
+    harness.runtime.views[0].canvas_widget_focused_id = 3;
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "x",
+        .text = "\r",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\r\nb", retained.nodes[2].widget.text);
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("a\nb", retained.nodes[2].widget.text);
+}
+
 test "canvas textareas undo and redo keyboard edits" {
     const TestApp = struct {
         fn app(self: *@This()) App {

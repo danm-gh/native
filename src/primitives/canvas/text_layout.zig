@@ -371,8 +371,15 @@ pub const TextLineIterator = struct {
             self.finished = true;
         } else {
             var next_start = end;
-            if (next_start < bytes.len and bytes[next_start] == '\n') next_start += 1;
-            while (self.options.wrap == .word and next_start < bytes.len and isTextBreakByte(bytes[next_start])) next_start += 1;
+            if (next_start < bytes.len and bytes[next_start] == '\n') {
+                // A hard break starts the next line immediately after
+                // the newline. Its leading whitespace is editable
+                // content, so it must contribute paint and caret width.
+                next_start += 1;
+            } else {
+                // Only soft word wraps elide their break separators.
+                while (self.options.wrap == .word and next_start < bytes.len and isTextBreakByte(bytes[next_start])) next_start += 1;
+            }
             self.cursor = next_start;
         }
         const elision = plainLineElision(bytes, start, end, self.text.font_id, self.text.size, self.options);

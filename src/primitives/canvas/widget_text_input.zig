@@ -376,8 +376,13 @@ fn widgetTextInputLineCount(widget: Widget, font_id: FontId, text_size: f32, opt
         count += 1;
         if (end >= text.len) break;
         start = end;
-        if (start < text.len and text[start] == '\n') start += 1;
-        while (options.wrap == .word and start < text.len and isTextBreakByte(text[start])) start += 1;
+        if (start < text.len and text[start] == '\n') {
+            // Leading whitespace after a hard break belongs to the next
+            // editable line; only a soft wrap elides separators.
+            start += 1;
+        } else {
+            while (options.wrap == .word and start < text.len and isTextBreakByte(text[start])) start += 1;
+        }
     }
     return @max(1, count);
 }

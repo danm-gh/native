@@ -327,6 +327,7 @@ pub fn canvasWidgetPointerEventFromGpuInput(input_event: GpuSurfaceInputEvent) ?
         .delta = geometry.OffsetF.init(input_event.delta_x, input_event.delta_y),
         .pointer_id = input_event.pointer_id,
         .button = input_event.button,
+        .modifiers = canvasWidgetKeyboardModifiers(input_event.modifiers),
     };
 }
 

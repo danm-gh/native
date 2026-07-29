@@ -67,6 +67,10 @@ pub const WidgetPointerEvent = struct {
     /// may leave this at 0; gesture owners use the initiating down to
     /// decide whether to capture.
     button: i32 = 0,
+    /// Keyboard modifiers held for this pointer event. Text editors use
+    /// Shift on pointer-down to extend from the existing selection
+    /// anchor instead of replacing it with a collapsed caret.
+    modifiers: WidgetKeyboardModifiers = .{},
 };
 
 pub const WidgetKeyboardPhase = enum {

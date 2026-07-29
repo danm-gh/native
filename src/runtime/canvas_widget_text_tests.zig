@@ -432,6 +432,30 @@ test "runtime applies text input to canvas textareas" {
     const newline_geometry = try harness.runtime.canvasWidgetTextGeometry(1, "canvas", 2);
     try std.testing.expect(newline_geometry.caret_bounds.?.y > textarea.frame.y + 24);
 
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "space",
+        .text = " ",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("First!\n ", retained.nodes[1].widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(8), retained.nodes[1].widget.text_selection.?);
+    const space_geometry = try harness.runtime.canvasWidgetTextGeometry(1, "canvas", 2);
+    try std.testing.expectEqual(newline_geometry.caret_bounds.?.y, space_geometry.caret_bounds.?.y);
+    try std.testing.expect(space_geometry.caret_bounds.?.x > newline_geometry.caret_bounds.?.x);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "backspace",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("First!\n", retained.nodes[1].widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(7), retained.nodes[1].widget.text_selection.?);
+
     _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{ .insert_text = "Second" });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualStrings("First!\nSecond", retained.nodes[1].widget.text);
@@ -3051,6 +3075,76 @@ fn dispatchTimedPointer(harness: *TestHarness(), app: App, kind: platform.GpuSur
 fn retainedTextSelection(harness: *TestHarness(), node_index: usize) !canvas.TextSelection {
     const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     return retained.nodes[node_index].widget.text_selection orelse error.TestExpectedSelection;
+}
+
+test "Shift-click extends a textarea selection from the placed caret" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-shift-click-selection", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 320, 200),
+    });
+
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 240, 96),
+        .text = "alpha beta\ngamma delta",
+        .semantics = .{ .label = "Message" },
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{textarea} }, geometry.RectF.init(0, 0, 320, 200), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    const widget = (try harness.runtime.canvasWidgetLayout(1, "canvas")).nodes[1].widget;
+
+    const anchor_point = pointForTextOffset(widget, .{}, 2).?;
+    const focus_point = pointForTextOffset(widget, .{}, 18).?;
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = anchor_point.x,
+        .y = anchor_point.y,
+    } });
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(2), try retainedTextSelection(harness, 1));
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_up,
+        .x = anchor_point.x,
+        .y = anchor_point.y,
+    } });
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = focus_point.x,
+        .y = focus_point.y,
+        .modifiers = .{ .shift = true },
+    } });
+    try std.testing.expectEqualDeep(canvas.TextSelection{ .anchor = 2, .focus = 18 }, try retainedTextSelection(harness, 1));
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_up,
+        .x = focus_point.x,
+        .y = focus_point.y,
+        .modifiers = .{ .shift = true },
+    } });
 }
 
 test "double-click selects the word run under the pointer; a slow second click only moves the caret" {

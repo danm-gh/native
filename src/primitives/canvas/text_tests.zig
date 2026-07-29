@@ -1548,6 +1548,31 @@ test "text layout handles newlines and shaped glyph runs" {
     try expectRect(geometry.RectF.init(3, 4, 19, 20), shaped.lines[0].bounds);
 }
 
+test "word-wrapped hard lines preserve leading spaces and caret advances" {
+    const text = DrawText{
+        .font_id = 1,
+        .size = 12,
+        .origin = geometry.PointF.init(0, 12),
+        .color = Color.rgb8(0, 0, 0),
+        .text = "One\n  ",
+    };
+    const options = TextLayoutOptions{ .max_width = 100, .line_height = 16, .wrap = .word };
+    var lines: [2]TextLine = undefined;
+    const layout = try layoutTextRun(text, options, &lines);
+
+    try std.testing.expectEqual(@as(usize, 2), layout.lineCount());
+    try std.testing.expectEqual(@as(usize, 4), layout.lines[1].text_start);
+    try std.testing.expectEqual(@as(usize, 2), layout.lines[1].text_len);
+
+    const line_start = layoutTextCaretRect(text, options, 4).?;
+    const first_space = layoutTextCaretRect(text, options, 5).?;
+    const second_space = layoutTextCaretRect(text, options, 6).?;
+    try std.testing.expectEqual(line_start.y, first_space.y);
+    try std.testing.expectEqual(first_space.y, second_space.y);
+    try std.testing.expect(first_space.x > line_start.x);
+    try std.testing.expect(second_space.x > first_space.x);
+}
+
 test "text layout bounds shaped glyph positions and vertical offsets" {
     const glyphs = [_]Glyph{
         .{ .id = 1, .x = 2, .y = -3, .advance = 5 },

@@ -2123,7 +2123,8 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             const dirty = try self.views[index].applyCanvasWidgetTextPointer(
                 target_id,
                 pointer_event.pointer.point,
-                pointer_event.pointer.phase == .move,
+                pointer_event.pointer.phase == .move or
+                    (pointer_event.pointer.phase == .down and pointer_event.pointer.modifiers.shift),
                 pointer_event.pointer.click_count,
             );
             // Pointer placement lives first in the retained editor, but a

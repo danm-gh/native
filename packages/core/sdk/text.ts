@@ -14,7 +14,8 @@
 // call returns a new state and never touches its inputs.
 //
 // Offsets are BYTE offsets, always snapped to UTF-8 sequence boundaries
-// before use, so a caret can never land inside a multi-byte character.
+// before use, so a caret can never land inside a multi-byte character or
+// between the two bytes of a CRLF hard-line boundary.
 // Capacity is the caller's fixed byte budget (mirror your runtime
 // TextBuffer's): an edit whose result would not fit returns null — the
 // refuse-whole contract — and `clampedInsertEvent` recovers the one case
@@ -128,6 +129,42 @@ function nextTextOffset(text: Uint8Array, offset: number): number {
   return next;
 }
 
+// Caret editing treats CRLF as one hard-line boundary. Raw text ranges
+// continue to use snapTextOffset so they may address either delimiter byte.
+function snapTextCaretOffset(text: Uint8Array, offset: number): number {
+  const cursor = snapTextOffset(text, offset);
+  if (
+    cursor > 0 &&
+    cursor < text.length &&
+    text[cursor] === 0x0a &&
+    text[cursor - 1] === 0x0d
+  ) {
+    return cursor - 1;
+  }
+  return cursor;
+}
+
+function previousTextCaretOffset(text: Uint8Array, offset: number): number {
+  const previous = previousTextOffset(text, offset);
+  if (previous > 0 && text[previous] === 0x0a && text[previous - 1] === 0x0d) {
+    return previous - 1;
+  }
+  return previous;
+}
+
+function nextTextCaretOffset(text: Uint8Array, offset: number): number {
+  const cursor = snapTextOffset(text, offset);
+  if (
+    cursor < text.length &&
+    text[cursor] === 0x0d &&
+    cursor + 1 < text.length &&
+    text[cursor + 1] === 0x0a
+  ) {
+    return cursor + 2;
+  }
+  return nextTextOffset(text, cursor);
+}
+
 function isAsciiAlphanumeric(b: number): boolean {
   return (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a);
 }
@@ -179,10 +216,10 @@ function nextTextWordOffset(text: Uint8Array, offset: number): number {
   return cursor;
 }
 
-function snapTextSelection(text: Uint8Array, selection: TextSelection): TextSelection {
+function snapTextCaretSelection(text: Uint8Array, selection: TextSelection): TextSelection {
   return {
-    anchor: snapTextOffset(text, selection.anchor),
-    focus: snapTextOffset(text, selection.focus),
+    anchor: snapTextCaretOffset(text, selection.anchor),
+    focus: snapTextCaretOffset(text, selection.focus),
   };
 }
 
@@ -192,6 +229,17 @@ function snapTextRange(text: Uint8Array, range: TextRange): TextRange {
     {
       start: snapTextOffset(text, normalized.start),
       end: snapTextOffset(text, normalized.end),
+    },
+    text.length,
+  );
+}
+
+function snapTextCaretRange(text: Uint8Array, range: TextRange): TextRange {
+  const normalized = rangeNormalized(range, text.length);
+  return rangeNormalized(
+    {
+      start: snapTextCaretOffset(text, normalized.start),
+      end: snapTextCaretOffset(text, normalized.end),
     },
     text.length,
   );
@@ -226,13 +274,14 @@ function replaceTextRange(
 function normalizeTextEditState(state: TextEditState): TextEditState {
   return {
     text: state.text,
-    selection: snapTextSelection(state.text, state.selection),
-    composition: state.composition !== null ? snapTextRange(state.text, state.composition) : null,
+    selection: snapTextCaretSelection(state.text, state.selection),
+    composition:
+      state.composition !== null ? snapTextCaretRange(state.text, state.composition) : null,
   };
 }
 
 function activeTextReplaceRange(state: TextEditState): TextRange {
-  if (state.composition !== null) return snapTextRange(state.text, state.composition);
+  if (state.composition !== null) return snapTextCaretRange(state.text, state.composition);
   return selectionRange(state.selection, state.text.length);
 }
 
@@ -246,7 +295,7 @@ function replaceTextEditRange(
 ): TextEditState | null {
   const result = replaceTextRange(state.text, range, replacement, capacity);
   if (result === null) return null;
-  const cursor = snapTextOffset(
+  const cursor = snapTextCaretOffset(
     result.text,
     result.insertedStart + Math.min(cursorOffset, replacement.length),
   );
@@ -264,10 +313,10 @@ function setTextComposition(
   capacity: number,
 ): TextEditState | null {
   const range = activeTextReplaceRange(state);
-  const cursor = snapTextOffset(text, cursorIn === null ? text.length : cursorIn);
+  const cursor = snapTextCaretOffset(text, cursorIn === null ? text.length : cursorIn);
   const result = replaceTextRange(state.text, range, text, capacity);
   if (result === null) return null;
-  const absoluteCursor = snapTextOffset(result.text, result.insertedStart + cursor);
+  const absoluteCursor = snapTextCaretOffset(result.text, result.insertedStart + cursor);
   return {
     text: result.text,
     selection: { anchor: absoluteCursor, focus: absoluteCursor },
@@ -282,7 +331,10 @@ function cancelTextComposition(state: TextEditState, capacity: number): TextEdit
   if (result === null) return null;
   return {
     text: result.text,
-    selection: { anchor: result.insertedStart, focus: result.insertedStart },
+    selection: snapTextCaretSelection(result.text, {
+      anchor: result.insertedStart,
+      focus: result.insertedStart,
+    }),
     composition: null,
   };
 }
@@ -292,13 +344,13 @@ function deleteBackwardTextEdit(state: TextEditState, capacity: number): TextEdi
   if (!rangeIsCollapsed(range, state.text.length)) {
     return replaceTextEditRange(state, range, new Uint8Array(0), capacity, null, 0);
   }
-  const caret = snapTextOffset(state.text, state.selection.focus);
+  const caret = snapTextCaretOffset(state.text, state.selection.focus);
   if (caret === 0) {
     return { text: state.text, selection: { anchor: 0, focus: 0 }, composition: null };
   }
   return replaceTextEditRange(
     state,
-    { start: previousTextOffset(state.text, caret), end: caret },
+    { start: previousTextCaretOffset(state.text, caret), end: caret },
     new Uint8Array(0),
     capacity,
     null,
@@ -311,14 +363,14 @@ function deleteForwardTextEdit(state: TextEditState, capacity: number): TextEdit
   if (!rangeIsCollapsed(range, state.text.length)) {
     return replaceTextEditRange(state, range, new Uint8Array(0), capacity, null, 0);
   }
-  const caret = snapTextOffset(state.text, state.selection.focus);
+  const caret = snapTextCaretOffset(state.text, state.selection.focus);
   if (caret >= state.text.length) {
     const len = state.text.length;
     return { text: state.text, selection: { anchor: len, focus: len }, composition: null };
   }
   return replaceTextEditRange(
     state,
-    { start: caret, end: nextTextOffset(state.text, caret) },
+    { start: caret, end: nextTextCaretOffset(state.text, caret) },
     new Uint8Array(0),
     capacity,
     null,
@@ -331,7 +383,7 @@ function deleteWordBackwardTextEdit(state: TextEditState, capacity: number): Tex
   if (!rangeIsCollapsed(range, state.text.length)) {
     return replaceTextEditRange(state, range, new Uint8Array(0), capacity, null, 0);
   }
-  const caret = snapTextOffset(state.text, state.selection.focus);
+  const caret = snapTextCaretOffset(state.text, state.selection.focus);
   if (caret === 0) {
     return { text: state.text, selection: { anchor: 0, focus: 0 }, composition: null };
   }
@@ -350,7 +402,7 @@ function deleteWordForwardTextEdit(state: TextEditState, capacity: number): Text
   if (!rangeIsCollapsed(range, state.text.length)) {
     return replaceTextEditRange(state, range, new Uint8Array(0), capacity, null, 0);
   }
-  const caret = snapTextOffset(state.text, state.selection.focus);
+  const caret = snapTextCaretOffset(state.text, state.selection.focus);
   if (caret >= state.text.length) {
     const len = state.text.length;
     return { text: state.text, selection: { anchor: len, focus: len }, composition: null };
@@ -367,13 +419,13 @@ function deleteWordForwardTextEdit(state: TextEditState, capacity: number): Text
 
 function moveTextCaret(state: TextEditState, move: TextCaretMove): TextEditState {
   const range = selectionRange(state.selection, state.text.length);
-  const focus = snapTextOffset(state.text, state.selection.focus);
+  const focus = snapTextCaretOffset(state.text, state.selection.focus);
   const collapsed = rangeIsCollapsed(range, state.text.length);
   let target: number;
   if (move.direction === "previous") {
-    target = !move.extend && !collapsed ? range.start : previousTextOffset(state.text, focus);
+    target = !move.extend && !collapsed ? range.start : previousTextCaretOffset(state.text, focus);
   } else if (move.direction === "next") {
-    target = !move.extend && !collapsed ? range.end : nextTextOffset(state.text, focus);
+    target = !move.extend && !collapsed ? range.end : nextTextCaretOffset(state.text, focus);
   } else if (move.direction === "previous_word") {
     target = !move.extend && !collapsed ? range.start : previousTextWordOffset(state.text, focus);
   } else if (move.direction === "next_word") {
@@ -388,7 +440,7 @@ function moveTextCaret(state: TextEditState, move: TextCaretMove): TextEditState
     : { anchor: target, focus: target };
   return {
     text: state.text,
-    selection: snapTextSelection(state.text, selection),
+    selection: snapTextCaretSelection(state.text, selection),
     composition: null,
   };
 }
@@ -427,7 +479,7 @@ export function applyTextInputEvent(
     case "set_selection":
       return {
         text: normalized.text,
-        selection: snapTextSelection(normalized.text, event.selection),
+        selection: snapTextCaretSelection(normalized.text, event.selection),
         composition: null,
       };
     case "set_composition":

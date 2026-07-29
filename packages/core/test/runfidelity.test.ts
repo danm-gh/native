@@ -4432,6 +4432,41 @@ export function caretAfterHome(seed: Uint8Array, caret: number): number {
   if (next === null) return caret;
   return next.selection.focus;
 }
+export function crlfDeletedBackward(seed: Uint8Array, caret: number): Uint8Array {
+  const state: TextEditState = { text: seed, selection: { anchor: caret, focus: caret }, composition: null };
+  const event: TextInputEvent = { kind: "delete_backward" };
+  const next = applyTextInputEvent(state, event, 64);
+  if (next === null) return seed;
+  return next.text;
+}
+export function crlfDeletedForward(seed: Uint8Array, caret: number): Uint8Array {
+  const state: TextEditState = { text: seed, selection: { anchor: caret, focus: caret }, composition: null };
+  const event: TextInputEvent = { kind: "delete_forward" };
+  const next = applyTextInputEvent(state, event, 64);
+  if (next === null) return seed;
+  return next.text;
+}
+export function caretAfterPrevious(seed: Uint8Array, caret: number): number {
+  const state: TextEditState = { text: seed, selection: { anchor: caret, focus: caret }, composition: null };
+  const event: TextInputEvent = { kind: "move_caret", move: { direction: "previous", extend: false } };
+  const next = applyTextInputEvent(state, event, 64);
+  if (next === null) return caret;
+  return next.selection.focus;
+}
+export function caretAfterNext(seed: Uint8Array, caret: number): number {
+  const state: TextEditState = { text: seed, selection: { anchor: caret, focus: caret }, composition: null };
+  const event: TextInputEvent = { kind: "move_caret", move: { direction: "next", extend: false } };
+  const next = applyTextInputEvent(state, event, 64);
+  if (next === null) return caret;
+  return next.selection.focus;
+}
+export function snappedSelectionAnchor(seed: Uint8Array, anchor: number, focus: number): number {
+  const state: TextEditState = { text: seed, selection: { anchor: 0, focus: 0 }, composition: null };
+  const event: TextInputEvent = { kind: "set_selection", selection: { anchor: anchor, focus: focus } };
+  const next = applyTextInputEvent(state, event, 64);
+  if (next === null) return anchor;
+  return next.selection.anchor;
+}
 export function matches(hay: Uint8Array, needle: Uint8Array): boolean {
   return containsIgnoreCase(trimAsciiSpaces(hay), needle);
 }
@@ -4463,6 +4498,12 @@ export function splitPoint(bytes: Uint8Array): number {
       { fn: "wordDeleted", args: [{ t: "bytes", v: [0x6f, 0x6e, 0x65, 0x20, 0x74, 0x77, 0x6f] }, i(7)] },
       { fn: "wordDeleted", args: [{ t: "bytes", v: [0x6f, 0x6e, 0x65, 0x20, 0x74, 0x77, 0x6f] }, i(5)] },
       { fn: "caretAfterHome", args: [{ t: "bytes", v: [0x61, 0x62, 0x63] }, i(2)] },
+      // CRLF is one editable caret boundary under node and emitted Zig.
+      { fn: "crlfDeletedBackward", args: [{ t: "bytes", v: [0x6f, 0x6e, 0x65, 0x0d, 0x0a, 0x74, 0x77, 0x6f] }, i(5)] },
+      { fn: "crlfDeletedForward", args: [{ t: "bytes", v: [0x6f, 0x6e, 0x65, 0x0d, 0x0a, 0x74, 0x77, 0x6f] }, i(3)] },
+      { fn: "caretAfterPrevious", args: [{ t: "bytes", v: [0x6f, 0x6e, 0x65, 0x0d, 0x0a, 0x74, 0x77, 0x6f] }, i(5)] },
+      { fn: "caretAfterNext", args: [{ t: "bytes", v: [0x6f, 0x6e, 0x65, 0x0d, 0x0a, 0x74, 0x77, 0x6f] }, i(3)] },
+      { fn: "snappedSelectionAnchor", args: [{ t: "bytes", v: [0x6f, 0x6e, 0x65, 0x0d, 0x0a, 0x74, 0x77, 0x6f] }, i(4), i(5)] },
       // ASCII case-insensitive contains over a trimmed haystack.
       { fn: "matches", args: [{ t: "bytes", v: [0x20, 0x48, 0x65, 0x4c, 0x6c, 0x4f, 0x20] }, { t: "bytes", v: [0x65, 0x6c, 0x6c] }] },
       { fn: "matches", args: [{ t: "bytes", v: [0x20, 0x48, 0x65, 0x4c, 0x6c, 0x4f, 0x20] }, { t: "bytes", v: [0x7a] }] },

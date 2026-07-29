@@ -1653,6 +1653,136 @@ test "canvas textareas undo and redo keyboard edits" {
     try std.testing.expectEqualStrings("external!", retained.nodes[1].widget.text);
 }
 
+test "compound editor history reroutes every continuation after controlled rebuilds" {
+    const TestApp = struct {
+        replay_count: usize = 0,
+        replay_parent_ids: [3]canvas.ObjectId = .{ 0, 0, 0 },
+        replay_target_x: [3]f32 = .{ 0, 0, 0 },
+        text_storage: [32]u8 = undefined,
+        text_len: usize = 0,
+
+        fn app(self: *@This()) App {
+            return .{
+                .context = self,
+                .name = "gpu-widget-editor-history-reroute",
+                .source = platform.WebViewSource.html("<h1>Hello</h1>"),
+                .event_fn = event,
+            };
+        }
+
+        fn event(context: *anyopaque, runtime: *Runtime, event_value: Event) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event_value) {
+                .canvas_widget_keyboard => |keyboard_event| {
+                    if (keyboard_event.history_replay_serial == 0) return;
+                    if (self.replay_count >= self.replay_parent_ids.len) return error.TestUnexpectedResult;
+
+                    for (keyboard_event.route) |entry| {
+                        if (entry.phase != .capture) continue;
+                        self.replay_parent_ids[self.replay_count] = entry.id;
+                        break;
+                    }
+                    const target = keyboard_event.target orelse return error.TestUnexpectedResult;
+                    self.replay_target_x[self.replay_count] = target.bounds.x;
+                    self.replay_count += 1;
+
+                    const next_parent_id: canvas.ObjectId = switch (self.replay_count) {
+                        1 => 20,
+                        2 => 30,
+                        else => return,
+                    };
+                    try self.rebuildEditor(runtime, next_parent_id);
+                },
+                else => {},
+            }
+        }
+
+        fn rebuildEditor(self: *@This(), runtime: *Runtime, parent_id: canvas.ObjectId) anyerror!void {
+            const retained = try runtime.canvasWidgetLayout(1, "canvas");
+            const retained_editor = retained.findById(2) orelse return error.TestUnexpectedResult;
+            if (retained_editor.widget.text.len > self.text_storage.len) return error.TestUnexpectedResult;
+            @memcpy(self.text_storage[0..retained_editor.widget.text.len], retained_editor.widget.text);
+            self.text_len = retained_editor.widget.text.len;
+
+            const editor_x: f32 = switch (parent_id) {
+                20 => 32,
+                30 => 52,
+                else => 12,
+            };
+            const textarea = canvas.Widget{
+                .id = 2,
+                .kind = .textarea,
+                .frame = geometry.RectF.init(editor_x, 20, 180, 84),
+                .text = self.text_storage[0..self.text_len],
+                .text_selection = retained_editor.widget.text_selection,
+                .text_composition = retained_editor.widget.text_composition,
+            };
+            const parent = canvas.Widget{
+                .id = parent_id,
+                .kind = .stack,
+                .frame = geometry.RectF.init(0, 0, 280, 140),
+                .children = &.{textarea},
+            };
+            var nodes: [2]canvas.WidgetLayoutNode = undefined;
+            const layout = try canvas.layoutWidgetTree(parent, parent.frame, &nodes);
+            _ = try runtime.setCanvasWidgetLayout(1, "canvas", layout);
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    const frame = geometry.RectF.init(0, 0, 280, 140);
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = frame,
+    });
+
+    const textarea = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 20, 180, 84),
+        .text = "old",
+        .text_selection = .{ .anchor = 0, .focus = 3 },
+    };
+    const parent = canvas.Widget{
+        .id = 10,
+        .kind = .stack,
+        .frame = frame,
+        .children = &.{textarea},
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(parent, frame, &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    harness.runtime.views[0].focused = true;
+    harness.runtime.views[0].canvas_widget_focused_id = 2;
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "n",
+        .text = "NEW",
+    } });
+    try dispatchTextareaHistoryShortcut(harness, app, false);
+
+    try std.testing.expectEqual(@as(usize, 3), app_state.replay_count);
+    try std.testing.expectEqualDeep([3]canvas.ObjectId{ 10, 20, 30 }, app_state.replay_parent_ids);
+    try std.testing.expectEqualDeep([3]f32{ 12, 32, 52 }, app_state.replay_target_x);
+    const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("old", retained.findById(2).?.widget.text);
+    try std.testing.expectEqualDeep(
+        canvas.TextSelection{ .anchor = 0, .focus = 3 },
+        retained.findById(2).?.widget.text_selection.?,
+    );
+}
+
 test "compound editor history re-resolves bytes and identity after rebuilds" {
     const TestApp = struct {
         fn app(self: *@This()) App {

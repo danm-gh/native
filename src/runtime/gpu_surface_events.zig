@@ -645,6 +645,10 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                 // are key_down-shaped (not committed text), so a target
                 // removed, hidden, or replaced with another editor kind by
                 // the rebuild can never receive stale replacement bytes.
+                // The route and focus-target snapshot are tree-relative too:
+                // re-resolve both after every rebuild so custom event
+                // consumers never observe ancestors, indices, bounds, or
+                // state from the tree that handled the previous step.
                 for (0..2) |_| {
                     if (keyboard_event.history_replay_serial == 0) break;
                     const view_index = runtimeFindViewIndex(self, keyboard_event.window_id, keyboard_event.view_label) orelse break;
@@ -661,6 +665,12 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                         .focused_id = keyboard_event.keyboard.focused_id,
                         .edit = edit,
                     };
+                    const route = try self.views[view_index].widgetLayoutTree().routeKeyboardEvent(
+                        followup.keyboard,
+                        &self.widget_event_route_entries,
+                    );
+                    followup.target = route.target orelse break;
+                    followup.route = route.entries;
                     followup.history_replay = true;
                     try CanvasWidgetEventMethods().updateCanvasWidgetTextFromKeyboard(self, &followup);
                     try self.dispatchEvent(app, .{ .canvas_widget_keyboard = followup });

@@ -488,6 +488,22 @@ test "line numbers are opt-in and stay paired with logical source lines" {
     try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(comment_text.spans, "const").?.color.?);
 }
 
+test "empty code retains the exact source text" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .plain,
+        .line_numbers = true,
+    }, ""));
+
+    const paragraph = findByKind(view.root, .text).?;
+    try testing.expectEqualStrings("", paragraph.text);
+    try testing.expectEqual(@as(usize, 1), paragraph.spans.len);
+    try testing.expectEqualStrings("", paragraph.spans[0].text);
+    try testing.expectEqual(@as(u8, 1), paragraph.code_line_number_digits);
+}
+
 test "large code blocks split at the paragraph line capacity without hiding their tail" {
     var source: std.ArrayListUnmanaged(u8) = .empty;
     defer source.deinit(testing.allocator);

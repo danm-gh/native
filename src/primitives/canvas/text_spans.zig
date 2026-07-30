@@ -1215,8 +1215,9 @@ pub fn textSpanSelectionRects(
 }
 
 /// Earliest visual-line page whose retained source runs can intersect a
-/// selection beginning at `offset`. Binary search keeps a selection near
-/// the tail of a maximal paragraph to logarithmic full-layout passes.
+/// selection beginning at `offset`. Non-empty pages stay logarithmic; when
+/// explicit newlines create an empty page, inspect the surrounding gap
+/// because emptiness alone does not order that page against the offset.
 fn textSpanSelectionFirstPage(
     paragraph: []const u8,
     spans: []const TextSpan,
@@ -1227,33 +1228,94 @@ fn textSpanSelectionFirstPage(
 ) ?usize {
     var low: usize = 0;
     var high = page_count;
-    var saw_aliased_run = false;
+    var candidate: ?usize = null;
     while (low < high) {
         const middle = low + (high - low) / 2;
-        const layout = layoutTextSpansFromLine(
+        const page_end = textSpanSelectionPageEnd(
+            paragraph,
             spans,
             options,
-            middle * max_text_span_lines_per_paragraph,
+            middle,
             runs,
         );
-        var page_end: usize = 0;
-        var saw_run = false;
-        for (layout.runs) |run| {
-            const run_range = textSpanRunParagraphRange(paragraph, run) orelse continue;
-            saw_aliased_run = true;
-            saw_run = true;
-            page_end = @max(page_end, run_range.end);
+        if (page_end) |end| {
+            if (end <= offset) {
+                low = middle + 1;
+            } else {
+                candidate = middle;
+                high = middle;
+            }
+            continue;
         }
-        // Empty visual pages contain no selectable ink. Move toward later
-        // source; a following non-empty page will supply the first rect.
-        if (!saw_run or page_end <= offset) {
-            low = middle + 1;
-        } else {
-            high = middle;
+
+        // A runless page may sit between source before and after `offset`.
+        // Find its nearest retained neighbor on each side before deciding
+        // which half can be discarded.
+        var left = middle;
+        var left_end: ?usize = null;
+        while (left > low) {
+            left -= 1;
+            left_end = textSpanSelectionPageEnd(
+                paragraph,
+                spans,
+                options,
+                left,
+                runs,
+            );
+            if (left_end != null) break;
         }
+        if (left_end) |end| {
+            if (end > offset) {
+                candidate = left;
+                high = left;
+                continue;
+            }
+        }
+
+        var right = middle + 1;
+        var right_end: ?usize = null;
+        while (right < high) : (right += 1) {
+            right_end = textSpanSelectionPageEnd(
+                paragraph,
+                spans,
+                options,
+                right,
+                runs,
+            );
+            if (right_end != null) break;
+        }
+        if (right_end) |end| {
+            if (end > offset) return right;
+            low = right + 1;
+            continue;
+        }
+
+        // No retained run in this interval precedes the best page already
+        // found by the binary search.
+        return candidate;
     }
-    if (!saw_aliased_run or low >= page_count) return null;
-    return low;
+    return candidate;
+}
+
+fn textSpanSelectionPageEnd(
+    paragraph: []const u8,
+    spans: []const TextSpan,
+    options: TextSpanLayoutOptions,
+    page_index: usize,
+    runs: []TextSpanRun,
+) ?usize {
+    const layout = layoutTextSpansFromLine(
+        spans,
+        options,
+        page_index * max_text_span_lines_per_paragraph,
+        runs,
+    );
+    var page_end: ?usize = null;
+    for (layout.runs) |run| {
+        const run_range = textSpanRunParagraphRange(paragraph, run) orelse continue;
+        page_end = @max(page_end orelse 0, run_range.end);
+    }
+    return page_end;
 }
 
 /// Append selection geometry from one absolute visual-line page. Returns

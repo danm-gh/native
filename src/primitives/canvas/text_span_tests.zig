@@ -694,6 +694,29 @@ test "span hit mapping and selection page beyond the first 128 visual lines" {
     );
 }
 
+test "span selection crosses an empty interior visual-line page" {
+    const paragraph = "a\n" ++
+        ("\n" ** (text_spans.max_text_span_lines_per_paragraph * 2)) ++
+        "b";
+    const spans = [_]TextSpan{.{ .text = paragraph, .monospace = true }};
+    const options = text_spans.TextSpanLayoutOptions{ .size = 14, .max_width = 100 };
+
+    var rects: [4]canvas.TextSelectionRect = undefined;
+    const selection = text_spans.textSpanSelectionRects(
+        paragraph,
+        &spans,
+        options,
+        .{ .start = 0, .end = paragraph.len },
+        &rects,
+    );
+
+    try testing.expectEqual(@as(usize, 2), selection.len);
+    try testing.expectEqual(@as(usize, 0), selection[0].range.start);
+    try testing.expectEqual(@as(usize, 1), selection[0].range.end);
+    try testing.expectEqual(paragraph.len - 1, selection[1].range.start);
+    try testing.expectEqual(paragraph.len, selection[1].range.end);
+}
+
 test "span selection degrades to unsupported when spans alias other storage" {
     const paragraph = "Hello world";
     // Spans that do NOT slice into `paragraph` (a stack copy: the bytes

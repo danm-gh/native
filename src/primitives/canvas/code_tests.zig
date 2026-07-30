@@ -84,11 +84,11 @@ test "HTML and JSX highlighting distinguishes tags attributes expressions and st
     const spans = code_model.highlight(source, code_model.languageFromName("tsx"), &storage);
 
     try testing.expectEqual(code_model.Language.html, code_model.languageFromName("jsx"));
-    try testing.expectEqual(canvas.TextSpanColor.info, spanWithFragment(spans, "Accordion").?.color.?);
-    try testing.expectEqual(canvas.TextSpanColor.warning, spanWithFragment(spans, "defaultValue").?.color.?);
-    try testing.expectEqual(canvas.TextSpanColor.success, spanWithFragment(spans, "\"item-1\"").?.color.?);
-    try testing.expectEqual(canvas.TextSpanColor.warning, spanWithFragment(spans, "true").?.color.?);
-    try testing.expect(spanWithFragment(spans, "Accessible?").?.color == null);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "Accordion").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "defaultValue").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "\"item-1\"").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "Accessible?").?.color.?);
 }
 
 test "HTML and JSX lexer state survives logical line boundaries" {
@@ -99,9 +99,38 @@ test "HTML and JSX lexer state survives logical line boundaries" {
 
     var second_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
     const second = code_model.highlightWithState("  onPress={() => save()} disabled>", .html, &second_storage, &state);
-    try testing.expectEqual(canvas.TextSpanColor.warning, spanWithFragment(second, "onPress").?.color.?);
-    try testing.expectEqual(canvas.TextSpanColor.warning, spanWithFragment(second, "disabled").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(second, "onPress").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(second, "disabled").?.color.?);
     try testing.expect(!state.html_in_tag);
+}
+
+test "plain HTML attribute quotes close literally after backslashes" {
+    const sources = [_][]const u8{
+        "<div title=\"value\\\" disabled>",
+        "<div title='value\\' disabled>",
+    };
+    for (sources) |source| {
+        var state: code_model.HighlightState = .{};
+        var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+        const spans = code_model.highlightWithState(source, .html, &storage, &state);
+        try testing.expect(state.string_quote == null);
+        try testing.expect(!state.html_in_tag);
+        try testing.expectEqual(
+            canvas.TextSpanColor.syntax_function,
+            spanWithFragment(spans, "disabled").?.color.?,
+        );
+    }
+
+    var jsx_state: code_model.HighlightState = .{};
+    var jsx_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    _ = code_model.highlightWithState(
+        "<div value={{ text: \"value\\\" still\" }} disabled>",
+        .html,
+        &jsx_storage,
+        &jsx_state,
+    );
+    try testing.expect(jsx_state.string_quote == null);
+    try testing.expect(!jsx_state.html_in_tag);
 }
 
 test "single-quoted escapes do not leak string state into the next line" {
@@ -120,7 +149,7 @@ test "single-quoted escapes do not leak string state into the next line" {
         var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
         const spans = code_model.highlightWithState(source, language, &storage, &state);
         try testing.expect(state.string_quote == null);
-        try testing.expect(spanWithFragment(spans, "next").?.color == null);
+        try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "next").?.color.?);
     }
 }
 
@@ -135,14 +164,14 @@ test "Rust lifetimes do not open string state and character literals still highl
         &lifetime_state,
     );
     try testing.expect(lifetime_state.string_quote == null);
-    try testing.expect(spanWithFragment(lifetimes, "'a").?.color == null);
-    try testing.expectEqual(canvas.TextSpanColor.info, spanWithFragment(lifetimes, "const").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(lifetimes, "'a").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(lifetimes, "const").?.color.?);
 
     const character_source = "let escaped: char = '\\n'; let unicode: char = '🦀';";
     var character_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
     const characters = code_model.highlight(character_source, .rust, &character_storage);
-    try testing.expectEqual(canvas.TextSpanColor.success, spanWithFragment(characters, "'\\n'").?.color.?);
-    try testing.expectEqual(canvas.TextSpanColor.success, spanWithFragment(characters, "'🦀'").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(characters, "'\\n'").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(characters, "'🦀'").?.color.?);
 }
 
 test "HTML prose apostrophes stay prose and JSX content expressions highlight" {
@@ -150,8 +179,8 @@ test "HTML prose apostrophes stay prose and JSX content expressions highlight" {
     var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
     const spans = code_model.highlight(source, .html, &storage);
 
-    try testing.expect(spanWithFragment(spans, "It's ").?.color == null);
-    try testing.expectEqual(canvas.TextSpanColor.warning, spanWithFragment(spans, "true").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "It's ").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
 }
 
 test "token-dense logical line falls back without dropping source" {
@@ -163,7 +192,7 @@ test "token-dense logical line falls back without dropping source" {
     for (spans) |span| try joined.appendSlice(testing.allocator, span.text);
     try testing.expectEqualStrings(source, joined.items);
     try testing.expectEqual(text_spans.max_text_spans_per_paragraph, spans.len);
-    try testing.expect(spans[spans.len - 1].color == null);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spans[spans.len - 1].color.?);
 }
 
 test "token-dense fallback still updates lexer state" {
@@ -176,7 +205,40 @@ test "token-dense fallback still updates lexer state" {
     var second_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
     const second = code_model.highlightWithState("closed */ const next = true;", .zig, &second_storage, &state);
     try testing.expect(!state.block_comment);
-    try testing.expectEqual(canvas.TextSpanColor.info, spanWithFragment(second, "const").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(second, "const").?.color.?);
+}
+
+test "callables and object properties use Geist syntax roles" {
+    const source = "function render() { return { color: true }; }";
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlight(source, .javascript, &storage);
+
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(spans, "function").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "render").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_property, spanWithFragment(spans, "color").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
+}
+
+test "both built-in packs use the Geist Code Block syntax palette" {
+    for ([_]canvas.ThemePack{ .house, .geist }) |pack| {
+        const light = canvas.DesignTokens.theme(.{ .pack = pack, .color_scheme = .light }).colors;
+        try testing.expectEqual(canvas.Color.rgb8(23, 23, 23), light.syntax_plain);
+        try testing.expectEqual(canvas.Color.rgb8(77, 77, 77), light.syntax_comment);
+        try testing.expectEqual(canvas.Color.rgb8(189, 40, 100), light.syntax_keyword);
+        try testing.expectEqual(canvas.Color.rgb8(41, 122, 58), light.syntax_literal);
+        try testing.expectEqual(canvas.Color.rgb8(120, 32, 188), light.syntax_function);
+        try testing.expectEqual(canvas.Color.rgb8(203, 42, 47), light.syntax_property);
+        try testing.expectEqual(canvas.Color.rgb8(0, 104, 214), light.syntax_constant);
+
+        const dark = canvas.DesignTokens.theme(.{ .pack = pack, .color_scheme = .dark }).colors;
+        try testing.expectEqual(canvas.Color.rgb8(237, 237, 237), dark.syntax_plain);
+        try testing.expectEqual(canvas.Color.rgb8(161, 161, 161), dark.syntax_comment);
+        try testing.expectEqual(canvas.Color.rgb8(247, 95, 143), dark.syntax_keyword);
+        try testing.expectEqual(canvas.Color.rgb8(98, 192, 115), dark.syntax_literal);
+        try testing.expectEqual(canvas.Color.rgb8(191, 122, 240), dark.syntax_function);
+        try testing.expectEqual(canvas.Color.rgb8(255, 97, 102), dark.syntax_property);
+        try testing.expectEqual(canvas.Color.rgb8(82, 168, 255), dark.syntax_constant);
+    }
 }
 
 test "code wraps by default and no-wrap composes one horizontal scroller" {
@@ -211,6 +273,33 @@ test "code wraps by default and no-wrap composes one horizontal scroller" {
         if (node.widget.kind == .text) text_width = node.frame.width;
     }
     try testing.expect(text_width > scroll_width);
+}
+
+test "unwrapped multiline code hugs the height of every logical line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.column(.{}, .{
+        ui.code(.{ .wrap = false }, "one\ntwo\nthree\nfour"),
+        ui.text(.{}, "after"),
+    }));
+
+    var nodes: [16]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        view.root,
+        geometry.RectF.init(0, 0, 320, 400),
+        &nodes,
+    );
+    var scroll_height: f32 = 0;
+    var code_height: f32 = 0;
+    for (layout.nodes) |node| {
+        if (node.widget.kind == .scroll_view) scroll_height = node.frame.height;
+        if (std.mem.eql(u8, node.widget.text, "one\ntwo\nthree\nfour")) {
+            code_height = node.frame.height;
+        }
+    }
+    try testing.expect(code_height > 0);
+    try testing.expect(scroll_height >= code_height);
 }
 
 test "fixed-height code surfaces scroll every overflowing axis" {
@@ -323,7 +412,7 @@ test "line numbers are opt-in and stay paired with logical source lines" {
         .line_numbers = true,
     }, "// first\nconst second = true;"));
     const second = findByText(comments.root, "const second = true;").?;
-    try testing.expectEqual(canvas.TextSpanColor.info, spanWithFragment(second.spans, "const").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(second.spans, "const").?.color.?);
 }
 
 test "large code blocks split at the paragraph line capacity without hiding their tail" {
@@ -386,7 +475,7 @@ test "wrapped code chunks long logical lines before span layout can truncate the
 
     try testing.expectEqual(@as(usize, 2), countByKind(view.root, .text));
     try expectCompleteSpanLayouts(view.root);
-    try testing.expect(allTextSpansHaveColor(view.root, .text_muted));
+    try testing.expect(allTextSpansHaveColor(view.root, .syntax_comment));
 
     var recovered: std.ArrayListUnmanaged(u8) = .empty;
     defer recovered.deinit(testing.allocator);

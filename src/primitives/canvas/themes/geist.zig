@@ -153,6 +153,14 @@ fn light() ColorTokens {
         .text = Color.rgb8(23, 23, 23),
         // Secondary ink: gray-900 #4d4d4d.
         .text_muted = Color.rgb8(77, 77, 77),
+        // Geist Code Block syntax inks (the published 900 steps).
+        .syntax_plain = Color.rgb8(23, 23, 23),
+        .syntax_comment = Color.rgb8(77, 77, 77),
+        .syntax_keyword = Color.rgb8(189, 40, 100),
+        .syntax_literal = Color.rgb8(41, 122, 58),
+        .syntax_function = Color.rgb8(120, 32, 188),
+        .syntax_property = Color.rgb8(203, 42, 47),
+        .syntax_constant = Color.rgb8(0, 104, 214),
         // Hairline: black at 8% — the translucent border register.
         .border = Color.rgba8(0, 0, 0, 20),
         // The monochrome primary FILL: pure black #000000 filled
@@ -205,6 +213,13 @@ fn dark() ColorTokens {
         .text = Color.rgb8(237, 237, 237),
         // Secondary ink: gray-900 #a0a0a0.
         .text_muted = Color.rgb8(160, 160, 160),
+        .syntax_plain = Color.rgb8(237, 237, 237),
+        .syntax_comment = Color.rgb8(161, 161, 161),
+        .syntax_keyword = Color.rgb8(247, 95, 143),
+        .syntax_literal = Color.rgb8(98, 192, 115),
+        .syntax_function = Color.rgb8(191, 122, 240),
+        .syntax_property = Color.rgb8(255, 97, 102),
+        .syntax_constant = Color.rgb8(82, 168, 255),
         // Hairline: white at 14% — hairlines brighten what they overlap.
         .border = Color.rgba8(255, 255, 255, 36),
         // Porcelain primary with black knockout text.
@@ -247,6 +262,13 @@ fn highContrastLight() ColorTokens {
         .text = Color.rgb8(0, 0, 0),
         // Secondary ink darkens to gray-1000.
         .text_muted = Color.rgb8(23, 23, 23),
+        .syntax_plain = Color.rgb8(23, 23, 23),
+        .syntax_comment = Color.rgb8(77, 77, 77),
+        .syntax_keyword = Color.rgb8(189, 40, 100),
+        .syntax_literal = Color.rgb8(41, 122, 58),
+        .syntax_function = Color.rgb8(120, 32, 188),
+        .syntax_property = Color.rgb8(203, 42, 47),
+        .syntax_constant = Color.rgb8(0, 104, 214),
         .border = Color.rgba8(0, 0, 0, 180),
         .accent = Color.rgb8(0, 0, 0),
         .accent_text = Color.rgb8(255, 255, 255),
@@ -281,6 +303,13 @@ fn highContrastDark() ColorTokens {
         .surface_pressed = Color.rgb8(41, 41, 41),
         .text = Color.rgb8(255, 255, 255),
         .text_muted = Color.rgb8(237, 237, 237),
+        .syntax_plain = Color.rgb8(237, 237, 237),
+        .syntax_comment = Color.rgb8(161, 161, 161),
+        .syntax_keyword = Color.rgb8(247, 95, 143),
+        .syntax_literal = Color.rgb8(98, 192, 115),
+        .syntax_function = Color.rgb8(191, 122, 240),
+        .syntax_property = Color.rgb8(255, 97, 102),
+        .syntax_constant = Color.rgb8(82, 168, 255),
         .border = Color.rgba8(255, 255, 255, 190),
         .accent = Color.rgb8(255, 255, 255),
         .accent_text = Color.rgb8(0, 0, 0),

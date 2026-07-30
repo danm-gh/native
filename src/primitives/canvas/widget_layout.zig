@@ -1653,8 +1653,7 @@ fn intrinsicWidgetSizeDepth(widget: Widget, tokens: DesignTokens, depth: usize) 
         // space it is given (the runtime resizes the pty to fit), so
         // reporting an intrinsic size would invert the contract.
         .scroll_view => if (!widget.layout.virtualized and widget.scroll_axes == .horizontal) blk: {
-            const child_size = intrinsicOverlayChildrenSize(widget, tokens, depth);
-            break :blk geometry.SizeF.init(0, child_size.height);
+            break :blk intrinsicHorizontalScrollSize(widget, tokens, depth);
         } else geometry.SizeF.zero(),
         .image, .split, .media_surface, .terminal => geometry.SizeF.zero(),
     };
@@ -1737,6 +1736,28 @@ fn intrinsicOverlayChildrenSize(widget: Widget, tokens: DesignTokens, depth: usi
         height_max = @max(height_max, size.height);
     }
     return paddedIntrinsicSize(widget, geometry.SizeF.init(width_max, height_max));
+}
+
+/// A horizontal viewport stays width-neutral but hugs the full vertical
+/// extent of its unwrapped content. Span paragraphs report a one-line
+/// intrinsic height, so measure each child through the width-aware seam at
+/// its natural width; explicit newlines then contribute every painted row.
+fn intrinsicHorizontalScrollSize(widget: Widget, tokens: DesignTokens, depth: usize) geometry.SizeF {
+    if (depth >= max_widget_depth or widget.children.len == 0) {
+        return geometry.SizeF.init(0, intrinsicOwnMinSize(widget).height);
+    }
+    var height_max: f32 = 0;
+    for (widget.children) |child| {
+        if (child.layout.anchor != null) continue;
+        const intrinsic = intrinsicChildSize(child, tokens, depth + 1);
+        const child_width = if (child.frame.width > 0) child.frame.width else intrinsic.width;
+        height_max = @max(
+            height_max,
+            wrappedVerticalExtentForWidth(child, child_width, tokens, depth + 1),
+        );
+    }
+    const padded = paddedIntrinsicSize(widget, geometry.SizeF.init(0, height_max));
+    return geometry.SizeF.init(0, padded.height);
 }
 
 fn intrinsicGridChildrenSize(widget: Widget, tokens: DesignTokens, depth: usize) geometry.SizeF {

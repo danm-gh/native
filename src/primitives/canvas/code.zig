@@ -100,38 +100,38 @@ fn wordInList(word: []const u8, list: []const u8, ignore_case: bool) bool {
 /// Zig fences dominate SDK documentation, so the hot grammar uses a
 /// length-indexed map instead of rescanning a word list per identifier.
 const zig_words = std.StaticStringMap(text_spans.TextSpanColor).initComptime(.{
-    .{ "addrspace", .info },         .{ "align", .info },           .{ "allowzero", .info },
-    .{ "and", .info },               .{ "anyerror", .warning },     .{ "anyframe", .info },
-    .{ "anytype", .info },           .{ "asm", .info },             .{ "async", .info },
-    .{ "await", .info },             .{ "bool", .warning },         .{ "break", .info },
-    .{ "callconv", .info },          .{ "catch", .info },           .{ "comptime", .info },
-    .{ "comptime_float", .warning }, .{ "comptime_int", .warning }, .{ "const", .info },
-    .{ "continue", .info },          .{ "defer", .info },           .{ "else", .info },
-    .{ "enum", .info },              .{ "errdefer", .info },        .{ "error", .info },
-    .{ "export", .info },            .{ "extern", .info },          .{ "f16", .warning },
-    .{ "f32", .warning },            .{ "f64", .warning },          .{ "f80", .warning },
-    .{ "f128", .warning },           .{ "false", .warning },        .{ "fn", .info },
-    .{ "for", .info },               .{ "i8", .warning },           .{ "i16", .warning },
-    .{ "i32", .warning },            .{ "i64", .warning },          .{ "i128", .warning },
-    .{ "if", .info },                .{ "inline", .info },          .{ "isize", .warning },
-    .{ "linksection", .info },       .{ "noalias", .info },         .{ "noinline", .info },
-    .{ "noreturn", .warning },       .{ "nosuspend", .info },       .{ "null", .warning },
-    .{ "opaque", .info },            .{ "or", .info },              .{ "orelse", .info },
-    .{ "packed", .info },            .{ "pub", .info },             .{ "resume", .info },
-    .{ "return", .info },            .{ "struct", .info },          .{ "suspend", .info },
-    .{ "switch", .info },            .{ "test", .info },            .{ "threadlocal", .info },
-    .{ "true", .warning },           .{ "try", .info },             .{ "type", .warning },
-    .{ "u8", .warning },             .{ "u16", .warning },          .{ "u32", .warning },
-    .{ "u64", .warning },            .{ "u128", .warning },         .{ "undefined", .warning },
-    .{ "union", .info },             .{ "unreachable", .info },     .{ "usize", .warning },
-    .{ "usingnamespace", .info },    .{ "var", .info },             .{ "void", .warning },
-    .{ "volatile", .info },          .{ "while", .info },
+    .{ "addrspace", .syntax_keyword },      .{ "align", .syntax_keyword },        .{ "allowzero", .syntax_keyword },
+    .{ "and", .syntax_keyword },            .{ "anyerror", .syntax_literal },     .{ "anyframe", .syntax_keyword },
+    .{ "anytype", .syntax_keyword },        .{ "asm", .syntax_keyword },          .{ "async", .syntax_keyword },
+    .{ "await", .syntax_keyword },          .{ "bool", .syntax_literal },         .{ "break", .syntax_keyword },
+    .{ "callconv", .syntax_keyword },       .{ "catch", .syntax_keyword },        .{ "comptime", .syntax_keyword },
+    .{ "comptime_float", .syntax_literal }, .{ "comptime_int", .syntax_literal }, .{ "const", .syntax_keyword },
+    .{ "continue", .syntax_keyword },       .{ "defer", .syntax_keyword },        .{ "else", .syntax_keyword },
+    .{ "enum", .syntax_keyword },           .{ "errdefer", .syntax_keyword },     .{ "error", .syntax_keyword },
+    .{ "export", .syntax_keyword },         .{ "extern", .syntax_keyword },       .{ "f16", .syntax_literal },
+    .{ "f32", .syntax_literal },            .{ "f64", .syntax_literal },          .{ "f80", .syntax_literal },
+    .{ "f128", .syntax_literal },           .{ "false", .syntax_literal },        .{ "fn", .syntax_keyword },
+    .{ "for", .syntax_keyword },            .{ "i8", .syntax_literal },           .{ "i16", .syntax_literal },
+    .{ "i32", .syntax_literal },            .{ "i64", .syntax_literal },          .{ "i128", .syntax_literal },
+    .{ "if", .syntax_keyword },             .{ "inline", .syntax_keyword },       .{ "isize", .syntax_literal },
+    .{ "linksection", .syntax_keyword },    .{ "noalias", .syntax_keyword },      .{ "noinline", .syntax_keyword },
+    .{ "noreturn", .syntax_literal },       .{ "nosuspend", .syntax_keyword },    .{ "null", .syntax_literal },
+    .{ "opaque", .syntax_keyword },         .{ "or", .syntax_keyword },           .{ "orelse", .syntax_keyword },
+    .{ "packed", .syntax_keyword },         .{ "pub", .syntax_keyword },          .{ "resume", .syntax_keyword },
+    .{ "return", .syntax_keyword },         .{ "struct", .syntax_keyword },       .{ "suspend", .syntax_keyword },
+    .{ "switch", .syntax_keyword },         .{ "test", .syntax_keyword },         .{ "threadlocal", .syntax_keyword },
+    .{ "true", .syntax_literal },           .{ "try", .syntax_keyword },          .{ "type", .syntax_literal },
+    .{ "u8", .syntax_literal },             .{ "u16", .syntax_literal },          .{ "u32", .syntax_literal },
+    .{ "u64", .syntax_literal },            .{ "u128", .syntax_literal },         .{ "undefined", .syntax_literal },
+    .{ "union", .syntax_keyword },          .{ "unreachable", .syntax_keyword },  .{ "usize", .syntax_literal },
+    .{ "usingnamespace", .syntax_keyword }, .{ "var", .syntax_keyword },          .{ "void", .syntax_literal },
+    .{ "volatile", .syntax_keyword },       .{ "while", .syntax_keyword },
 });
 
 fn wordColor(language: Language, word: []const u8) ?text_spans.TextSpanColor {
-    if (word.len > 0 and word[0] == '@') return .info;
+    if (word.len > 0 and word[0] == '@') return .syntax_function;
     if (language == .zig) return zig_words.get(word);
-    if (wordInList(word, "true false null nil none undefined this self super", language == .sql)) return .warning;
+    if (wordInList(word, "true false null nil none undefined this self super", language == .sql)) return .syntax_literal;
 
     const keywords = switch (language) {
         .plain => return null,
@@ -148,7 +148,7 @@ fn wordColor(language: Language, word: []const u8) ?text_spans.TextSpanColor {
         .css => "and important inherit initial none not only or revert unset",
         .sql => "add all alter and any as asc begin between by case check column commit constraint create cross database default delete desc distinct drop else end exists foreign from full grant group having in index inner insert intersect into is join key left like limit not null on or order outer primary references right rollback row select set table then union unique update values view when where with",
     };
-    if (wordInList(word, keywords, language == .sql)) return .info;
+    if (wordInList(word, keywords, language == .sql)) return .syntax_keyword;
 
     const types = switch (language) {
         .rust => "bool char str String Vec Option Result Box i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64",
@@ -158,7 +158,20 @@ fn wordColor(language: Language, word: []const u8) ?text_spans.TextSpanColor {
         .python => "bool bytes dict float int list object set str tuple",
         else => "",
     };
-    if (wordInList(word, types, false)) return .warning;
+    if (wordInList(word, types, false)) return .syntax_literal;
+    return null;
+}
+
+fn identifierStructuralColor(language: Language, source: []const u8, end: usize) ?text_spans.TextSpanColor {
+    var cursor = end;
+    while (cursor < source.len and (source[cursor] == ' ' or source[cursor] == '\t')) cursor += 1;
+    if (cursor >= source.len or source[cursor] == '\n') return null;
+    if (source[cursor] == '(' and language != .plain and language != .json) return .syntax_function;
+    if (source[cursor] == ':' and switch (language) {
+        .javascript, .typescript, .css => true,
+        else => false,
+    }) return .syntax_property;
+    if (source[cursor] == '{' and language == .css) return .syntax_literal;
     return null;
 }
 
@@ -226,14 +239,14 @@ fn rustCharLiteralLength(rest: []const u8) ?usize {
 }
 
 fn backslashEscapesQuote(language: Language, state: HighlightState, quote: u8) bool {
-    if (quote != '\'') return true;
     return switch (language) {
-        // These grammars treat single quotes literally (or escape them by
-        // doubling the quote), rather than with a backslash.
-        .shell, .sql => false,
-        // Plain HTML attributes do not use JavaScript escapes, but JSX
-        // expressions do.
+        // Plain HTML attributes do not use JavaScript escapes for either
+        // quote style, but strings inside JSX expressions do.
         .html => state.html_expression_depth > 0,
+        // Shell single quotes are literal. SQL quotes are escaped by
+        // doubling them, never with a backslash.
+        .shell => quote != '\'',
+        .sql => false,
         else => true,
     };
 }
@@ -256,7 +269,7 @@ fn hasBlockComments(language: Language) bool {
 }
 
 /// Add one token, coalescing adjacent tokens with the same color. The
-/// final slot is an unstyled remainder, so capacity never drops source.
+/// final slot is a plain-syntax remainder, so capacity never drops source.
 fn appendSpan(
     storage: *[text_spans.max_text_spans_per_paragraph]TextSpan,
     len: *usize,
@@ -274,7 +287,7 @@ fn appendSpan(
         }
     }
     if (len.* + 1 >= storage.len) {
-        storage[len.*] = .{ .text = source[start..], .monospace = true };
+        storage[len.*] = .{ .text = source[start..], .monospace = true, .color = .syntax_plain };
         len.* += 1;
         return false;
     }
@@ -304,7 +317,7 @@ pub fn highlightWithState(
 ) []const TextSpan {
     if (source.len == 0) return &.{};
     if (language == .plain) {
-        storage[0] = .{ .text = source, .monospace = true };
+        storage[0] = .{ .text = source, .monospace = true, .color = .syntax_plain };
         return storage[0..1];
     }
 
@@ -314,7 +327,7 @@ pub fn highlightWithState(
     while (index < source.len) {
         const start = index;
         const rest = source[index..];
-        var color: ?text_spans.TextSpanColor = null;
+        var color: ?text_spans.TextSpanColor = .syntax_plain;
 
         // Artificial presentation chunks can end in the middle of a
         // logical source line. A real newline ends the two line-scoped
@@ -327,25 +340,25 @@ pub fn highlightWithState(
         if (state.line_comment) {
             while (index < source.len and source[index] != '\n') index += 1;
             state.line_comment = index == source.len;
-            color = .text_muted;
+            color = .syntax_comment;
         } else if (state.preprocessor_line) {
             while (index < source.len and source[index] != '\n') index += 1;
             state.preprocessor_line = index == source.len;
-            color = .info;
+            color = .syntax_constant;
         } else if (state.html_comment) {
             while (index < source.len and !std.mem.startsWith(u8, source[index..], "-->")) index += 1;
             if (index < source.len) {
                 index = @min(source.len, index + 3);
                 state.html_comment = false;
             }
-            color = .text_muted;
+            color = .syntax_comment;
         } else if (state.block_comment) {
             while (index < source.len and !std.mem.startsWith(u8, source[index..], "*/")) index += 1;
             if (index < source.len) {
                 index = @min(source.len, index + 2);
                 state.block_comment = false;
             }
-            color = .text_muted;
+            color = .syntax_comment;
         } else if (state.string_quote) |quote| {
             var closed = false;
             while (index < source.len) {
@@ -364,7 +377,7 @@ pub fn highlightWithState(
                 }
             }
             if (closed) state.string_quote = null;
-            color = .success;
+            color = .syntax_literal;
         } else if (language == .html and std.mem.startsWith(u8, rest, "<!--")) {
             index += 4;
             while (index < source.len and !std.mem.startsWith(u8, source[index..], "-->")) index += 1;
@@ -373,7 +386,7 @@ pub fn highlightWithState(
             } else {
                 state.html_comment = true;
             }
-            color = .text_muted;
+            color = .syntax_comment;
         } else if (hasBlockComments(language) and std.mem.startsWith(u8, rest, "/*")) {
             index += 2;
             while (index < source.len and !std.mem.startsWith(u8, source[index..], "*/")) index += 1;
@@ -382,22 +395,22 @@ pub fn highlightWithState(
             } else {
                 state.block_comment = true;
             }
-            color = .text_muted;
+            color = .syntax_comment;
         } else if (lineCommentPrefix(language, rest) != 0) {
             while (index < source.len and source[index] != '\n') index += 1;
             state.line_comment = index == source.len;
-            color = .text_muted;
+            color = .syntax_comment;
         } else if (language == .c_like and rest[0] == '#') {
             while (index < source.len and source[index] != '\n') index += 1;
             state.preprocessor_line = index == source.len;
-            color = .info;
+            color = .syntax_constant;
         } else if (language == .html and rest[0] == '<') {
             index += 1;
             if (index < source.len and source[index] == '/') index += 1;
             state.html_in_tag = true;
             state.html_expect_tag_name = true;
             state.html_expression_depth = 0;
-            color = .info;
+            color = .syntax_plain;
         } else if (language == .html and
             state.html_in_tag and
             state.html_expression_depth == 0 and
@@ -407,18 +420,18 @@ pub fn highlightWithState(
             state.html_in_tag = false;
             state.html_expect_tag_name = false;
             state.html_expression_depth = 0;
-            color = .info;
+            color = .syntax_plain;
         } else if (language == .html and rest[0] == '{') {
             index += 1;
             state.html_expression_depth += 1;
-            color = .info;
+            color = .syntax_plain;
         } else if (language == .html and state.html_expression_depth > 0 and rest[0] == '}') {
             index += 1;
             state.html_expression_depth -= 1;
-            color = .info;
+            color = .syntax_plain;
         } else if (if (language == .rust) rustCharLiteralLength(rest) else null) |literal_len| {
             index += literal_len;
-            color = .success;
+            color = .syntax_literal;
         } else if (stringQuote(language, rest[0]) or
             (language == .html and
                 (state.html_in_tag or state.html_expression_depth > 0) and
@@ -443,7 +456,7 @@ pub fn highlightWithState(
                 }
             }
             if (!closed) state.string_quote = quote;
-            color = .success;
+            color = .syntax_literal;
         } else if (std.ascii.isDigit(rest[0])) {
             index += 1;
             while (index < source.len) {
@@ -451,7 +464,7 @@ pub fn highlightWithState(
                 if (!(std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '.')) break;
                 index += 1;
             }
-            color = .warning;
+            color = .syntax_literal;
         } else if (identifierStart(rest[0])) {
             index += 1;
             while (index < source.len and
@@ -462,23 +475,29 @@ pub fn highlightWithState(
             }
             if (language == .html and state.html_in_tag) {
                 if (state.html_expect_tag_name) {
-                    color = .info;
+                    color = .syntax_literal;
                     state.html_expect_tag_name = false;
                 } else if (state.html_expression_depth == 0) {
-                    color = .warning;
+                    color = .syntax_function;
                 } else {
-                    color = wordColor(.typescript, source[start..index]);
+                    color = wordColor(.typescript, source[start..index]) orelse
+                        identifierStructuralColor(.typescript, source, index) orelse
+                        .syntax_plain;
                 }
             } else if (language == .html and state.html_expression_depth > 0) {
-                color = wordColor(.typescript, source[start..index]);
+                color = wordColor(.typescript, source[start..index]) orelse
+                    identifierStructuralColor(.typescript, source, index) orelse
+                    .syntax_plain;
             } else {
-                color = wordColor(language, source[start..index]);
+                color = wordColor(language, source[start..index]) orelse
+                    identifierStructuralColor(language, source, index) orelse
+                    .syntax_plain;
             }
         } else {
             index += 1;
         }
 
-        // The last span already covers the entire unstyled remainder once
+        // The last span already covers the entire plain-syntax remainder once
         // capacity fills, but keep scanning it so state handed to the next
         // paragraph still reflects comments, strings, and JSX expressions.
         if (!styling_full and !appendSpan(storage, &len, source, start, index, color)) {

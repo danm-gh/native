@@ -207,7 +207,7 @@ test "markdown maps lists, task lists, code fences, quotes, and rules" {
     try testing.expectEqual(@as(usize, 1), countKind(tree.root, .panel));
     const code = findParagraphContaining(tree.root, "const x = 1;").?;
     try testing.expect(code.spans[0].monospace);
-    try testing.expectEqual(@as(?canvas.TextSpanColor, .info), code.spans[0].color);
+    try testing.expectEqual(@as(?canvas.TextSpanColor, .syntax_keyword), code.spans[0].color);
 }
 
 test "language-tagged code fences highlight tokens and preserve indentation" {
@@ -232,11 +232,11 @@ test "language-tagged code fences highlight tokens and preserve indentation" {
         source_text.items,
     );
     try testing.expect(allSpansMonospace(panel));
-    try testing.expect(hasSpan(panel, "pub", .info));
-    try testing.expect(hasSpan(panel, "void", .warning));
-    try testing.expect(hasSpan(panel, "\"hello\"", .success));
-    try testing.expect(hasSpan(panel, "// keep this indentation", .text_muted));
-    try testing.expect(hasSpan(panel, "42", .warning));
+    try testing.expect(hasSpan(panel, "pub", .syntax_keyword));
+    try testing.expect(hasSpan(panel, "void", .syntax_literal));
+    try testing.expect(hasSpan(panel, "\"hello\"", .syntax_literal));
+    try testing.expect(hasSpan(panel, "// keep this indentation", .syntax_comment));
+    try testing.expect(hasSpan(panel, "42", .syntax_literal));
 
     const indented = findParagraphContaining(panel, "const message").?;
     var runs: [text_spans.max_text_span_runs_per_paragraph]text_spans.TextSpanRun = undefined;
@@ -262,7 +262,7 @@ test "unrecognized code-fence languages remain plain monospace" {
     const code = findParagraphContaining(tree.root, "alpha 42").?;
     try testing.expectEqual(@as(usize, 1), code.spans.len);
     try testing.expect(code.spans[0].monospace);
-    try testing.expectEqual(@as(?canvas.TextSpanColor, null), code.spans[0].color);
+    try testing.expectEqual(@as(?canvas.TextSpanColor, .syntax_plain), code.spans[0].color);
 }
 
 test "per-line syntax highlighting does not drop fenced code" {
@@ -289,7 +289,7 @@ test "per-line syntax highlighting does not drop fenced code" {
     defer rendered.deinit(testing.allocator);
     try appendParagraphText(panel, &rendered, testing.allocator);
     try testing.expectEqualStrings(code_source, rendered.items);
-    try testing.expect(hasSpan(panel, "const", .info));
+    try testing.expect(hasSpan(panel, "const", .syntax_keyword));
 }
 
 test "details blocks are caller-controlled collapsibles" {
@@ -553,7 +553,7 @@ test "the README-shaped fixture renders through the mapper and the reference ren
 // language-token colors, and near-black underlined links.
 // Update deliberately when markdown rendering changes, reviewing the
 // rendered pixels first (see reference_tests.zig conventions).
-const markdown_document_reference_signature: u64 = 11361391154313549802;
+const markdown_document_reference_signature: u64 = 12721641780797724784;
 
 fn markdownGoldenDumpRequested() bool {
     if (comptime !@import("builtin").link_libc) return false;

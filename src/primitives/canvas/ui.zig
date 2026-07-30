@@ -2478,7 +2478,7 @@ pub fn Ui(comptime Msg: type) type {
         ) Node {
             var storage: [canvas.text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
             var highlighted = if (source.len == 0) blk: {
-                storage[0] = .{ .text = " ", .monospace = true };
+                storage[0] = .{ .text = " ", .monospace = true, .color = .syntax_plain };
                 break :blk storage[0..1];
             } else code_model.highlightWithState(source, language, &storage, state);
             if (budget) |span_budget| {
@@ -2493,6 +2493,7 @@ pub fn Ui(comptime Msg: type) type {
                     storage[0] = .{
                         .text = if (source.len == 0) " " else source,
                         .monospace = true,
+                        .color = .syntax_plain,
                     };
                     highlighted = storage[0..1];
                     span_budget.used += 1;

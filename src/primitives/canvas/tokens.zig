@@ -132,6 +132,16 @@ pub const ColorTokens = struct {
     text: Color = Color.rgb8(10, 10, 10),
     /// Muted foreground; oklch(0.556 0 0) = #737373.
     text_muted: Color = Color.rgb8(115, 115, 115),
+    /// Source-code ink follows the Geist Code Block palette in every
+    /// built-in pack. Dedicated roles keep syntax highlighting independent
+    /// from the app's semantic success/warning/info colors.
+    syntax_plain: Color = Color.rgb8(23, 23, 23),
+    syntax_comment: Color = Color.rgb8(77, 77, 77),
+    syntax_keyword: Color = Color.rgb8(189, 40, 100),
+    syntax_literal: Color = Color.rgb8(41, 122, 58),
+    syntax_function: Color = Color.rgb8(120, 32, 188),
+    syntax_property: Color = Color.rgb8(203, 42, 47),
+    syntax_constant: Color = Color.rgb8(0, 104, 214),
     /// Border/input hairline; oklch(0.922 0 0) = #e5e5e5.
     border: Color = Color.rgb8(229, 229, 229),
     /// Primary; oklch(0.205 0 0) = #171717 — the monochrome near-black
@@ -203,6 +213,13 @@ pub const ColorTokens = struct {
             .text = Color.rgb8(250, 250, 250),
             // Muted foreground; oklch(0.708 0 0) = #a1a1a1.
             .text_muted = Color.rgb8(161, 161, 161),
+            .syntax_plain = Color.rgb8(237, 237, 237),
+            .syntax_comment = Color.rgb8(161, 161, 161),
+            .syntax_keyword = Color.rgb8(247, 95, 143),
+            .syntax_literal = Color.rgb8(98, 192, 115),
+            .syntax_function = Color.rgb8(191, 122, 240),
+            .syntax_property = Color.rgb8(255, 97, 102),
+            .syntax_constant = Color.rgb8(82, 168, 255),
             // Dark borders are translucent white (10%), not a gray fill:
             // hairlines brighten what they overlap instead of muddying it.
             .border = Color.rgba8(255, 255, 255, 26),
@@ -241,6 +258,13 @@ pub const ColorTokens = struct {
             .surface_pressed = Color.rgb8(229, 229, 229),
             .text = Color.rgb8(0, 0, 0),
             .text_muted = Color.rgb8(64, 64, 64),
+            .syntax_plain = Color.rgb8(23, 23, 23),
+            .syntax_comment = Color.rgb8(77, 77, 77),
+            .syntax_keyword = Color.rgb8(189, 40, 100),
+            .syntax_literal = Color.rgb8(41, 122, 58),
+            .syntax_function = Color.rgb8(120, 32, 188),
+            .syntax_property = Color.rgb8(203, 42, 47),
+            .syntax_constant = Color.rgb8(0, 104, 214),
             .border = Color.rgba8(0, 0, 0, 180),
             // The monochrome primary at its contrast extreme: pure
             // black filled controls, 21:1 against the white accent
@@ -276,6 +300,13 @@ pub const ColorTokens = struct {
             .surface_pressed = Color.rgb8(38, 38, 38),
             .text = Color.rgb8(255, 255, 255),
             .text_muted = Color.rgb8(229, 229, 229),
+            .syntax_plain = Color.rgb8(237, 237, 237),
+            .syntax_comment = Color.rgb8(161, 161, 161),
+            .syntax_keyword = Color.rgb8(247, 95, 143),
+            .syntax_literal = Color.rgb8(98, 192, 115),
+            .syntax_function = Color.rgb8(191, 122, 240),
+            .syntax_property = Color.rgb8(255, 97, 102),
+            .syntax_constant = Color.rgb8(82, 168, 255),
             .border = Color.rgba8(255, 255, 255, 190),
             // The monochrome primary at its contrast extreme: pure
             // white filled controls, 21:1 against the black accent
@@ -1205,6 +1236,13 @@ pub const ColorTokenOverrides = struct {
     surface_pressed: ?Color = null,
     text: ?Color = null,
     text_muted: ?Color = null,
+    syntax_plain: ?Color = null,
+    syntax_comment: ?Color = null,
+    syntax_keyword: ?Color = null,
+    syntax_literal: ?Color = null,
+    syntax_function: ?Color = null,
+    syntax_property: ?Color = null,
+    syntax_constant: ?Color = null,
     border: ?Color = null,
     accent: ?Color = null,
     accent_text: ?Color = null,

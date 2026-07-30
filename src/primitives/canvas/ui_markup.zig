@@ -1847,7 +1847,7 @@ pub const known_color_token_names = schema.color_token_names;
 pub const known_radius_token_names = schema.radius_token_names;
 
 pub const style_token_literal_message = "style token attributes take a literal token name - dynamic styling stays in Zig";
-pub const unknown_color_token_message = "unknown color token: color style attributes take a canvas ColorTokens field name (background, surface, surface_subtle, surface_pressed, text, text_muted, border, accent, accent_text, destructive, destructive_text, success, success_text, warning, warning_text, info, info_text, focus_ring, shadow, scrim, disabled)";
+pub const unknown_color_token_message = "unknown color token: color style attributes take a canvas ColorTokens field name (background, surface, surface_subtle, surface_pressed, text, text_muted, syntax_plain, syntax_comment, syntax_keyword, syntax_literal, syntax_function, syntax_property, syntax_constant, border, accent, accent_text, destructive, destructive_text, success, success_text, warning, warning_text, info, info_text, focus_ring, shadow, scrim, disabled)";
 pub const unknown_radius_token_message = "unknown radius token: radius takes a canvas RadiusTokens field name (sm, md, lg, xl)";
 
 pub const for_children_message = "for takes one or more element children (elements, use, if/else, or a nested for) - text content is only allowed inside text-bearing elements";

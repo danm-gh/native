@@ -34,6 +34,7 @@ import {
   wBool,
   wBytes,
   wF64,
+  wI64,
   wU32,
   type Sink,
 } from "./wire.ts";
@@ -414,16 +415,16 @@ export function model_snapshot(): Uint8Array {
   const sink = newSink();
   const model = committed;
   wBool(sink, model.polling);
-  wF64(sink, model.ticks);
+  wI64(sink, model.ticks);
   wF64(sink, model.lastTickAt);
   wF64(sink, model.stampMs);
-  wF64(sink, model.failures);
+  wI64(sink, model.failures);
   wBytes(sink, model.status);
   wBytes(sink, model.lastErr);
-  wF64(sink, model.saved);
+  wI64(sink, model.saved);
   wF64(sink, model.code);
   wF64(sink, model.firedAt);
-  wF64(sink, model.lines);
+  wI64(sink, model.lines);
   wBytes(sink, model.lastLine);
   wF64(sink, model.exitCode);
   wEnum(sink, audioStates, model.audioState);
@@ -431,32 +432,32 @@ export function model_snapshot(): Uint8Array {
   wF64(sink, model.durMs);
   wBool(sink, model.playing);
   wBytes(sink, model.bands);
-  wF64(sink, model.audioEvents);
+  wI64(sink, model.audioEvents);
   wEnum(sink, videoStates, model.videoState);
   wF64(sink, model.vPosMs);
   wF64(sink, model.vDurMs);
   wBool(sink, model.vPlaying);
   wF64(sink, model.vW);
   wF64(sink, model.vH);
-  wF64(sink, model.videoEvents);
+  wI64(sink, model.videoEvents);
   wF64(sink, model.cover);
   wF64(sink, model.coverW);
   wF64(sink, model.coverH);
   wEnum(sink, imageStates, model.imageState);
   wF64(sink, model.imageStatus);
-  wF64(sink, model.imageResults);
+  wI64(sink, model.imageResults);
   wF64(sink, model.lastImageId);
-  wF64(sink, model.nextCover);
-  wF64(sink, model.topId);
+  wI64(sink, model.nextCover);
+  wI64(sink, model.topId);
   wF64(sink, model.fracBytes);
-  wF64(sink, model.wholeBytes);
-  wF64(sink, model.topBytes);
+  wI64(sink, model.wholeBytes);
+  wI64(sink, model.topBytes);
   wF64(sink, model.pastBytes);
   wEnum(sink, channelStates, model.chanState);
-  wF64(sink, model.chanEvents);
-  wF64(sink, model.rejectSeq);
-  wF64(sink, model.chanRejectAt);
-  wF64(sink, model.imgRejectAt);
+  wI64(sink, model.chanEvents);
+  wI64(sink, model.rejectSeq);
+  wI64(sink, model.chanRejectAt);
+  wI64(sink, model.imgRejectAt);
   return finish(sink);
 }
 

@@ -64,12 +64,14 @@ import {
   readBool,
   readBytesBody,
   readF64,
+  readI64,
   readU32,
   subBytes,
   trap,
   wBool,
   wBytes,
   wF64,
+  wI64,
   wU32,
   type Sink,
 } from "./wire.ts";
@@ -408,8 +410,8 @@ export function dispatch_record(tag: number, fields: Uint8Array): Uint8Array {
     return commit(coreUpdate(committed, {
       kind: "audio_event",
       state: audioStates[state]! as "loaded",
-      positionMs: readF64(fields, 4),
-      durationMs: readF64(fields, 12),
+      positionMs: readI64(fields, 4),
+      durationMs: readI64(fields, 12),
       playing: readBool(fields, 20),
       buffering: readBool(fields, 21),
       bands: readBytesBody(fields, 26, bandsLen),
@@ -565,15 +567,6 @@ function wEnum(sink: Sink, members: string[], value: string): void {
   trap("a model enum slot carries an undeclared member — the author module and this adapter disagree");
 }
 
-function wOptionalF64(sink: Sink, value: number | null): void {
-  if (value === null) {
-    wBool(sink, false);
-    return;
-  }
-  wBool(sink, true);
-  wF64(sink, value);
-}
-
 function wOptionalBytes(sink: Sink, value: Uint8Array | null): void {
   if (value === null) {
     wBool(sink, false);
@@ -583,31 +576,40 @@ function wOptionalBytes(sink: Sink, value: Uint8Array | null): void {
   wBytes(sink, value);
 }
 
+function wOptionalI64(sink: Sink, value: number | null): void {
+  if (value === null) {
+    wBool(sink, false);
+    return;
+  }
+  wBool(sink, true);
+  wI64(sink, value);
+}
+
 export function model_snapshot(): Uint8Array {
   const sink = newSink();
   const model = committed;
   wEnum(sink, tabs, model.tab);
-  wOptionalF64(sink, model.openAlbum);
-  wOptionalF64(sink, model.now);
+  wOptionalI64(sink, model.openAlbum);
+  wOptionalI64(sink, model.now);
   wBool(sink, model.playing);
-  wF64(sink, model.elapsedMs);
-  wF64(sink, model.nowDurationMs);
-  wF64(sink, model.platformDurationMs);
+  wI64(sink, model.elapsedMs);
+  wI64(sink, model.nowDurationMs);
+  wI64(sink, model.platformDurationMs);
   wBool(sink, model.loadPending);
   wBool(sink, model.buffering);
   wBool(sink, model.assetsMissing);
   wBool(sink, model.streamFailed);
   wU32(sink, model.queue.length);
   for (let i = 0; i < model.queue.length; i++) {
-    wF64(sink, model.queue[i]!.id);
+    wI64(sink, model.queue[i]!.id);
   }
-  wF64(sink, model.queueDropped);
+  wI64(sink, model.queueDropped);
   wBytes(sink, model.search.bytes);
-  wF64(sink, model.search.anchor);
-  wF64(sink, model.search.focus);
-  wF64(sink, model.search.compStart);
-  wF64(sink, model.search.compEnd);
-  wF64(sink, model.copiesRequested);
+  wI64(sink, model.search.anchor);
+  wI64(sink, model.search.focus);
+  wI64(sink, model.search.compStart);
+  wI64(sink, model.search.compEnd);
+  wI64(sink, model.copiesRequested);
   wF64(sink, model.libraryScrollTop);
   wF64(sink, model.canvasWidth);
   wOptionalBytes(sink, model.urlBase);
@@ -639,16 +641,22 @@ function numberResult(value: number): Uint8Array {
   return finish(sink);
 }
 
+function intResult(value: number): Uint8Array {
+  const sink = newSink();
+  wI64(sink, value);
+  return finish(sink);
+}
+
 function albumCellsResult(rows: AlbumCell[]): Uint8Array {
   const sink = newSink();
   wU32(sink, rows.length);
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
-    wF64(sink, row.id);
+    wI64(sink, row.id);
     wBytes(sink, row.title);
     wBytes(sink, row.artist);
     wBytes(sink, row.initials);
-    wF64(sink, row.cover);
+    wI64(sink, row.cover);
     wBool(sink, row.playing);
   }
   return finish(sink);
@@ -659,8 +667,8 @@ function trackRowsResult(rows: TrackRow[]): Uint8Array {
   wU32(sink, rows.length);
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
-    wF64(sink, row.id);
-    wF64(sink, row.number);
+    wI64(sink, row.id);
+    wI64(sink, row.number);
     wBytes(sink, row.title);
     wBytes(sink, row.subtitle);
     wBytes(sink, row.duration);
@@ -679,35 +687,35 @@ export function helper_call(helper: number, args: Uint8Array): Uint8Array {
   if (helper === 2) return boolResult(h_detailPage(committed));
   if (helper === 3) return bytesResult(h_searchText(committed));
   if (helper === 4) return albumCellsResult(h_visibleAlbums(committed) as AlbumCell[]);
-  if (helper === 5) return numberResult(h_gridColumns(committed));
-  if (helper === 6) return numberResult(h_gridShownColumns(committed));
+  if (helper === 5) return intResult(gridColumns(committed));
+  if (helper === 6) return intResult(gridShownColumns(committed));
   if (helper === 7) return numberResult(h_gridTileWidth(committed));
   if (helper === 8) return numberResult(h_gridRowWidth(committed));
   if (helper === 9) return numberResult(h_gridCoverSize(committed));
   if (helper === 10) return numberResult(h_gridTileHeight(committed));
   if (helper === 11) return trackRowsResult(h_visibleTracks(committed) as TrackRow[]);
   if (helper === 12) return trackRowsResult(h_openAlbumRows(committed) as TrackRow[]);
-  if (helper === 13) return numberResult(h_visibleAlbumCount(committed));
-  if (helper === 14) return numberResult(h_albumCount(committed));
-  if (helper === 15) return numberResult(h_visibleTrackCount(committed));
-  if (helper === 16) return numberResult(h_trackCount(committed));
+  if (helper === 13) return intResult(visibleAlbumCount(committed));
+  if (helper === 14) return intResult(albumCount(committed));
+  if (helper === 15) return intResult(visibleTrackCount(committed));
+  if (helper === 16) return intResult(trackCount(committed));
   if (helper === 17) return boolResult(h_noAlbumMatches(committed));
   if (helper === 18) return boolResult(h_noTrackMatches(committed));
   if (helper === 19) return bytesResult(h_noMatchesLabel(committed));
-  if (helper === 20) return numberResult(h_openAlbumId(committed));
+  if (helper === 20) return intResult(openAlbumId(committed));
   if (helper === 21) return bytesResult(h_openAlbumTitle(committed));
   if (helper === 22) return bytesResult(h_openAlbumInitials(committed));
-  if (helper === 23) return numberResult(h_openAlbumCover(committed));
+  if (helper === 23) return intResult(openAlbumCover(committed));
   if (helper === 24) return bytesResult(h_openAlbumMeta(committed));
   if (helper === 25) return boolResult(h_idle(committed));
   if (helper === 26) return bytesResult(h_nowPlayingTitle(committed));
   if (helper === 27) return bytesResult(h_nowPlayingArtist(committed));
   if (helper === 28) return bytesResult(h_nowPlayingInitials(committed));
-  if (helper === 29) return numberResult(h_nowPlayingCover(committed));
+  if (helper === 29) return intResult(nowPlayingCover(committed));
   if (helper === 30) return bytesResult(h_playPauseIcon(committed));
   if (helper === 31) return numberResult(h_progressFraction(committed));
   if (helper === 32) return bytesResult(h_elapsedLabel(committed));
   if (helper === 33) return bytesResult(h_durationLabel(committed));
-  if (helper === 34) return numberResult(h_queueLen(committed));
+  if (helper === 34) return intResult(queueLen(committed));
   trap("helper index " + helper + " does not name an exported model helper of this core — the host and this core disagree about the contract");
 }

@@ -54,6 +54,7 @@ import {
   wBool,
   wBytes,
   wF64,
+  wI64,
   wU32,
   type Sink,
 } from "./wire.ts";
@@ -485,35 +486,35 @@ export function model_snapshot(): Uint8Array {
   wEnum(sink, samplerPhases, model.phase);
   wEnum(sink, memCommands, model.memCommand);
   wBool(sink, model.paused);
-  wF64(sink, model.ticksSkipped);
+  wI64(sink, model.ticksSkipped);
   wBool(sink, model.psInflight);
   wBool(sink, model.memInflight);
-  wF64(sink, model.samplesTaken);
-  wF64(sink, model.sampledAtDayMs);
-  wF64(sink, model.cores);
-  wF64(sink, model.memTotalBytes);
-  wF64(sink, model.cpuPercentTenths);
-  wF64(sink, model.memUsedBytes);
-  wF64(sink, model.processCount);
-  wF64(sink, model.uptimeSeconds);
+  wI64(sink, model.samplesTaken);
+  wI64(sink, model.sampledAtDayMs);
+  wI64(sink, model.cores);
+  wI64(sink, model.memTotalBytes);
+  wI64(sink, model.cpuPercentTenths);
+  wI64(sink, model.memUsedBytes);
+  wI64(sink, model.processCount);
+  wI64(sink, model.uptimeSeconds);
   wU32(sink, model.rows.length);
   for (let i = 0; i < model.rows.length; i++) {
     const row = model.rows[i]!;
-    wF64(sink, row.pid);
-    wF64(sink, row.cpuTenths);
-    wF64(sink, row.memTenths);
-    wF64(sink, row.rssKb);
+    wI64(sink, row.pid);
+    wI64(sink, row.cpuTenths);
+    wI64(sink, row.memTenths);
+    wI64(sink, row.rssKb);
     wBytes(sink, row.name);
   }
-  wF64(sink, model.parseFailures);
+  wI64(sink, model.parseFailures);
   wNumbers(sink, model.cpuHistory as number[]);
   wNumbers(sink, model.memHistory as number[]);
   wNumbers(sink, model.procHistory as number[]);
   wBytes(sink, model.search.bytes);
-  wF64(sink, model.search.anchor);
-  wF64(sink, model.search.focus);
-  wF64(sink, model.search.compStart);
-  wF64(sink, model.search.compEnd);
+  wI64(sink, model.search.anchor);
+  wI64(sink, model.search.focus);
+  wI64(sink, model.search.compStart);
+  wI64(sink, model.search.compEnd);
   wEnum(sink, sortKeys, model.sortKey);
   wBool(sink, model.sortDescending);
   const pending = model.pendingKill;
@@ -521,14 +522,14 @@ export function model_snapshot(): Uint8Array {
     wBool(sink, false);
   } else {
     wBool(sink, true);
-    wF64(sink, pending.pid);
+    wI64(sink, pending.pid);
     wBytes(sink, pending.name);
   }
   wF64(sink, model.tableScroll);
   wBytes(sink, model.note);
   wBool(sink, model.noteClearsOnSample);
-  wF64(sink, model.sampleGeneration);
-  wF64(sink, model.noteStampGeneration);
+  wI64(sink, model.sampleGeneration);
+  wI64(sink, model.noteStampGeneration);
   wF64(sink, model.chromeLeading);
   wF64(sink, model.headerHeight);
   return finish(sink);
@@ -550,9 +551,9 @@ function bytesResult(value: Uint8Array): Uint8Array {
   return finish(sink);
 }
 
-function numberResult(value: number): Uint8Array {
+function intResult(value: number): Uint8Array {
   const sink = newSink();
-  wF64(sink, value);
+  wI64(sink, value);
   return finish(sink);
 }
 
@@ -567,7 +568,7 @@ function tableRowsResult(rows: TableRow[]): Uint8Array {
   wU32(sink, rows.length);
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i]!;
-    wF64(sink, row.pid);
+    wI64(sink, row.pid);
     wBytes(sink, row.pidText);
     wBytes(sink, row.name);
     wBytes(sink, row.cpuText);
@@ -595,8 +596,8 @@ export function helper_call(helper: number, args: Uint8Array): Uint8Array {
   if (helper === 13) return bytesResult(h_sortDirectionIcon(committed));
   if (helper === 14) return bytesResult(h_sortDirectionLabel(committed));
   if (helper === 15) return tableRowsResult(h_visibleRows(committed) as TableRow[]);
-  if (helper === 16) return numberResult(h_matchCount(committed));
-  if (helper === 17) return numberResult(h_shownCount(committed));
+  if (helper === 16) return intResult(matchCount(committed));
+  if (helper === 17) return intResult(shownCount(committed));
   if (helper === 18) return bytesResult(h_emptyTitle(committed));
   if (helper === 19) return bytesResult(h_emptyHint(committed));
   if (helper === 20) return bytesResult(h_statusLine(committed));

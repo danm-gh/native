@@ -41,6 +41,7 @@ import {
   wBool,
   wBytes,
   wF64,
+  wI64,
   wU32,
   type Sink,
 } from "./wire.ts";
@@ -314,18 +315,18 @@ export function model_snapshot(): Uint8Array {
   wU32(sink, model.turns.length);
   for (let i = 0; i < model.turns.length; i++) {
     const turn = model.turns[i]!;
-    wF64(sink, turn.id);
+    wI64(sink, turn.id);
     wEnum(sink, roleMembers, turn.role);
     wBytes(sink, turn.text);
   }
-  wF64(sink, model.nextId);
+  wI64(sink, model.nextId);
   wEnum(sink, phaseMembers, model.phase);
   wBytes(sink, model.failReason);
   wBytes(sink, model.draft.bytes);
-  wF64(sink, model.draft.anchor);
-  wF64(sink, model.draft.focus);
-  wF64(sink, model.draft.compStart);
-  wF64(sink, model.draft.compEnd);
+  wI64(sink, model.draft.anchor);
+  wI64(sink, model.draft.focus);
+  wI64(sink, model.draft.compStart);
+  wI64(sink, model.draft.compEnd);
   wBytes(sink, model.endpoint);
   wBytes(sink, model.modelName);
   wBytes(sink, model.apiKey);
@@ -369,7 +370,7 @@ export function helper_call(helper: number, args: Uint8Array): Uint8Array {
     wU32(sink, rows.length);
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i]!;
-      wF64(sink, row.id);
+      wI64(sink, row.id);
       wBool(sink, row.user);
       wBytes(sink, row.text);
     }

@@ -36,6 +36,7 @@ import {
   wBool,
   wBytes,
   wF64,
+  wI64,
   wU32,
   type Sink,
 } from "./wire.ts";
@@ -280,6 +281,12 @@ function f64Payload(value: number): Uint8Array {
   return finish(sink);
 }
 
+function i64Payload(value: number): Uint8Array {
+  const sink = newSink();
+  wI64(sink, value);
+  return finish(sink);
+}
+
 function asciiString(bytes: Uint8Array): string {
   let out = "";
   for (let i = 0; i < bytes.length; i++) out = out + String.fromCharCode(bytes[i]!);
@@ -294,9 +301,10 @@ export function abi_frame_msg(width: number, height: number, timestampMs: number
     intervalMs: intervalMs,
   });
   if (produced === null) return noChannelMsg();
-  // The one arm this channel produces carries the frame width.
+  // The one arm this channel produces carries the frame width — an
+  // i64-classed slot, so the payload rides the i64 encoding.
   if (produced.kind === "canvas_resized") {
-    return channelEnvelope(TAG_canvas_resized, f64Payload(produced.width));
+    return channelEnvelope(TAG_canvas_resized, i64Payload(produced.width));
   }
   trap("the frame channel produced the unroutable arm " + produced.kind + " — the author module and this adapter disagree");
 }
@@ -395,26 +403,26 @@ export function model_snapshot(): Uint8Array {
   const sink = newSink();
   const model = committed;
   wEnum(sink, filters, model.filter);
-  wF64(sink, model.nextId);
-  wF64(sink, model.doneCount);
+  wI64(sink, model.nextId);
+  wI64(sink, model.doneCount);
   wBytes(sink, model.banner);
   wOptionalF64(sink, model.selected);
   wU32(sink, model.tasks.length);
   for (let i = 0; i < model.tasks.length; i++) {
     const task = model.tasks[i]!;
-    wF64(sink, task.id);
+    wI64(sink, task.id);
     wBytes(sink, task.title);
     wBool(sink, task.done);
   }
   wF64(sink, model.stampMs);
   wBytes(sink, model.draft);
-  wF64(sink, model.canvasWidth);
+  wI64(sink, model.canvasWidth);
   wF64(sink, model.zoom);
   wF64(sink, model.zoomWindowId);
   wBool(sink, model.zoomFromBoard);
   wBool(sink, model.dark);
   wF64(sink, model.chromeTop);
-  wF64(sink, model.previewSurface);
+  wI64(sink, model.previewSurface);
   wF64(sink, model.hoveredId);
   return finish(sink);
 }

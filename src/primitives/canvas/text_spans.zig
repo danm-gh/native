@@ -241,10 +241,211 @@ fn spanSliceAdvances(span: TextSpan, slice: []const u8, options: TextSpanLayoutO
     return advances[offset..][0..slice.len];
 }
 
+pub const TextSpanRunVisibleSlice = struct {
+    text: []const u8,
+    /// Horizontal offset from the original run origin.
+    x: f32 = 0,
+};
+
+fn textSpanRunPrefixWidth(
+    span: TextSpan,
+    run: TextSpanRun,
+    options: TextSpanLayoutOptions,
+    end: usize,
+) f32 {
+    return measureSpanSlice(span, run.text[0..@min(end, run.text.len)], options);
+}
+
+/// First scalar boundary whose measured prefix reaches `target_x`.
+/// The logarithmic search keeps long runs outside the batched-advance
+/// scratch bound from turning viewport cropping into a quadratic prefix
+/// walk.
+fn textSpanRunBoundaryForX(
+    span: TextSpan,
+    run: TextSpanRun,
+    options: TextSpanLayoutOptions,
+    target_x: f32,
+) usize {
+    if (target_x <= 0) return 0;
+    if (target_x >= run.width) return run.text.len;
+
+    var low: usize = 0;
+    var high = run.text.len;
+    while (text_interaction.nextTextOffset(run.text, low) < high) {
+        var middle = text_interaction.snapTextOffset(
+            run.text,
+            low + (high - low) / 2,
+        );
+        if (middle <= low) middle = text_interaction.nextTextOffset(run.text, low);
+        if (middle >= high) middle = text_interaction.previousTextOffset(run.text, high);
+        if (middle <= low or middle >= high) break;
+        if (textSpanRunPrefixWidth(span, run, options, middle) < target_x) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    return high;
+}
+
+fn textSpanRunScalarAdvance(
+    span: TextSpan,
+    run: TextSpanRun,
+    options: TextSpanLayoutOptions,
+    start: usize,
+) f32 {
+    const end = text_interaction.nextTextOffset(run.text, start);
+    return @max(
+        0,
+        textSpanRunPrefixWidth(span, run, options, end) -
+            textSpanRunPrefixWidth(span, run, options, start),
+    );
+}
+
+fn textSpanRunPreviousClusterStart(
+    span: TextSpan,
+    run: TextSpanRun,
+    options: TextSpanLayoutOptions,
+    start: usize,
+) usize {
+    var cursor = start;
+    while (cursor > 0) {
+        const previous = text_interaction.previousTextOffset(run.text, cursor);
+        if (textSpanRunScalarAdvance(span, run, options, previous) > 0) return previous;
+        cursor = previous;
+    }
+    return start;
+}
+
+fn textSpanRunGuardEnd(
+    span: TextSpan,
+    run: TextSpanRun,
+    options: TextSpanLayoutOptions,
+    start: usize,
+) usize {
+    var cursor = start;
+    var found_guard = false;
+    while (cursor < run.text.len) {
+        if (textSpanRunScalarAdvance(span, run, options, cursor) > 0) {
+            if (found_guard) return cursor;
+            found_guard = true;
+        }
+        cursor = text_interaction.nextTextOffset(run.text, cursor);
+    }
+    return run.text.len;
+}
+
+fn unbatchedTextSpanRunVisibleSlice(
+    span: TextSpan,
+    run: TextSpanRun,
+    options: TextSpanLayoutOptions,
+    min_x: f32,
+    max_x: f32,
+) ?TextSpanRunVisibleSlice {
+    const first_boundary = textSpanRunBoundaryForX(span, run, options, @max(0, min_x));
+    if (first_boundary == run.text.len and min_x >= run.width) return null;
+    const visible_start = text_interaction.previousTextOffset(run.text, first_boundary);
+    const first = textSpanRunPreviousClusterStart(span, run, options, visible_start);
+    const last_boundary = textSpanRunBoundaryForX(span, run, options, max_x);
+    const last = textSpanRunGuardEnd(span, run, options, last_boundary);
+    if (first >= last) return null;
+    return .{
+        .text = run.text[first..last],
+        .x = textSpanRunPrefixWidth(span, run, options, first),
+    };
+}
+
+/// Return the measured portion of `run` needed to cover the horizontal
+/// interval `[min_x, max_x]`, plus one shaped cluster of guard ink on each
+/// side. Batched providers supply their exact per-cluster advances; the
+/// unbatched seam uses a logarithmic contextual-prefix search. A provider
+/// may represent a multi-codepoint cluster by placing its advance on the
+/// first scalar and zero on the rest, so cut points are chosen only at the
+/// next positive-advance cluster start.
+pub fn textSpanRunVisibleSlice(
+    span: TextSpan,
+    run: TextSpanRun,
+    options: TextSpanLayoutOptions,
+    min_x: f32,
+    max_x: f32,
+) ?TextSpanRunVisibleSlice {
+    if (run.text.len == 0) return null;
+    if (!std.math.isFinite(min_x) or
+        !std.math.isFinite(max_x) or
+        min_x <= 0 and max_x >= run.width)
+    {
+        return .{ .text = run.text };
+    }
+
+    const measured_advances = spanSliceAdvances(span, run.text, options, run.font_id, run.size);
+    if (measured_advances == null) {
+        return unbatchedTextSpanRunVisibleSlice(span, run, options, min_x, max_x);
+    }
+    var cursor: usize = 0;
+    var x: f32 = 0;
+    var previous_cluster_start: ?usize = null;
+    var previous_cluster_x: f32 = 0;
+    var first: usize = 0;
+    var first_x: f32 = 0;
+    var found_first = false;
+    var right_guard_seen = false;
+
+    while (cursor < run.text.len) {
+        const next = text_interaction.nextTextOffset(run.text, cursor);
+        var advance: f32 = 0;
+        for (measured_advances.?[cursor..next]) |value| advance += value;
+        advance = @max(0, advance);
+
+        if (std.math.isFinite(advance) and advance > 0) {
+            if (!found_first and x + advance > @max(0, min_x)) {
+                if (previous_cluster_start) |start| {
+                    first = start;
+                    first_x = previous_cluster_x;
+                } else {
+                    first = cursor;
+                    first_x = x;
+                }
+                found_first = true;
+            }
+
+            if (found_first and x >= max_x) {
+                if (right_guard_seen) {
+                    if (first >= cursor) return null;
+                    return .{
+                        .text = run.text[first..cursor],
+                        .x = first_x,
+                    };
+                }
+                right_guard_seen = true;
+            }
+
+            previous_cluster_start = cursor;
+            previous_cluster_x = x;
+        }
+        x += advance;
+        cursor = next;
+    }
+
+    if (!found_first) {
+        // A zero-width run cannot be cropped meaningfully; retain it so a
+        // platform shaper still receives the original cluster sequence.
+        if (x <= 0) return .{ .text = run.text };
+        return null;
+    }
+    return .{
+        .text = run.text[first..],
+        .x = first_x,
+    };
+}
+
 const LayoutState = struct {
     spans: []const TextSpan,
     options: TextSpanLayoutOptions,
     runs: []TextSpanRun,
+    /// First absolute visual line retained in `runs`. Earlier lines are
+    /// still measured so the returned extent and absolute baselines stay
+    /// identical to a full paragraph layout.
+    run_line_start: usize = 0,
     run_len: usize = 0,
     line_index: usize = 0,
     line_run_start: usize = 0,
@@ -296,6 +497,7 @@ const LayoutState = struct {
             self.max_line_width = @max(self.max_line_width, self.pen_x);
             self.line_has_content = true;
         }
+        if (self.line_index < self.run_line_start) return;
         if (self.run_len > self.line_run_start) {
             const previous = &self.runs[self.run_len - 1];
             if (previous.span_index == span_index and
@@ -307,7 +509,9 @@ const LayoutState = struct {
                 return;
             }
         }
-        if (self.run_len >= self.runs.len or self.line_index >= max_text_span_lines_per_paragraph) {
+        if (self.run_len >= self.runs.len or
+            self.line_index >= self.run_line_start +| max_text_span_lines_per_paragraph)
+        {
             self.truncated = true;
             return;
         }
@@ -364,18 +568,38 @@ pub fn layoutTextSpans(spans: []const TextSpan, options: TextSpanLayoutOptions, 
         if (findSpanWrapEntry(cache, key)) |entry_index| {
             if (rebaseSpanWrapEntry(cache, entry_index, spans, options, runs_storage)) |layout| return layout;
         }
-        const layout = layoutTextSpansUncached(spans, options, runs_storage);
+        const layout = layoutTextSpansUncached(spans, options, 0, runs_storage);
         storeSpanWrapEntry(cache, key, spans, layout);
         return layout;
     }
-    return layoutTextSpansUncached(spans, options, runs_storage);
+    return layoutTextSpansUncached(spans, options, 0, runs_storage);
 }
 
-fn layoutTextSpansUncached(spans: []const TextSpan, options: TextSpanLayoutOptions, runs_storage: []TextSpanRun) TextSpanLayout {
+/// Lay out the full paragraph while retaining only the bounded visual-line
+/// page beginning at `first_line`. Runs keep absolute line indexes and
+/// baselines, so a viewport can paint later pages without changing the
+/// paragraph's measured size or allocating source-sized storage.
+pub fn layoutTextSpansFromLine(
+    spans: []const TextSpan,
+    options: TextSpanLayoutOptions,
+    first_line: usize,
+    runs_storage: []TextSpanRun,
+) TextSpanLayout {
+    if (first_line == 0) return layoutTextSpans(spans, options, runs_storage);
+    return layoutTextSpansUncached(spans, options, first_line, runs_storage);
+}
+
+fn layoutTextSpansUncached(
+    spans: []const TextSpan,
+    options: TextSpanLayoutOptions,
+    first_line: usize,
+    runs_storage: []TextSpanRun,
+) TextSpanLayout {
     var state = LayoutState{
         .spans = spans,
         .options = options,
         .runs = runs_storage,
+        .run_line_start = first_line,
         .line_height = textSpanLineHeight(spans, options),
         .baseline_offset = options.size * textSpansMaxScale(spans),
         .max_width = if (options.wrap != .none and options.max_width > 0 and std.math.isFinite(options.max_width))

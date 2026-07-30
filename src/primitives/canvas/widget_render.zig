@@ -1179,70 +1179,6 @@ fn isSyntaxCodeParagraph(widget: Widget) bool {
     return true;
 }
 
-const VisibleCodeRun = struct {
-    text: []const u8,
-    x: f32,
-};
-
-fn utf8ScalarCount(text: []const u8) usize {
-    var count: usize = 0;
-    var cursor: usize = 0;
-    while (cursor < text.len) : (count += 1) {
-        const sequence_len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch 1;
-        cursor += @min(sequence_len, text.len - cursor);
-    }
-    return count;
-}
-
-fn utf8ByteOffsetForScalar(text: []const u8, scalar_index: usize) usize {
-    var advanced: usize = 0;
-    var cursor: usize = 0;
-    while (cursor < text.len and advanced < scalar_index) : (advanced += 1) {
-        const sequence_len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch 1;
-        cursor += @min(sequence_len, text.len - cursor);
-    }
-    return cursor;
-}
-
-fn clampedScalarIndex(value: f32, scalar_count: usize, round_up: bool) usize {
-    if (!std.math.isFinite(value) or value <= 0) return 0;
-    const limit: f32 = @floatFromInt(scalar_count);
-    if (value >= limit) return scalar_count;
-    return @intFromFloat(if (round_up) @ceil(value) else @floor(value));
-}
-
-/// Crop a partially visible fixed-pitch run without changing its retained
-/// text or layout width. One scalar of guard ink on each side absorbs pixel
-/// snapping and provider rounding at the clip edge.
-fn visibleCodeRun(run: text_spans_model.TextSpanRun, absolute_x: f32, visible_bounds: geometry.RectF) ?VisibleCodeRun {
-    if (run.text.len == 0) return null;
-    if (run.width <= 0 or
-        (absolute_x >= visible_bounds.x and absolute_x + run.width <= visible_bounds.maxX()))
-    {
-        return .{ .text = run.text, .x = absolute_x };
-    }
-
-    const scalar_count = utf8ScalarCount(run.text);
-    if (scalar_count == 0) return null;
-    const advance = run.width / @as(f32, @floatFromInt(scalar_count));
-    if (!std.math.isFinite(advance) or advance <= 0) {
-        return .{ .text = run.text, .x = absolute_x };
-    }
-
-    var first = clampedScalarIndex((visible_bounds.x - absolute_x) / advance, scalar_count, false);
-    var last = clampedScalarIndex((visible_bounds.maxX() - absolute_x) / advance, scalar_count, true);
-    first = first -| 1;
-    last = @min(scalar_count, last +| 1);
-    if (first >= last) return null;
-
-    const byte_start = utf8ByteOffsetForScalar(run.text, first);
-    const byte_end = utf8ByteOffsetForScalar(run.text, last);
-    return .{
-        .text = run.text[byte_start..byte_end],
-        .x = absolute_x + advance * @as(f32, @floatFromInt(first)),
-    };
-}
-
 /// Viewport-aware code emission: the full source remains in retained
 /// paragraph widgets for layout, selection, copy, and scroll extents, while
 /// the display list contains only line runs that intersect the current
@@ -1254,10 +1190,24 @@ fn emitVisibleCodeTextSpansWidget(
     visible_bounds: geometry.RectF,
 ) Error!void {
     const content = widget.frame.inset(widget.layout.padding);
+    const layout_options = widget_metrics.widgetTextSpanLayoutOptions(
+        widget,
+        tokens,
+        textWrapMaxWidth(tokens, content.width),
+    );
+    const line_height = text_spans_model.textSpanLineHeight(widget.spans, layout_options);
+    const visible_line: usize = if (line_height > 0 and
+        std.math.isFinite(line_height) and
+        std.math.isFinite(visible_bounds.y - content.y) and
+        visible_bounds.y > content.y)
+        @intFromFloat(@floor((visible_bounds.y - content.y) / line_height))
+    else
+        0;
     var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
-    const layout = text_spans_model.layoutTextSpans(
+    const layout = text_spans_model.layoutTextSpansFromLine(
         widget.spans,
-        widget_metrics.widgetTextSpanLayoutOptions(widget, tokens, textWrapMaxWidth(tokens, content.width)),
+        layout_options,
+        visible_line -| 1,
         &runs,
     );
 
@@ -1273,10 +1223,17 @@ fn emitVisibleCodeTextSpansWidget(
         );
         if (!run_bounds.intersects(visible_bounds)) continue;
 
-        const visible = visibleCodeRun(run, content.x + run.x, visible_bounds) orelse continue;
         const span = widget.spans[run.span_index];
+        const absolute_x = content.x + run.x;
+        const visible = text_spans_model.textSpanRunVisibleSlice(
+            span,
+            run,
+            layout_options,
+            visible_bounds.x - absolute_x,
+            visible_bounds.maxX() - absolute_x,
+        ) orelse continue;
         const color = text_spans_model.textSpanColorValue(tokens.colors, span.color.?);
-        const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(visible.x, content.y + run.baseline));
+        const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(absolute_x + visible.x, content.y + run.baseline));
         try builder.drawText(.{
             .id = textSpanRunCommandId(widget.id, ordinal),
             .font_id = run.font_id,

@@ -2601,9 +2601,9 @@ pub fn Ui(comptime Msg: type) type {
         }
 
         /// Pack complete logical lines while their UTF-8 scalar count fits
-        /// the span layout's worst case (one glyph per visual line). Only a
-        /// single over-capacity logical line is split internally; ordinary
-        /// source keeps every authored line boundary exactly.
+        /// the span layout's worst case (one glyph per visual line). A
+        /// single over-capacity logical line stays whole: the viewport
+        /// painter pages its visual runs without inserting a source break.
         fn codeParagraphChunkEnd(source: []const u8, start: usize, wrap: bool) usize {
             if (!wrap) {
                 var cursor = start;
@@ -2629,14 +2629,6 @@ pub fn Ui(comptime Msg: type) type {
                 // adding another one. An empty source line still occupies
                 // one visual line.
                 const line_units = @max(1, codeScalarCount(source[cursor..line_end]));
-                if (line_units > canvas.text_spans.max_text_span_lines_per_paragraph) {
-                    if (cursor > start) return cursor;
-                    return codeAdvanceScalars(
-                        source,
-                        cursor,
-                        canvas.text_spans.max_text_span_lines_per_paragraph,
-                    );
-                }
                 if (units + line_units > canvas.text_spans.max_text_span_lines_per_paragraph and cursor > start) {
                     return cursor;
                 }
@@ -2656,16 +2648,6 @@ pub fn Ui(comptime Msg: type) type {
                 cursor += @min(sequence_len, source.len - cursor);
             }
             return count;
-        }
-
-        fn codeAdvanceScalars(source: []const u8, start: usize, count: usize) usize {
-            var cursor = start;
-            var advanced: usize = 0;
-            while (cursor < source.len and advanced < count) : (advanced += 1) {
-                const sequence_len = std.unicode.utf8ByteSequenceLength(source[cursor]) catch 1;
-                cursor += @min(sequence_len, source.len - cursor);
-            }
-            return cursor;
         }
 
         // Keep the maximal 64 KiB newline-only source within both the

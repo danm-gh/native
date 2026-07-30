@@ -220,6 +220,112 @@ test "an oversized word cluster-wraps instead of overflowing" {
     try testing.expectEqual(@as(usize, 20), total);
 }
 
+test "a later visual-line page retains an over-capacity wrapped paragraph" {
+    const spans = [_]TextSpan{.{ .text = "a" ** 140 }};
+    const options = text_spans.TextSpanLayoutOptions{ .size = 14, .max_width = 1 };
+    var first_runs: [text_spans.max_text_span_runs_per_paragraph]TextSpanRun = undefined;
+    const first = layout(&spans, options, &first_runs);
+
+    try testing.expectEqual(@as(usize, 140), first.line_count);
+    try testing.expectEqual(text_spans.max_text_span_lines_per_paragraph, first.runs.len);
+    try testing.expect(first.truncated);
+
+    var later_runs: [text_spans.max_text_span_runs_per_paragraph]TextSpanRun = undefined;
+    const later = text_spans.layoutTextSpansFromLine(
+        &spans,
+        options,
+        text_spans.max_text_span_lines_per_paragraph,
+        &later_runs,
+    );
+    try testing.expectEqual(first.line_count, later.line_count);
+    try testing.expectEqual(first.size.width, later.size.width);
+    try testing.expectEqual(first.size.height, later.size.height);
+    try testing.expectEqual(@as(usize, 12), later.runs.len);
+    try testing.expectEqual(@as(usize, 128), later.runs[0].line_index);
+    try testing.expectEqual(@as(usize, 139), later.runs[later.runs.len - 1].line_index);
+    try testing.expect(!later.truncated);
+}
+
+const VariableClusterMeasure = struct {
+    fn advance(text: []const u8) f32 {
+        return switch (text[0]) {
+            'a' => 3,
+            0xc3 => 10, // é
+            0xcc => 0, // combining acute: continuation of the é cluster
+            0xe7 => 20, // 界
+            'z' => 5,
+            'q' => 7,
+            else => 1,
+        };
+    }
+
+    fn measure(_: ?*anyopaque, _: canvas.FontId, _: f32, text: []const u8) f32 {
+        var width: f32 = 0;
+        var cursor: usize = 0;
+        while (cursor < text.len) {
+            width += advance(text[cursor..]);
+            const sequence_len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch 1;
+            cursor += @min(sequence_len, text.len - cursor);
+        }
+        return width;
+    }
+
+    fn measureAdvances(
+        _: ?*anyopaque,
+        _: canvas.FontId,
+        _: f32,
+        text: []const u8,
+        advances: []f32,
+    ) bool {
+        @memset(advances, 0);
+        var cursor: usize = 0;
+        while (cursor < text.len) {
+            advances[cursor] = advance(text[cursor..]);
+            const sequence_len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch 1;
+            cursor += @min(sequence_len, text.len - cursor);
+        }
+        return true;
+    }
+};
+
+test "visible run slicing follows measured cluster advances" {
+    const source = "a\xc3\xa9\xcc\x81\xe7\x95\x8czq";
+    const spans = [_]TextSpan{.{ .text = source }};
+    const batched_provider = text_metrics.TextMeasureProvider{
+        .measure_fn = VariableClusterMeasure.measure,
+        .measure_advances_fn = VariableClusterMeasure.measureAdvances,
+    };
+    const unbatched_provider = text_metrics.TextMeasureProvider{
+        .measure_fn = VariableClusterMeasure.measure,
+    };
+    var options = text_spans.TextSpanLayoutOptions{
+        .size = 14,
+        .max_width = 10_000,
+        .measure = &batched_provider,
+    };
+    var runs: [text_spans.max_text_span_runs_per_paragraph]TextSpanRun = undefined;
+    const result = layout(&spans, options, &runs);
+    try testing.expectEqual(@as(usize, 1), result.runs.len);
+
+    // The viewport begins inside 界. Keep the preceding é+combining-mark
+    // cluster and the following z guard, but neither the leading a nor q.
+    for ([_]*const text_metrics.TextMeasureProvider{
+        &batched_provider,
+        &unbatched_provider,
+    }) |provider| {
+        options.measure = provider;
+        const visible = text_spans.textSpanRunVisibleSlice(
+            spans[0],
+            result.runs[0],
+            options,
+            14,
+            20,
+        ).?;
+        try testing.expectEqualStrings("\xc3\xa9\xcc\x81\xe7\x95\x8cz", visible.text);
+        try testing.expectEqual(@as(f32, 3), visible.x);
+    }
+}
+
 test "center alignment shifts whole lines" {
     const spans = [_]TextSpan{.{ .text = "hi" }};
     var runs: [text_spans.max_text_span_runs_per_paragraph]TextSpanRun = undefined;

@@ -72,11 +72,11 @@ pub const max_cached_advance_run_bytes: usize = 2048;
 /// the peek/fetch split.
 pub const advance_cache_capacity: usize = 256;
 
-/// Oversize scratch: one slot covering runs up to the per-view text
-/// budget (`canvas_limits.max_canvas_text_bytes_per_view`). A run this
-/// long still gets ONE batched call per fetch; it just is not retained
+/// Oversize scratch: one slot covering runs up to the canvas-widget source
+/// budget (`canvas_limits.max_canvas_widget_text_bytes_per_view`). A run
+/// this long still gets ONE batched call per fetch; it just is not retained
 /// across other fetches.
-pub const max_batched_advance_run_bytes: usize = 32768;
+pub const max_batched_advance_run_bytes: usize = 65536;
 
 /// Process-wide invalidation stamp for everything keyed on measured
 /// text: cached advances here and retained wrap results downstream.

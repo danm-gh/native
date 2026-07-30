@@ -548,7 +548,7 @@ test "large code retains all source while emitting only visible text" {
     }
 }
 
-test "wrapped code chunks long logical lines before span layout can truncate them" {
+test "wrapped code keeps an over-capacity logical line in one paragraph" {
     var source: std.ArrayListUnmanaged(u8) = .empty;
     defer source.deinit(testing.allocator);
     try source.appendSlice(testing.allocator, "// ");
@@ -559,9 +559,18 @@ test "wrapped code chunks long logical lines before span layout can truncate the
     var ui = Ui.init(arena.allocator());
     const view = try ui.finalize(ui.code(.{ .language = .zig }, source.items));
 
-    try testing.expectEqual(@as(usize, 2), countByKind(view.root, .text));
-    try expectCompleteSpanLayouts(view.root);
+    try testing.expectEqual(@as(usize, 1), countByKind(view.root, .text));
     try testing.expect(allTextSpansHaveColor(view.root, .syntax_comment));
+
+    const text_widget = findByKind(view.root, .text).?;
+    var runs: [text_spans.max_text_span_runs_per_paragraph]text_spans.TextSpanRun = undefined;
+    const wide_layout = text_spans.layoutTextSpans(
+        text_widget.spans,
+        .{ .size = 14, .max_width = 10_000 },
+        &runs,
+    );
+    try testing.expectEqual(@as(usize, 1), wide_layout.line_count);
+    try testing.expect(!wide_layout.truncated);
 
     var recovered: std.ArrayListUnmanaged(u8) = .empty;
     defer recovered.deinit(testing.allocator);
@@ -627,7 +636,9 @@ test "numbered code stays below the retained widget node budget at its limit" {
     const long_fallback = try long_ui.finalize(long_ui.code(.{
         .line_numbers = true,
     }, long_source.items));
-    try testing.expectEqual(@as(usize, 0), countByKind(long_fallback.root, .row));
+    // Long logical lines stay in one paragraph apiece, so the numbered
+    // form remains below the retained node budget.
+    try testing.expectEqual(@as(usize, 100), countByKind(long_fallback.root, .row));
     var long_nodes: [1024]canvas.WidgetLayoutNode = undefined;
     _ = try canvas.layoutWidgetTree(
         long_fallback.root,

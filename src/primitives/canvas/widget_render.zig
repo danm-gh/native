@@ -142,8 +142,17 @@ const widget_render_scratch = @import("lazy_tls.zig").LazyTls(WidgetRenderScratc
 /// the entry points record it here.
 threadlocal var scrim_viewport: ?geometry.RectF = null;
 
+/// Visible bounds for the direct widget-tree walk, in the coordinate
+/// space active at the current recursion depth. The layout walk derives
+/// the same value from retained parent links; the direct walk carries it
+/// alongside the builder transform/clip stack so code paragraphs use the
+/// bounded emitter through both public rendering entry points.
+threadlocal var tree_visible_bounds: ?geometry.RectF = null;
+
 pub fn emitWidgetTree(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
     scrim_viewport = widget.frame.normalized();
+    tree_visible_bounds = widget.frame.normalized();
+    defer tree_visible_bounds = null;
     try emitWidgetDepth(builder, widget, tokens, 0);
 }
 
@@ -257,9 +266,19 @@ fn emitWidgetDepth(builder: *Builder, widget: Widget, tokens: DesignTokens, dept
     const wrap_transform = !affinesEqual(transform, Affine.identity());
     const inverse_transform = if (wrap_transform) transform.inverse() orelse return error.InvalidTransform else Affine.identity();
     if (wrap_opacity) try builder.pushOpacity(opacity);
-    if (wrap_transform) try builder.transform(transform);
-    try emitWidgetDepthContent(builder, widget, tokens, depth);
-    if (wrap_transform) try builder.transform(inverse_transform);
+    if (wrap_transform) {
+        const parent_visible_bounds = tree_visible_bounds;
+        defer tree_visible_bounds = parent_visible_bounds;
+        tree_visible_bounds = if (parent_visible_bounds) |bounds|
+            inverse_transform.transformRect(bounds).normalized()
+        else
+            null;
+        try builder.transform(transform);
+        try emitWidgetDepthContent(builder, widget, tokens, depth);
+        try builder.transform(inverse_transform);
+    } else {
+        try emitWidgetDepthContent(builder, widget, tokens, depth);
+    }
     if (wrap_opacity) try builder.popOpacity();
 }
 
@@ -293,7 +312,21 @@ fn emitWidgetDepthContent(builder: *Builder, widget: Widget, tokens: DesignToken
         .resizable, .panel => try emitPanelWidget(builder, paint_widget, tokens, depth),
         .popover => try emitPopoverWidget(builder, paint_widget, tokens, depth),
         .menu_surface, .dropdown_menu => try emitMenuSurfaceWidget(builder, paint_widget, tokens, depth),
-        .text => try emitTextWidget(builder, paint_widget, tokens),
+        .text => {
+            if (isSyntaxCodeParagraph(paint_widget)) {
+                if (tree_visible_bounds) |visible_bounds| {
+                    const clipped = geometry.RectF.intersection(
+                        paint_widget.frame.normalized(),
+                        visible_bounds.normalized(),
+                    );
+                    if (!clipped.isEmpty()) {
+                        try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, clipped);
+                    }
+                }
+            } else {
+                try emitTextWidget(builder, paint_widget, tokens);
+            }
+        },
         .icon => try emitIconWidget(builder, paint_widget, tokens),
         .image => try emitImageWidget(builder, paint_widget),
         .media_surface => try emitMediaSurfaceWidget(builder, paint_widget),
@@ -453,6 +486,11 @@ fn buttonGroupSegmentAt(ordinal: usize, visible_total: usize) widget_model.Widge
 /// docs scene and a live app would render different bars.
 fn emitButtonGroupWidget(builder: *Builder, widget: Widget, tokens: DesignTokens, depth: usize) Error!void {
     if (!buttonGroupStampsSegments(widget, tokens)) return emitWidgetClippedChildren(builder, widget, tokens, depth);
+    const parent_visible_bounds = tree_visible_bounds;
+    defer tree_visible_bounds = parent_visible_bounds;
+    if (widget.layout.clip_content) {
+        tree_visible_bounds = visibleBoundsInsideClip(parent_visible_bounds, widgetContentClip(widget, tokens).rect);
+    }
     if (widget.layout.clip_content) try builder.pushClip(widgetContentClip(widget, tokens));
     var emitted: usize = 0;
     var previous: ?WidgetPaintOrder = null;
@@ -962,6 +1000,9 @@ fn emitMenuSurfaceWidget(builder: *Builder, widget: Widget, tokens: DesignTokens
 }
 
 fn emitScrollViewWidget(builder: *Builder, widget: Widget, tokens: DesignTokens, depth: usize) Error!void {
+    const parent_visible_bounds = tree_visible_bounds;
+    defer tree_visible_bounds = parent_visible_bounds;
+    tree_visible_bounds = visibleBoundsInsideClip(parent_visible_bounds, widget.frame);
     try builder.pushClip(.{ .id = widgetPartId(widget.id, 1), .rect = widget.frame });
     try emitWidgetChildren(builder, widget.children, tokens, depth);
     try builder.popClip();
@@ -979,9 +1020,22 @@ fn emitScrollViewWidget(builder: *Builder, widget: Widget, tokens: DesignTokens,
 }
 
 fn emitWidgetClippedChildren(builder: *Builder, widget: Widget, tokens: DesignTokens, depth: usize) Error!void {
-    if (widget.layout.clip_content) try builder.pushClip(widgetContentClip(widget, tokens));
+    if (!widget.layout.clip_content) return emitWidgetChildren(builder, widget.children, tokens, depth);
+    const parent_visible_bounds = tree_visible_bounds;
+    defer tree_visible_bounds = parent_visible_bounds;
+    const clip = widgetContentClip(widget, tokens);
+    tree_visible_bounds = visibleBoundsInsideClip(parent_visible_bounds, clip.rect);
+    try builder.pushClip(clip);
     try emitWidgetChildren(builder, widget.children, tokens, depth);
-    if (widget.layout.clip_content) try builder.popClip();
+    try builder.popClip();
+}
+
+fn visibleBoundsInsideClip(bounds: ?geometry.RectF, clip: geometry.RectF) ?geometry.RectF {
+    const clipped = geometry.RectF.intersection(
+        (bounds orelse return null).normalized(),
+        clip.normalized(),
+    );
+    return if (clipped.isEmpty()) null else clipped;
 }
 
 fn widgetScrollSemantics(layout: anytype, node_index: usize) widget_semantics.WidgetScrollSemantics {

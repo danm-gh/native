@@ -186,6 +186,16 @@ test "single-quoted escapes do not leak string state into the next line" {
     }
 }
 
+test "Python literals keep their case-sensitive syntax role" {
+    const source = "enabled = True\nmissing = None\ndisabled = False";
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlight(source, .python, &storage);
+
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "True").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "None").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "False").?.color.?);
+}
+
 test "Rust lifetimes do not open string state and character literals still highlight" {
     const lifetime_source = "fn borrow<'a>(value: &'a str) -> &'a str { value }\nconst next = true;";
     var lifetime_state: code_model.HighlightState = .{};
@@ -585,6 +595,73 @@ test "large code retains all source while emitting only visible text" {
         try testing.expect(displayListTextBytes(display_list) <= canvas.max_display_list_text_bytes);
         try testing.expect(displayListTextBytes(display_list) < source.len);
     }
+}
+
+test "direct tree code emission honors scroll viewports and later layout pages" {
+    const horizontal_source = "x" ** 65_536;
+    const horizontal_spans = [_]canvas.TextSpan{.{
+        .text = horizontal_source,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const horizontal_children = [_]canvas.Widget{.{
+        .id = 2,
+        .kind = .text,
+        .frame = geometry.RectF.init(0, 0, 400_000, 20),
+        .text = horizontal_source,
+        .spans = &horizontal_spans,
+        .text_no_wrap = true,
+    }};
+    const horizontal_root = canvas.Widget{
+        .id = 1,
+        .kind = .scroll_view,
+        .frame = geometry.RectF.init(0, 0, 320, 80),
+        .native_scroll = true,
+        .children = &horizontal_children,
+    };
+    var horizontal_commands: [64]canvas.CanvasCommand = undefined;
+    var horizontal_builder = canvas.Builder.init(&horizontal_commands);
+    try canvas.emitWidgetTree(&horizontal_builder, horizontal_root, .{});
+    const horizontal_list = horizontal_builder.displayList();
+    try testing.expect(displayListTextBytes(horizontal_list) <= canvas.max_display_list_text_bytes);
+    try testing.expect(displayListTextBytes(horizontal_list) < horizontal_source.len);
+
+    const vertical_source = ("x\n" ** 139) ++ "x";
+    const vertical_spans = [_]canvas.TextSpan{.{
+        .text = vertical_source,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const vertical_children = [_]canvas.Widget{.{
+        .id = 4,
+        .kind = .text,
+        .frame = geometry.RectF.init(0, -2400, 100, 2450),
+        .text = vertical_source,
+        .spans = &vertical_spans,
+    }};
+    const vertical_root = canvas.Widget{
+        .id = 3,
+        .kind = .scroll_view,
+        .frame = geometry.RectF.init(0, 0, 100, 100),
+        .native_scroll = true,
+        .children = &vertical_children,
+    };
+    var vertical_commands: [64]canvas.CanvasCommand = undefined;
+    var vertical_builder = canvas.Builder.init(&vertical_commands);
+    try canvas.emitWidgetTree(&vertical_builder, vertical_root, .{});
+
+    var visible_text_commands: usize = 0;
+    for (vertical_builder.displayList().commands) |command| {
+        switch (command) {
+            .draw_text => |draw| {
+                if (draw.origin.y >= 0 and draw.origin.y <= vertical_root.frame.maxY()) {
+                    visible_text_commands += 1;
+                }
+            },
+            else => {},
+        }
+    }
+    try testing.expect(visible_text_commands > 0);
 }
 
 test "maximal one-line numbered code adds no retained gutter bytes" {

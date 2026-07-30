@@ -139,6 +139,7 @@ const zig_words = std.StaticStringMap(text_spans.TextSpanColor).initComptime(.{
 fn wordColor(language: Language, word: []const u8) ?text_spans.TextSpanColor {
     if (word.len > 0 and word[0] == '@') return .syntax_function;
     if (language == .zig) return zig_words.get(word);
+    if (language == .python and wordInList(word, "True False None", false)) return .syntax_literal;
     if (wordInList(word, "true false null nil none undefined this self super", language == .sql)) return .syntax_literal;
 
     const keywords = switch (language) {

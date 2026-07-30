@@ -1096,6 +1096,37 @@ pub fn textSpanOffsetForPoint(
         layout = layoutTextSpansFromLine(spans, options, line_index, &runs);
     }
     if (layout.runs.len == 0) {
+        // Preformatted whitespace is valid selectable source even though
+        // the layout deliberately keeps it out of painted runs. Preserve
+        // both edges so a drag can select/copy an all-whitespace block.
+        if (paragraphOnlyUnpaintedWhitespace(paragraph)) {
+            const source_line_count = 1 + std.mem.count(u8, paragraph, "\n") -
+                @intFromBool(paragraph[paragraph.len - 1] == '\n');
+            const source_line: usize = if (raw_line < 0)
+                0
+            else
+                @min(source_line_count - 1, @as(usize, @intFromFloat(@floor(raw_line))));
+            const edge = unpaintedWhitespaceLineRange(paragraph, source_line);
+            const width = textSpanParagraphRangeWidth(
+                paragraph,
+                spans,
+                options,
+                text_interaction.TextRange.init(
+                    edge.start,
+                    if (edge.end > edge.start and paragraph[edge.end - 1] == '\n')
+                        edge.end - 1
+                    else
+                        edge.end,
+                ),
+            ) orelse 0;
+            const midpoint = if (width > 0)
+                width * 0.5
+            else if (options.max_width > 0 and std.math.isFinite(options.max_width))
+                options.max_width * 0.5
+            else
+                0;
+            return if (point.x < midpoint) edge.start else edge.end;
+        }
         // A later page made only of trailing blank logical lines has no
         // glyph run to map. Its nearest source edge is the paragraph end.
         return if (paragraph.len > 0) paragraph.len else null;
@@ -1123,9 +1154,70 @@ pub fn textSpanOffsetForPoint(
     const first = first_range orelse return lineFallbackOffset(paragraph, layout, line_index);
     if (point.x < first_x) return first.start;
     if (last_range) |last| {
-        if (point.x >= last_end_x) return last.end;
+        if (point.x >= last_end_x) return textSpanLineSourceEnd(paragraph, last.end);
     }
     return first.start;
+}
+
+fn paragraphOnlyUnpaintedWhitespace(paragraph: []const u8) bool {
+    if (paragraph.len == 0) return false;
+    for (paragraph) |byte| {
+        if (byte != '\n' and !isSpanBreakByte(byte)) return false;
+    }
+    return true;
+}
+
+fn unpaintedWhitespaceLineRange(paragraph: []const u8, line_index: usize) text_interaction.TextRange {
+    var start: usize = 0;
+    var line: usize = 0;
+    while (line < line_index) : (line += 1) {
+        const newline = std.mem.indexOfScalarPos(u8, paragraph, start, '\n') orelse
+            return text_interaction.TextRange.init(paragraph.len, paragraph.len);
+        start = newline + 1;
+    }
+    const newline = std.mem.indexOfScalarPos(u8, paragraph, start, '\n');
+    return text_interaction.TextRange.init(start, if (newline) |index| index + 1 else paragraph.len);
+}
+
+fn textSpanParagraphRangeWidth(
+    paragraph: []const u8,
+    spans: []const TextSpan,
+    options: TextSpanLayoutOptions,
+    range: text_interaction.TextRange,
+) ?f32 {
+    if (range.start >= range.end) return 0;
+    const paragraph_base = @intFromPtr(paragraph.ptr);
+    var covered = range.start;
+    var width: f32 = 0;
+    for (spans) |span| {
+        const span_start_ptr = @intFromPtr(span.text.ptr);
+        if (span_start_ptr < paragraph_base) return null;
+        const span_start = span_start_ptr - paragraph_base;
+        const span_end = span_start + span.text.len;
+        if (span_end > paragraph.len) return null;
+        const start = @max(range.start, span_start);
+        const end = @min(range.end, span_end);
+        if (start >= end) continue;
+        if (start > covered) return null;
+        width += measureSpanSlice(
+            span,
+            span.text[start - span_start .. end - span_start],
+            options,
+        );
+        covered = @max(covered, end);
+        if (covered >= range.end) return width;
+    }
+    return null;
+}
+
+/// Extend a painted run edge through source bytes that deliberately carry
+/// no ink at the end of its visual line: spaces/tabs and one explicit
+/// newline. A wrapped word begins the next line without being consumed.
+fn textSpanLineSourceEnd(paragraph: []const u8, painted_end: usize) usize {
+    var end = @min(painted_end, paragraph.len);
+    while (end < paragraph.len and isSpanBreakByte(paragraph[end])) end += 1;
+    if (end < paragraph.len and paragraph[end] == '\n') end += 1;
+    return end;
 }
 
 /// Offset within `run.text` for a run-relative x, midpoint rule per

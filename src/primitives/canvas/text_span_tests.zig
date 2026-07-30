@@ -636,6 +636,50 @@ test "span selection maps points to paragraph offsets and back to rects" {
     try testing.expectEqual(@as(usize, 0), text_spans.textSpanSelectionRects(paragraph, &spans, options, .{ .start = 3, .end = 3 }, &rects).len);
 }
 
+test "preformatted span hit mapping preserves unpainted source whitespace" {
+    const trailing = "value \t\n";
+    const trailing_spans = [_]TextSpan{.{
+        .text = trailing,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const options = text_spans.TextSpanLayoutOptions{ .size = 14, .max_width = 200 };
+    try testing.expectEqual(
+        trailing.len,
+        text_spans.textSpanOffsetForPoint(
+            trailing,
+            &trailing_spans,
+            options,
+            geometry.PointF.init(500, 2),
+        ).?,
+    );
+
+    const whitespace = "   \n\t";
+    const whitespace_spans = [_]TextSpan{.{
+        .text = whitespace,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    try testing.expectEqual(
+        @as(usize, 0),
+        text_spans.textSpanOffsetForPoint(
+            whitespace,
+            &whitespace_spans,
+            options,
+            geometry.PointF.init(-1, 2),
+        ).?,
+    );
+    try testing.expectEqual(
+        whitespace.len,
+        text_spans.textSpanOffsetForPoint(
+            whitespace,
+            &whitespace_spans,
+            options,
+            geometry.PointF.init(500, 500),
+        ).?,
+    );
+}
+
 test "span hit mapping and selection page beyond the first 128 visual lines" {
     const paragraph = "a" ** 140;
     const spans = [_]TextSpan{.{ .text = paragraph, .monospace = true }};

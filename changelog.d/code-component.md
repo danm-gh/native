@@ -1,1 +1,0 @@
-feature: **Code component**: `ui.code` and markup `<code>` render highlighted source with the Geist Code Block palette in both built-in themes, wrapping by default, opt-in logical line numbers, unwrapped horizontal scrolling, and vertical scrolling for height-constrained surfaces; Markdown fences share the same component.

@@ -2,9 +2,26 @@
 
 All notable changes to the Native SDK (formerly zero-native) will be documented in this file.
 
-## 0.6.3
+## 0.7.0
 
 <!-- release:start -->
+
+### New Features
+
+- **Code component**: `ui.code` and markup `<code>` render highlighted source with the Geist Code Block palette in both built-in themes, wrapping by default, opt-in logical line numbers, unwrapped horizontal scrolling, and vertical scrolling for height-constrained surfaces; Markdown fences share the same component.
+
+### Bug Fixes
+
+- **Bounded transformed code rendering**: heavily scaled code surfaces now degrade within the shared command and text-byte budgets instead of rejecting the entire display-list refresh.
+- **Polished Markdown lists and code blocks**: bullet and ordered-list markers now align with the first content line, while fenced code preserves source indentation and applies theme-aware highlighting with richer HTML/JSX tags and attributes.
+
+### Contributors
+
+- @ctate
+
+<!-- release:end -->
+
+## 0.6.3
 
 ### Bug Fixes
 
@@ -16,8 +33,6 @@ All notable changes to the Native SDK (formerly zero-native) will be documented 
 ### Contributors
 
 - @ctate
-
-<!-- release:end -->
 
 ## 0.6.2
 

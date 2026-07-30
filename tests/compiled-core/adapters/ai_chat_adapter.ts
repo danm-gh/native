@@ -38,7 +38,6 @@ import {
   finish,
   newSink,
   trap,
-  truncTowardZero,
   wBool,
   wBytes,
   wF64,
@@ -220,7 +219,13 @@ export function dispatch_number(tag: number, value: number): Uint8Array {
 
 export function dispatch_number_bytes(tag: number, value: number, payload: Uint8Array): Uint8Array {
   if (tag === TAG_chat_response) {
-    return commit(coreUpdate(committed, { kind: "chat_response", status: truncTowardZero(value), body: payload }));
+    // The status is an i64-classed arm: range-guard the raw f64 (an
+    // ordered comparison excludes NaN) and state wholeness with
+    // Math.trunc at the write.
+    if (value >= -9007199254740991 && value <= 9007199254740991) {
+      return commit(coreUpdate(committed, { kind: "chat_response", status: Math.trunc(value), body: payload }));
+    }
+    trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
   }
   trapUnknownTag("number-with-bytes", tag);
 }

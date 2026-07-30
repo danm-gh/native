@@ -98,20 +98,28 @@ function composerApply(d: ComposerDraft, event: TextInputEvent): ComposerDraft {
     if (clamped === null) return d;
     const nextClamped = applyTextInputEvent(state, clamped, MAX_DRAFT);
     if (nextClamped === null) return d;
+    // Composition bounds land in i64-classed slots: bind them, guard
+    // the range (an ordered comparison excludes NaN), and state
+    // wholeness with Math.trunc at the write; -1 stays the no-composition
+    // sentinel.
+    const clampedStart = nextClamped.composition !== null ? nextClamped.composition.start : -1;
+    const clampedEnd = nextClamped.composition !== null ? nextClamped.composition.end : -1;
     return {
       bytes: nextClamped.text,
       anchor: nextClamped.selection.anchor,
       focus: nextClamped.selection.focus,
-      compStart: nextClamped.composition !== null ? nextClamped.composition.start : -1,
-      compEnd: nextClamped.composition !== null ? nextClamped.composition.end : -1,
+      compStart: clampedStart >= -1 && clampedStart <= 9007199254740991 ? Math.trunc(clampedStart) : -1,
+      compEnd: clampedEnd >= -1 && clampedEnd <= 9007199254740991 ? Math.trunc(clampedEnd) : -1,
     };
   }
+  const nextStart = next.composition !== null ? next.composition.start : -1;
+  const nextEnd = next.composition !== null ? next.composition.end : -1;
   return {
     bytes: next.text,
     anchor: next.selection.anchor,
     focus: next.selection.focus,
-    compStart: next.composition !== null ? next.composition.start : -1,
-    compEnd: next.composition !== null ? next.composition.end : -1,
+    compStart: nextStart >= -1 && nextStart <= 9007199254740991 ? Math.trunc(nextStart) : -1,
+    compEnd: nextEnd >= -1 && nextEnd <= 9007199254740991 ? Math.trunc(nextEnd) : -1,
   };
 }
 
@@ -297,7 +305,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         {
           ...model,
           turns: turns,
-          nextId: model.nextId + 1,
+          nextId: model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991,
           phase: "sending",
           failReason: new Uint8Array(0),
           draft: composerInit(),
@@ -367,7 +375,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         return [{
           ...model,
           turns: [...model.turns, { id: model.nextId, role: "assistant", text: content }],
-          nextId: model.nextId + 1,
+          nextId: model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991,
           phase: "idle",
           chatScrollTop: SCROLL_BOTTOM,
         }, Cmd.none];

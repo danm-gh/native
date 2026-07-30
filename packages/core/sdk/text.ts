@@ -216,11 +216,22 @@ function nextTextWordOffset(text: Uint8Array, offset: number): number {
   return cursor;
 }
 
+/// The selection constructor: offsets are whole byte offsets by
+/// contract, proven in place — range-guarded (an ordered comparison
+/// excludes NaN) and stated whole with Math.trunc. A value outside the
+/// provable ±(2^53 − 1) window clamps to 0, the same floor every
+/// caller's snap already applies.
+function caretSelectionAt(anchor: number, focus: number): TextSelection {
+  const wholeAnchor = anchor >= 0 && anchor <= 9007199254740991 ? Math.trunc(anchor) : 0;
+  const wholeFocus = focus >= 0 && focus <= 9007199254740991 ? Math.trunc(focus) : 0;
+  return { anchor: wholeAnchor, focus: wholeFocus };
+}
+
 function snapTextCaretSelection(text: Uint8Array, selection: TextSelection): TextSelection {
-  return {
-    anchor: snapTextCaretOffset(text, selection.anchor),
-    focus: snapTextCaretOffset(text, selection.focus),
-  };
+  return caretSelectionAt(
+    snapTextCaretOffset(text, selection.anchor),
+    snapTextCaretOffset(text, selection.focus),
+  );
 }
 
 function snapTextRange(text: Uint8Array, range: TextRange): TextRange {
@@ -290,7 +301,7 @@ function replaceTextEditRange(
   );
   return {
     text: result.text,
-    selection: { anchor: cursor, focus: cursor },
+    selection: caretSelectionAt(cursor, cursor),
     composition: composition,
   };
 }
@@ -308,7 +319,7 @@ function setTextComposition(
   const absoluteCursor = snapTextCaretOffset(result.text, result.insertedStart + cursor);
   return {
     text: result.text,
-    selection: { anchor: absoluteCursor, focus: absoluteCursor },
+    selection: caretSelectionAt(absoluteCursor, absoluteCursor),
     composition: { start: result.insertedStart, end: result.insertedEnd },
   };
 }
@@ -320,10 +331,10 @@ function cancelTextComposition(state: TextEditState, capacity: number): TextEdit
   if (result === null) return null;
   return {
     text: result.text,
-    selection: snapTextCaretSelection(result.text, {
-      anchor: result.insertedStart,
-      focus: result.insertedStart,
-    }),
+    selection: snapTextCaretSelection(
+      result.text,
+      caretSelectionAt(result.insertedStart, result.insertedStart),
+    ),
     composition: null,
   };
 }
@@ -355,7 +366,7 @@ function deleteForwardTextEdit(state: TextEditState, capacity: number): TextEdit
   const caret = snapTextCaretOffset(state.text, state.selection.focus);
   if (caret >= state.text.length) {
     const len = state.text.length;
-    return { text: state.text, selection: { anchor: len, focus: len }, composition: null };
+    return { text: state.text, selection: caretSelectionAt(len, len), composition: null };
   }
   return replaceTextEditRange(
     state,
@@ -394,7 +405,7 @@ function deleteWordForwardTextEdit(state: TextEditState, capacity: number): Text
   const caret = snapTextCaretOffset(state.text, state.selection.focus);
   if (caret >= state.text.length) {
     const len = state.text.length;
-    return { text: state.text, selection: { anchor: len, focus: len }, composition: null };
+    return { text: state.text, selection: caretSelectionAt(len, len), composition: null };
   }
   return replaceTextEditRange(
     state,
@@ -425,8 +436,8 @@ function moveTextCaret(state: TextEditState, move: TextCaretMove): TextEditState
     target = state.text.length;
   }
   const selection: TextSelection = move.extend
-    ? { anchor: state.selection.anchor, focus: target }
-    : { anchor: target, focus: target };
+    ? caretSelectionAt(state.selection.anchor, target)
+    : caretSelectionAt(target, target);
   return {
     text: state.text,
     selection: snapTextCaretSelection(state.text, selection),

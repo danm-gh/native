@@ -151,13 +151,20 @@ export function dispatch_bytes(tag: number, payload: Uint8Array): Uint8Array {
 }
 
 export function dispatch_number(tag: number, value: number): Uint8Array {
-  if (tag === TAG_toggle) return commit(coreUpdate(committed, { kind: "toggle", id: value }));
-  if (tag === TAG_pick) return commit(coreUpdate(committed, { kind: "pick", id: value }));
-  if (tag === TAG_stamped) return commit(coreUpdate(committed, { kind: "stamped", at: value }));
-  if (tag === TAG_hover_row) return commit(coreUpdate(committed, { kind: "hover_row", id: value }));
-  if (tag === TAG_hover_off) return commit(coreUpdate(committed, { kind: "hover_off", id: value }));
-  if (tag === TAG_canvas_resized) return commit(coreUpdate(committed, { kind: "canvas_resized", width: value }));
-  trapUnknownTag("number", tag);
+  // Integer-classed arms (ids and widths) prove in place: range-guard
+  // the raw f64 (an ordered comparison excludes NaN) and state
+  // wholeness with Math.trunc at the write.
+  if (value >= -9007199254740991 && value <= 9007199254740991) {
+    const whole = Math.trunc(value);
+    if (tag === TAG_toggle) return commit(coreUpdate(committed, { kind: "toggle", id: whole }));
+    if (tag === TAG_pick) return commit(coreUpdate(committed, { kind: "pick", id: whole }));
+    if (tag === TAG_stamped) return commit(coreUpdate(committed, { kind: "stamped", at: value }));
+    if (tag === TAG_hover_row) return commit(coreUpdate(committed, { kind: "hover_row", id: whole }));
+    if (tag === TAG_hover_off) return commit(coreUpdate(committed, { kind: "hover_off", id: whole }));
+    if (tag === TAG_canvas_resized) return commit(coreUpdate(committed, { kind: "canvas_resized", width: whole }));
+    trapUnknownTag("number", tag);
+  }
+  trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
 }
 
 export function dispatch_number_bytes(tag: number, value: number, payload: Uint8Array): Uint8Array {

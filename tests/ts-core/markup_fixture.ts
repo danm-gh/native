@@ -86,7 +86,13 @@ export type Msg =
 /// frame that changes nothing dispatches nothing, so the channel starves
 /// when the app is idle).
 export function frameMsg(model: Model, frame: FrameEvent): Msg | null {
-  if (frame.width !== model.canvasWidth) return { kind: "canvas_resized", width: frame.width };
+  // The width lands in an i64-classed slot: bind it, range-guard it (an
+  // ordered comparison excludes NaN), and state wholeness with
+  // Math.trunc at the write.
+  const width = frame.width;
+  if (width >= 0 && width <= 9007199254740991 && width !== model.canvasWidth) {
+    return { kind: "canvas_resized", width: Math.trunc(width) };
+  }
   return null;
 }
 
@@ -174,7 +180,9 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       const slot = model.nextId % 3;
       const title = slot === 0 ? asciiBytes("alpha") : slot === 1 ? asciiBytes("beta") : asciiBytes("gamma");
       const added: Task = { id: model.nextId, title: title, done: false };
-      return [{ ...model, tasks: [...model.tasks, added], nextId: model.nextId + 1 }, Cmd.none];
+      // The bump saturates at the i64 class's provable ceiling.
+      const bumped = model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991;
+      return [{ ...model, tasks: [...model.tasks, added], nextId: bumped }, Cmd.none];
     }
     case "toggle": {
       const next = model.tasks.map((t) => (t.id === msg.id ? { ...t, done: !t.done } : t));
@@ -184,7 +192,10 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           done = done + 1;
         }
       }
-      return [{ ...model, tasks: next, doneCount: done }, Cmd.none];
+      // Loop-accumulated counter: the guard settles range and Math.trunc
+      // states wholeness for the i64-classed slot.
+      const settled = done <= 9007199254740991 ? done : 9007199254740991;
+      return [{ ...model, tasks: next, doneCount: Math.trunc(settled) }, Cmd.none];
     }
     case "pick":
       return [{ ...model, selected: msg.id }, Cmd.none];

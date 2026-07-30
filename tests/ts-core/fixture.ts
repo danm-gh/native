@@ -74,6 +74,8 @@ export interface Model {
   // aliases on the f64 wire) must map to "unknown size" — there is no
   // one honest count to verify against.
   readonly topBytes: number;
+  // Holds 2^53 by design — past the i64 class's provable ±(2^53 − 1)
+  // window, so this slot stays f64-classed in every contract.
   readonly pastBytes: number;
   readonly chanState: ChannelState;
   readonly chanEvents: number;
@@ -208,9 +210,9 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
     case "loaded":
       return [{ ...model, status: msg.body }, Cmd.none];
     case "failed":
-      return [{ ...model, failures: model.failures + 1, lastErr: msg.why }, Cmd.none];
+      return [{ ...model, failures: (model.failures < 9007199254740991 ? model.failures + 1 : 9007199254740991), lastErr: msg.why }, Cmd.none];
     case "tick":
-      return [{ ...model, ticks: model.ticks + 1, lastTickAt: msg.at }, Cmd.none];
+      return [{ ...model, ticks: (model.ticks < 9007199254740991 ? model.ticks + 1 : 9007199254740991), lastTickAt: msg.at }, Cmd.none];
     case "stamped":
       return [{ ...model, stampMs: msg.at }, Cmd.none];
     case "save":
@@ -220,7 +222,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
     case "load":
       return [model, Cmd.readFile(asciiBytes(".zig-cache/tmp/ts-core-e2e/store.bin"), { key: "file", ok: "loaded", err: "failed" })];
     case "wrote":
-      return [{ ...model, saved: model.saved + 1 }, Cmd.none];
+      return [{ ...model, saved: (model.saved < 9007199254740991 ? model.saved + 1 : 9007199254740991) }, Cmd.none];
     case "get":
       return [
         model,
@@ -250,7 +252,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
     case "kill":
       return [model, Cmd.cancel("job")];
     case "lined":
-      return [{ ...model, lines: model.lines + 1, lastLine: msg.text }, Cmd.none];
+      return [{ ...model, lines: (model.lines < 9007199254740991 ? model.lines + 1 : 9007199254740991), lastLine: msg.text }, Cmd.none];
     case "ended":
       return [{ ...model, exitCode: msg.code }, Cmd.none];
     case "play":
@@ -273,7 +275,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         durMs: msg.durationMs,
         playing: msg.playing,
         bands: msg.bands,
-        audioEvents: model.audioEvents + 1,
+        audioEvents: (model.audioEvents < 9007199254740991 ? model.audioEvents + 1 : 9007199254740991),
       }, Cmd.none];
     case "play_clip":
       // The media-surface id a video widget would bind: the decoded
@@ -293,7 +295,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         vPlaying: msg.playing,
         vW: msg.width,
         vH: msg.height,
-        videoEvents: model.videoEvents + 1,
+        videoEvents: (model.videoEvents < 9007199254740991 ? model.videoEvents + 1 : 9007199254740991),
       }, Cmd.none];
     case "show_cover":
       // The runtime ImageId the views bind; the model only adopts it
@@ -308,7 +310,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       // more in-flight load, so the e2e suite can fill the bridge's
       // 16-entry image table and prove the 17th answers "rejected"
       // (never a crash) while the 16 live loads stay healthy.
-      return [{ ...model, nextCover: model.nextCover + 1 }, Cmd.imageLoad(model.nextCover, { path: asciiBytes("art/flood.png") }, { event: "image_done" })];
+      return [{ ...model, nextCover: (model.nextCover < 9007199254740991 ? model.nextCover + 1 : 9007199254740991) }, Cmd.imageLoad(model.nextCover, { path: asciiBytes("art/flood.png") }, { event: "image_done" })];
     case "load_top":
       // 2^53 - 1 reaching the bridge as a DYNAMIC value the emitter's
       // literal gate never sees: the last id every tier carries
@@ -393,10 +395,10 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       // The echoed id IS the adopted id — the store-the-id-on-success
       // discipline reads it off the result instead of hardcoding it.
       if (msg.state === "loaded")
-        return [{ ...model, cover: msg.id, coverW: msg.width, coverH: msg.height, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id }, Cmd.none];
+        return [{ ...model, cover: msg.id, coverW: msg.width, coverH: msg.height, imageState: msg.state, imageStatus: msg.status, imageResults: (model.imageResults < 9007199254740991 ? model.imageResults + 1 : 9007199254740991), lastImageId: msg.id }, Cmd.none];
       if (msg.state === "rejected")
-        return [{ ...model, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id, rejectSeq: model.rejectSeq + 1, imgRejectAt: model.rejectSeq + 1 }, Cmd.none];
-      return [{ ...model, imageState: msg.state, imageStatus: msg.status, imageResults: model.imageResults + 1, lastImageId: msg.id }, Cmd.none];
+        return [{ ...model, imageState: msg.state, imageStatus: msg.status, imageResults: (model.imageResults < 9007199254740991 ? model.imageResults + 1 : 9007199254740991), lastImageId: msg.id, rejectSeq: (model.rejectSeq < 9007199254740991 ? model.rejectSeq + 1 : 9007199254740991), imgRejectAt: (model.rejectSeq < 9007199254740991 ? model.rejectSeq + 1 : 9007199254740991) }, Cmd.none];
+      return [{ ...model, imageState: msg.state, imageStatus: msg.status, imageResults: (model.imageResults < 9007199254740991 ? model.imageResults + 1 : 9007199254740991), lastImageId: msg.id }, Cmd.none];
     case "watch":
       return [model, Cmd.channelOpen(41, { event: "chan_evt" })];
     case "mix_reject":
@@ -417,8 +419,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       ])];
     case "chan_evt":
       if (msg.state === "rejected")
-        return [{ ...model, chanState: msg.state, chanEvents: model.chanEvents + 1, rejectSeq: model.rejectSeq + 1, chanRejectAt: model.rejectSeq + 1 }, Cmd.none];
-      return [{ ...model, chanState: msg.state, chanEvents: model.chanEvents + 1 }, Cmd.none];
+        return [{ ...model, chanState: msg.state, chanEvents: (model.chanEvents < 9007199254740991 ? model.chanEvents + 1 : 9007199254740991), rejectSeq: (model.rejectSeq < 9007199254740991 ? model.rejectSeq + 1 : 9007199254740991), chanRejectAt: (model.rejectSeq < 9007199254740991 ? model.rejectSeq + 1 : 9007199254740991) }, Cmd.none];
+      return [{ ...model, chanState: msg.state, chanEvents: (model.chanEvents < 9007199254740991 ? model.chanEvents + 1 : 9007199254740991) }, Cmd.none];
   }
 }
 

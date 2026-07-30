@@ -37,6 +37,22 @@
     "init_export": "init",
     "update_export": "coreUpdate",
     "subscriptions_export": "coreSubscriptions",
-    "integer_slots": []
+    "integer_slots": [
+      { "slot": "Model.ticks", "class": "i64" },
+      { "slot": "Model.failures", "class": "i64" },
+      { "slot": "Model.saved", "class": "i64" },
+      { "slot": "Model.lines", "class": "i64" },
+      { "slot": "Model.audioEvents", "class": "i64" },
+      { "slot": "Model.videoEvents", "class": "i64" },
+      { "slot": "Model.imageResults", "class": "i64" },
+      { "slot": "Model.nextCover", "class": "i64" },
+      { "slot": "Model.topId", "class": "i64" },
+      { "slot": "Model.wholeBytes", "class": "i64" },
+      { "slot": "Model.topBytes", "class": "i64" },
+      { "slot": "Model.chanEvents", "class": "i64" },
+      { "slot": "Model.rejectSeq", "class": "i64" },
+      { "slot": "Model.chanRejectAt", "class": "i64" },
+      { "slot": "Model.imgRejectAt", "class": "i64" }
+    ]
   }
 }

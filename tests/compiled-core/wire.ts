@@ -206,14 +206,16 @@ export function decodeTextInputEvent(bytes: Uint8Array): TextInputEvent {
       return { kind: "move_caret", move: { direction: caretDirections[member]!, extend: extend } };
     }
     case 7: {
-      // f64-classed like every corpus contract's numeric slot: the
-      // integer classes wait on prove-or-refuse discharge through the
-      // whole write graph (see the corpus profiles' empty
-      // integer_slots), and every corpus value is exact in f64.
+      // Selection indices are i64-classed slots: bind the decoded
+      // values, range-guard them (an ordered comparison excludes NaN),
+      // and state wholeness with Math.trunc at the write.
       const anchor = readF64(bytes, 1);
       const focus = readF64(bytes, 9);
       assertConsumed(bytes, 17);
-      return { kind: "set_selection", selection: { anchor: anchor, focus: focus } };
+      if (anchor >= -9007199254740991 && anchor <= 9007199254740991 && focus >= -9007199254740991 && focus <= 9007199254740991) {
+        return { kind: "set_selection", selection: { anchor: Math.trunc(anchor), focus: Math.trunc(focus) } };
+      }
+      trap("a selection index is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
     }
     case 8: {
       const len = readU32(bytes, 1);

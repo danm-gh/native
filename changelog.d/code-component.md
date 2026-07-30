@@ -1,1 +1,1 @@
-feature: **Code component**: `ui.code` and markup `<code>` render highlighted source with wrapping by default, opt-in logical line numbers, and an unwrapped horizontal-scroll mode; Markdown fences share the same component.
+feature: **Code component**: `ui.code` and markup `<code>` render highlighted source with wrapping by default, opt-in logical line numbers, unwrapped horizontal scrolling, and vertical scrolling for height-constrained surfaces; Markdown fences share the same component.

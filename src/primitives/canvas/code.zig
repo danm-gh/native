@@ -174,9 +174,55 @@ fn stringQuote(language: Language, byte: u8) bool {
     return switch (language) {
         .plain, .html => false,
         .json => byte == '"',
+        // A Rust apostrophe begins a character only when a closing quote
+        // follows one scalar or escape; otherwise it introduces a lifetime
+        // (`'a`, `'static`) and must not open multiline string state.
+        .rust => byte == '"',
         .shell, .javascript, .typescript, .go => byte == '"' or byte == '\'' or byte == '`',
         else => byte == '"' or byte == '\'',
     };
+}
+
+fn rustCharLiteralLength(rest: []const u8) ?usize {
+    if (rest.len < 3 or rest[0] != '\'') return null;
+    var cursor: usize = 1;
+    if (rest[cursor] == '\\') {
+        cursor += 1;
+        if (cursor >= rest.len) return null;
+        switch (rest[cursor]) {
+            'x' => {
+                cursor += 1;
+                if (cursor + 2 > rest.len or
+                    !std.ascii.isHex(rest[cursor]) or
+                    !std.ascii.isHex(rest[cursor + 1]))
+                {
+                    return null;
+                }
+                cursor += 2;
+            },
+            'u' => {
+                cursor += 1;
+                if (cursor >= rest.len or rest[cursor] != '{') return null;
+                cursor += 1;
+                var digits: usize = 0;
+                while (cursor < rest.len and rest[cursor] != '}') : (cursor += 1) {
+                    if (rest[cursor] == '_') continue;
+                    if (!std.ascii.isHex(rest[cursor])) return null;
+                    digits += 1;
+                }
+                if (digits == 0 or cursor >= rest.len) return null;
+                cursor += 1;
+            },
+            else => cursor += 1,
+        }
+    } else {
+        const scalar_len = std.unicode.utf8ByteSequenceLength(rest[cursor]) catch return null;
+        if (cursor + scalar_len > rest.len) return null;
+        _ = std.unicode.utf8Decode(rest[cursor .. cursor + scalar_len]) catch return null;
+        cursor += scalar_len;
+    }
+    if (cursor >= rest.len or rest[cursor] != '\'') return null;
+    return cursor + 1;
 }
 
 fn backslashEscapesQuote(language: Language, state: HighlightState, quote: u8) bool {
@@ -370,6 +416,9 @@ pub fn highlightWithState(
             index += 1;
             state.html_expression_depth -= 1;
             color = .info;
+        } else if (if (language == .rust) rustCharLiteralLength(rest) else null) |literal_len| {
+            index += literal_len;
+            color = .success;
         } else if (stringQuote(language, rest[0]) or
             (language == .html and
                 (state.html_in_tag or state.html_expression_depth > 0) and

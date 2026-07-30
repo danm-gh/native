@@ -2301,6 +2301,8 @@ pub fn Ui(comptime Msg: type) type {
             /// intact inside one horizontal scroll region.
             wrap: bool = true,
             width: f32 = 0,
+            /// Definite surface height. Overflow scrolls vertically;
+            /// no-wrap surfaces scroll on both axes.
             height: f32 = 0,
             min_width: f32 = 0,
             grow: f32 = 0,
@@ -2320,7 +2322,18 @@ pub fn Ui(comptime Msg: type) type {
             else
                 self.codeParagraphChunks(source, options.language, options.wrap);
             const body = if (options.wrap)
-                content
+                if (options.height > 0) blk: {
+                    // Generic scroll children stay viewport-sized by
+                    // contract. Put code in an internal flow track whose
+                    // non-growing paragraph retains its full wrapped
+                    // height, giving the vertical scroll walker an honest
+                    // descendant extent without remeasuring arbitrary
+                    // public scroll content.
+                    var tracked_content = content;
+                    tracked_content.widget.layout.grow = 0;
+                    const track = self.column(.{}, .{tracked_content});
+                    break :blk self.scroll(.{ .axis = .vertical, .grow = 1 }, .{track});
+                } else content
             else blk: {
                 // The engine scrollbar overlays the viewport's bottom
                 // edge. Reserve one quiet band inside the scrollable
@@ -2329,7 +2342,10 @@ pub fn Ui(comptime Msg: type) type {
                     content,
                     self.el(.stack, .{ .height = 8 }, .{}),
                 });
-                break :blk self.scroll(.{ .axis = .horizontal, .grow = 1 }, .{track});
+                break :blk self.scroll(.{
+                    .axis = if (options.height > 0) .both else .horizontal,
+                    .grow = 1,
+                }, .{track});
             };
             var surface = self.el(.panel, .{
                 .key = options.key,
@@ -2653,7 +2669,11 @@ pub fn Ui(comptime Msg: type) type {
             return cursor;
         }
 
-        const max_code_logical_lines_per_paragraph: usize = 64;
+        // Keep the maximal 64 KiB newline-only source within both the
+        // component's 512-span share and the runtime's 1024-node view cap:
+        // 128 logical lines per paragraph yields at most 512 chunks.
+        const max_code_logical_lines_per_paragraph: usize =
+            canvas.text_spans.max_text_span_lines_per_paragraph;
 
         fn codeLineCount(source: []const u8) usize {
             return std.mem.count(u8, source, "\n") + 1;

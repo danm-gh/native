@@ -124,6 +124,27 @@ test "single-quoted escapes do not leak string state into the next line" {
     }
 }
 
+test "Rust lifetimes do not open string state and character literals still highlight" {
+    const lifetime_source = "fn borrow<'a>(value: &'a str) -> &'a str { value }\nconst next = true;";
+    var lifetime_state: code_model.HighlightState = .{};
+    var lifetime_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const lifetimes = code_model.highlightWithState(
+        lifetime_source,
+        .rust,
+        &lifetime_storage,
+        &lifetime_state,
+    );
+    try testing.expect(lifetime_state.string_quote == null);
+    try testing.expect(spanWithFragment(lifetimes, "'a").?.color == null);
+    try testing.expectEqual(canvas.TextSpanColor.info, spanWithFragment(lifetimes, "const").?.color.?);
+
+    const character_source = "let escaped: char = '\\n'; let unicode: char = '🦀';";
+    var character_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const characters = code_model.highlight(character_source, .rust, &character_storage);
+    try testing.expectEqual(canvas.TextSpanColor.success, spanWithFragment(characters, "'\\n'").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.success, spanWithFragment(characters, "'🦀'").?.color.?);
+}
+
 test "HTML prose apostrophes stay prose and JSX content expressions highlight" {
     const source = "<p>It's {true}</p>";
     var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
@@ -192,6 +213,87 @@ test "code wraps by default and no-wrap composes one horizontal scroller" {
     try testing.expect(text_width > scroll_width);
 }
 
+test "fixed-height code surfaces scroll every overflowing axis" {
+    const multiline =
+        \\one
+        \\two
+        \\three
+        \\four
+        \\five
+        \\six
+    ;
+    var wrapped_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer wrapped_arena.deinit();
+    var wrapped_ui = Ui.init(wrapped_arena.allocator());
+    const wrapped = try wrapped_ui.finalize(wrapped_ui.code(.{
+        .width = 160,
+        .height = 60,
+    }, multiline));
+    const wrapped_region = findByKind(wrapped.root, .scroll_view).?;
+    try testing.expectEqual(canvas.ScrollAxes.vertical, wrapped_region.scroll_axes);
+
+    var wrapped_nodes: [8]canvas.WidgetLayoutNode = undefined;
+    const wrapped_layout = try canvas.layoutWidgetTree(
+        wrapped.root,
+        geometry.RectF.init(0, 0, 160, 60),
+        &wrapped_nodes,
+    );
+    var wrapped_scroll_index: usize = 0;
+    for (wrapped_layout.nodes, 0..) |node, index| {
+        if (node.widget.kind == .scroll_view) wrapped_scroll_index = index;
+    }
+    const wrapped_scroll = wrapped_layout.nodes[wrapped_scroll_index];
+    const wrapped_viewport = wrapped_scroll.frame.inset(wrapped_scroll.widget.layout.padding).normalized();
+    const wrapped_vertical = canvas.widgetScrollAxisMetrics(
+        wrapped_layout,
+        wrapped_scroll_index,
+        canvas.virtualWidgetScrollContentExtent,
+        .vertical,
+        wrapped_viewport,
+    );
+    try testing.expect(wrapped_vertical.content_extent > wrapped_vertical.viewport_extent);
+
+    var both_arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer both_arena.deinit();
+    var both_ui = Ui.init(both_arena.allocator());
+    const both = try both_ui.finalize(both_ui.code(.{
+        .wrap = false,
+        .width = 160,
+        .height = 60,
+    }, "a_very_long_identifier_that_overflows_horizontally\nsecond\nthird\nfourth"));
+    const both_region = findByKind(both.root, .scroll_view).?;
+    try testing.expectEqual(canvas.ScrollAxes.both, both_region.scroll_axes);
+
+    var both_nodes: [8]canvas.WidgetLayoutNode = undefined;
+    const both_layout = try canvas.layoutWidgetTree(
+        both.root,
+        geometry.RectF.init(0, 0, 160, 60),
+        &both_nodes,
+    );
+    var both_scroll_index: usize = 0;
+    for (both_layout.nodes, 0..) |node, index| {
+        if (node.widget.kind == .scroll_view) both_scroll_index = index;
+    }
+    const both_scroll = both_layout.nodes[both_scroll_index];
+    const both_viewport = both_scroll.frame.inset(both_scroll.widget.layout.padding).normalized();
+    const both_vertical = canvas.widgetScrollAxisMetrics(
+        both_layout,
+        both_scroll_index,
+        canvas.virtualWidgetScrollContentExtent,
+        .vertical,
+        both_viewport,
+    );
+    const both_horizontal = canvas.widgetScrollAxisMetrics(
+        both_layout,
+        both_scroll_index,
+        canvas.virtualWidgetScrollContentExtent,
+        .horizontal,
+        both_viewport,
+    );
+    try testing.expect(both_vertical.content_extent > both_vertical.viewport_extent);
+    try testing.expect(both_horizontal.content_extent > both_horizontal.viewport_extent);
+}
+
 test "line numbers are opt-in and stay paired with logical source lines" {
     var plain_arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer plain_arena.deinit();
@@ -237,6 +339,34 @@ test "large code blocks split at the paragraph line capacity without hiding thei
 
     try testing.expect(countByKind(view.root, .text) > 1);
     try expectCompleteSpanLayouts(view.root);
+    var recovered: std.ArrayListUnmanaged(u8) = .empty;
+    defer recovered.deinit(testing.allocator);
+    try appendTextWidgets(view.root, &recovered, testing.allocator);
+    try testing.expectEqualStrings(source.items, recovered.items);
+}
+
+test "maximal newline-heavy code stays within retained span and node budgets" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    for (0..65_536) |_| try source.append(testing.allocator, '\n');
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{ .language = .plain }, source.items));
+
+    try testing.expectEqual(Ui.max_code_spans_per_surface, countTextSpans(view.root));
+    try expectCompleteSpanLayouts(view.root);
+    var nodes: [1024]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        view.root,
+        geometry.RectF.init(0, 0, 320, 20_000),
+        &nodes,
+    );
+    // One panel + one chunk column + one text node per 128 source
+    // newlines: 514 stays well below the 1024-node runtime view cap.
+    try testing.expectEqual(Ui.max_code_spans_per_surface + 2, layout.nodes.len);
+
     var recovered: std.ArrayListUnmanaged(u8) = .empty;
     defer recovered.deinit(testing.allocator);
     try appendTextWidgets(view.root, &recovered, testing.allocator);

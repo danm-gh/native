@@ -559,7 +559,7 @@ ui.paragraph(.{ .on_link = Ui.linkMsg(.open_url) }, &spans)
 
 Wrapping and measurement are span-aware (the platform text provider measures every run with the font it draws with), stacked paragraphs reserve their real wrapped height, and link spans are first-class: they carry `role=link` semantics in automation snapshots, show the pointing-hand cursor (the only place the engine uses it — controls keep the platform arrow, following native convention rather than the web's), and clicking one dispatches your `Msg` with the link payload.
 
-Source presentation is the reusable `ui.code` / `<code>` component. It wraps by default; `wrap="false"` preserves logical lines inside one horizontal scroll region, and `line-numbers` opts into a muted logical-line gutter:
+Source presentation is the reusable `ui.code` / `<code>` component. It wraps by default; `wrap="false"` preserves logical lines inside one horizontal scroll region, and `line-numbers` opts into a muted logical-line gutter. A definite `height` keeps overflow reachable with vertical scrolling (or both axes when wrapping is off):
 
 ```html
 <code source="{component_source}" language="tsx" line-numbers wrap="false" width="480" label="Accordion example" />

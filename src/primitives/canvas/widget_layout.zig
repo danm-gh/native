@@ -1059,7 +1059,10 @@ fn layoutScrollChildren(
     for (children) |child| {
         if (child.layout.anchor != null) continue;
         var child_frame = stackChildFrame(scrolled_content, child);
-        if (axes == .horizontal and child.frame.width <= 0) {
+        // A `both` region must retain the same intrinsic width as a
+        // horizontal-only shelf; otherwise its horizontal axis has no
+        // content range even when its child paints a long no-wrap line.
+        if (axes.scrollsHorizontally() and child.frame.width <= 0) {
             const intrinsic = intrinsicChildSize(child, tokens, depth + 1);
             child_frame.width = @max(child_frame.width, intrinsic.width);
         }

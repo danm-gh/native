@@ -1112,11 +1112,22 @@ const textWrapMaxWidth = widget_metrics.textWrapMaxWidth;
 /// of a `.text` widget (plain or span paragraph). Command ids are hashed
 /// per line ordinal like span runs, so retained diffing stays stable.
 fn emitStaticTextSelection(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
+    return emitStaticTextSelectionBounded(builder, widget, tokens, builder.commands.len);
+}
+
+fn emitStaticTextSelectionBounded(
+    builder: *Builder,
+    widget: Widget,
+    tokens: DesignTokens,
+    command_ceiling: usize,
+) Error!void {
+    if (builder.len >= command_ceiling) return;
     const range = widget_access.widgetTextSelectionRange(widget) orelse return;
     if (range.isCollapsed(widget.text.len)) return;
     var rect_buffer: [widget_text_select.max_static_text_selection_rects]text_model.TextSelectionRect = undefined;
     const rects = widget_text_select.staticTextSelectionRects(widget, tokens, range, &rect_buffer);
     for (rects, 0..) |selection, ordinal| {
+        if (builder.len >= command_ceiling) break;
         try builder.fillRoundedRect(.{
             .id = textSelectionCommandId(widget.id, ordinal),
             .rect = pixelSnapGeometryRect(tokens, selection.rect),
@@ -1144,7 +1155,7 @@ fn emitTextSpansWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) 
         &runs,
     );
 
-    try emitCodeLineNumberGutter(builder, widget, tokens, content, widget.frame, layout_options);
+    try emitCodeLineNumberGutter(builder, widget, tokens, content, widget.frame, layout_options, null);
     // Span background highlights (intra-line diff emphasis): one
     // full-line-height rect per run, the same geometry selection rects
     // use, painted before selection and glyphs. Edge-snapped rects of
@@ -1268,6 +1279,62 @@ fn isSyntaxCodeParagraph(widget: Widget) bool {
     return true;
 }
 
+// A code surface shares the frame's fixed display-list stores with every
+// widget emitted around it. Hold back the same practical tail as the
+// terminal painter: enough commands and referenced text for trailing
+// siblings, transform/clip epilogues, and window chrome. Small direct
+// builders retain seven eighths of their capacity so focused unit tests
+// remain representative while still leaving their enclosing epilogue room.
+const code_widget_command_reserve: usize = 256;
+const code_widget_text_reserve: usize = 8192;
+
+const CodeEmissionBudget = struct {
+    command_ceiling: usize,
+    text_ceiling: usize,
+    text_total: usize,
+
+    fn init(builder: *const Builder) CodeEmissionBudget {
+        const command_reserve = @min(
+            code_widget_command_reserve,
+            @max(@as(usize, 1), builder.commands.len / 8),
+        );
+        return .{
+            .command_ceiling = builder.commands.len -| command_reserve,
+            .text_ceiling = canvas.max_display_list_text_bytes -| code_widget_text_reserve,
+            .text_total = displayListTextBytes(builder.displayList()),
+        };
+    }
+
+    fn hasCommand(self: CodeEmissionBudget, builder: *const Builder) bool {
+        return builder.len < self.command_ceiling;
+    }
+
+    fn remainingText(self: CodeEmissionBudget) usize {
+        return self.text_ceiling -| self.text_total;
+    }
+
+    fn chargeText(self: *CodeEmissionBudget, len: usize) void {
+        self.text_total += len;
+    }
+};
+
+fn displayListTextBytes(list: canvas.DisplayList) usize {
+    var total: usize = 0;
+    for (list.commands) |command| {
+        if (command == .draw_text) total += command.draw_text.text.len;
+    }
+    return total;
+}
+
+/// Keep a text-budget truncation on a UTF-8 scalar boundary. Code source
+/// accepts arbitrary bytes, so invalid leading/continuation bytes simply
+/// degrade to the maximal prefix the display store can retain.
+fn codeTextPrefix(text: []const u8, max_len: usize) []const u8 {
+    var end = @min(text.len, max_len);
+    while (end > 0 and end < text.len and text[end] & 0xc0 == 0x80) end -= 1;
+    return text[0..end];
+}
+
 /// Viewport-aware code emission: the full source remains in retained
 /// paragraph widgets for layout, selection, copy, and scroll extents, while
 /// the display list contains only line runs that intersect the current
@@ -1300,9 +1367,12 @@ fn emitVisibleCodeTextSpansWidget(
     else
         visible_line;
     var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
+    var budget = CodeEmissionBudget.init(builder);
+    if (!budget.hasCommand(builder)) return;
 
-    try emitCodeLineNumberGutter(builder, widget, tokens, content, visible_bounds, layout_options);
-    try emitStaticTextSelection(builder, widget, tokens);
+    try emitCodeLineNumberGutter(builder, widget, tokens, content, visible_bounds, layout_options, &budget);
+    try emitStaticTextSelectionBounded(builder, widget, tokens, budget.command_ceiling);
+    if (!budget.hasCommand(builder) or budget.remainingText() == 0) return;
     var page_first_line = visible_line -| 1;
     while (true) {
         const layout = text_spans_model.layoutTextSpansFromLine(
@@ -1331,6 +1401,9 @@ fn emitVisibleCodeTextSpansWidget(
                 visible_bounds.x - absolute_x,
                 visible_bounds.maxX() - absolute_x,
             ) orelse continue;
+            if (!budget.hasCommand(builder)) return;
+            const admitted_text = codeTextPrefix(visible.text, budget.remainingText());
+            if (admitted_text.len == 0) return;
             const color = text_spans_model.textSpanColorValue(tokens.colors, span.color.?);
             const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(absolute_x + visible.x, content.y + run.baseline));
             try builder.drawText(.{
@@ -1339,7 +1412,7 @@ fn emitVisibleCodeTextSpansWidget(
                 .size = run.size,
                 .origin = origin,
                 .color = color,
-                .text = visible.text,
+                .text = admitted_text,
                 .text_layout = .{
                     .max_width = 0,
                     .line_height = layout.line_height,
@@ -1348,6 +1421,7 @@ fn emitVisibleCodeTextSpansWidget(
                     .measure = tokens.text_measure,
                 },
             });
+            budget.chargeText(admitted_text.len);
         }
 
         const next_first_line = page_first_line +| text_spans_model.max_text_span_lines_per_paragraph;
@@ -1372,6 +1446,7 @@ fn emitCodeLineNumberGutter(
     content: geometry.RectF,
     visible_bounds: geometry.RectF,
     layout_options: text_spans_model.TextSpanLayoutOptions,
+    budget: ?*CodeEmissionBudget,
 ) Error!void {
     if (widget.code_line_number_digits == 0) return;
     const line_height = text_spans_model.textSpanLineHeight(widget.spans, layout_options);
@@ -1400,6 +1475,10 @@ fn emitCodeLineNumberGutter(
         );
         if (marker_bounds.intersects(visible_bounds)) {
             const marker_text = codeLineNumberText(logical_line, digits);
+            if (budget) |admission| {
+                if (!admission.hasCommand(builder)) return;
+                if (marker_text.len > admission.remainingText()) return;
+            }
             try builder.drawText(.{
                 .id = codeLineNumberCommandId(widget.id, logical_line),
                 .font_id = tokens.typography.mono_font_id,
@@ -1415,6 +1494,7 @@ fn emitCodeLineNumberGutter(
                     .measure = tokens.text_measure,
                 },
             });
+            if (budget) |admission| admission.chargeText(marker_text.len);
         }
 
         const line = widget.text[line_start..line_end];

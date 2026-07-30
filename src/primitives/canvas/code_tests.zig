@@ -803,7 +803,7 @@ test "transformed code culling maps the window back into paragraph space" {
             .parent_index = 0,
         },
     };
-    var scaled_commands: [160]canvas.CanvasCommand = undefined;
+    var scaled_commands: [256]canvas.CanvasCommand = undefined;
     var scaled_builder = canvas.Builder.init(&scaled_commands);
     try canvas.emitWidgetLayout(
         &scaled_builder,
@@ -815,6 +815,99 @@ test "transformed code culling maps the window back into paragraph space" {
         if (command == .draw_text) drawn_lines += 1;
     }
     try testing.expectEqual(@as(usize, 140), drawn_lines);
+}
+
+test "scaled code degrades under the display-list command budget" {
+    const source = ("x\n" ** 2999) ++ "x";
+    const spans = [_]canvas.TextSpan{.{
+        .text = source,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const nodes = [_]canvas.WidgetLayoutNode{
+        .{
+            .widget = .{ .id = 1, .kind = .stack },
+            .frame = geometry.RectF.init(0, 0, 100, 100),
+            .depth = 0,
+        },
+        .{
+            .widget = .{
+                .id = 2,
+                .kind = .text,
+                .text = source,
+                .spans = &spans,
+                .transform = canvas.Affine.scale(0.001, 0.001),
+            },
+            .frame = geometry.RectF.init(0, 0, 20, 52_500),
+            .depth = 1,
+            .parent_index = 0,
+        },
+    };
+    var commands: [2048]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetLayout(
+        &builder,
+        canvas.WidgetLayoutTree{ .nodes = &nodes },
+        .{},
+    );
+
+    var drawn_lines: usize = 0;
+    for (builder.displayList().commands) |command| {
+        if (command == .draw_text) drawn_lines += 1;
+    }
+    try testing.expect(drawn_lines > 0);
+    try testing.expect(drawn_lines < 3000);
+    try testing.expect(builder.displayList().commands.len < commands.len);
+}
+
+test "scaled long code line degrades under the display-list text budget" {
+    const source = "x" ** 65_536;
+    const preceding_text = "y" ** 20_000;
+    const spans = [_]canvas.TextSpan{.{
+        .text = source,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const nodes = [_]canvas.WidgetLayoutNode{
+        .{
+            .widget = .{ .id = 1, .kind = .stack },
+            .frame = geometry.RectF.init(0, 0, 1000, 100),
+            .depth = 0,
+        },
+        .{
+            .widget = .{
+                .id = 2,
+                .kind = .text,
+                .text = source,
+                .spans = &spans,
+                .text_no_wrap = true,
+                .transform = canvas.Affine.scale(0.001, 0.001),
+            },
+            .frame = geometry.RectF.init(0, 0, 400_000, 20),
+            .depth = 1,
+            .parent_index = 0,
+        },
+    };
+    var commands: [64]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try builder.drawText(.{
+        .id = 99,
+        .font_id = 2,
+        .size = 12,
+        .origin = geometry.PointF.init(0, 0),
+        .color = canvas.Color.rgb8(255, 255, 255),
+        .text = preceding_text,
+    });
+    try canvas.emitWidgetLayout(
+        &builder,
+        canvas.WidgetLayoutTree{ .nodes = &nodes },
+        .{},
+    );
+
+    const text_bytes = displayListTextBytes(builder.displayList());
+    try testing.expect(text_bytes > preceding_text.len);
+    try testing.expect(text_bytes <= canvas.max_display_list_text_bytes);
+    try testing.expect(text_bytes < preceding_text.len + source.len);
 }
 
 test "wrapped code keeps an over-capacity logical line in one paragraph" {

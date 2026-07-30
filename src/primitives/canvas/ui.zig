@@ -384,9 +384,7 @@ pub const StyleTokenRefs = struct {
 };
 
 fn colorTokenValue(colors: canvas.ColorTokens, ref: ColorTokenName) canvas.Color {
-    return switch (ref) {
-        inline else => |tag| @field(colors, @tagName(tag)),
-    };
+    return canvas.colorTokenValue(colors, ref);
 }
 
 fn radiusTokenValue(radius: canvas.RadiusTokens, ref: RadiusTokenName) f32 {

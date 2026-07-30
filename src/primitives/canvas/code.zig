@@ -34,6 +34,14 @@ pub const HighlightState = struct {
     html_in_tag: bool = false,
     html_expect_tag_name: bool = false,
     html_expression_depth: usize = 0,
+    /// Expression depth at which the current tag opened. JSX tags can sit
+    /// inside `{...}`; their closing `>` must return to that expression,
+    /// not erase it.
+    html_tag_expression_base: usize = 0,
+    /// Last non-whitespace source byte from the preceding presentation
+    /// chunk. JSX comparison/tag disambiguation needs its left context even
+    /// when a bounded paragraph happens to split immediately before `<`.
+    html_previous_significant: u8 = 0,
     html_comment: bool = false,
     block_comment: bool = false,
     line_comment: bool = false,
@@ -181,6 +189,46 @@ fn identifierStart(byte: u8) bool {
 
 fn identifierContinue(byte: u8) bool {
     return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '@' or byte == '$';
+}
+
+fn htmlTagOpenerByte(byte: u8) bool {
+    return identifierStart(byte) or byte == '/' or byte == '!' or byte == '?' or byte == '>';
+}
+
+fn htmlPreviousAllowsTag(byte: u8) bool {
+    return switch (byte) {
+        0, '{', '(', '[', ',', ':', '?', '=', '>', '!', '&', '|', ';' => true,
+        else => false,
+    };
+}
+
+/// A `<` in HTML-family source is structural only when it can begin a tag.
+/// Inside a JSX expression, the preceding token must also leave room for an
+/// expression operand; `count < limit` is relational, while
+/// `ok && <Badge />` starts nested JSX.
+fn htmlLessThanStartsTag(source: []const u8, index: usize, state: HighlightState) bool {
+    if (index + 1 >= source.len or !htmlTagOpenerByte(source[index + 1])) return false;
+    if (state.html_expression_depth == 0) return true;
+
+    var cursor = index;
+    while (cursor > 0) {
+        cursor -= 1;
+        const byte = source[cursor];
+        if (byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n') continue;
+        return htmlPreviousAllowsTag(byte);
+    }
+    return htmlPreviousAllowsTag(state.html_previous_significant);
+}
+
+fn updateHtmlPreviousSignificant(state: *HighlightState, source: []const u8) void {
+    var cursor = source.len;
+    while (cursor > 0) {
+        cursor -= 1;
+        const byte = source[cursor];
+        if (byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n') continue;
+        state.html_previous_significant = byte;
+        return;
+    }
 }
 
 fn stringQuote(language: Language, byte: u8) bool {
@@ -404,22 +452,24 @@ pub fn highlightWithState(
             while (index < source.len and source[index] != '\n') index += 1;
             state.preprocessor_line = index == source.len;
             color = .syntax_constant;
-        } else if (language == .html and rest[0] == '<') {
+        } else if (language == .html and
+            rest[0] == '<' and
+            htmlLessThanStartsTag(source, index, state.*))
+        {
             index += 1;
             if (index < source.len and source[index] == '/') index += 1;
             state.html_in_tag = true;
             state.html_expect_tag_name = true;
-            state.html_expression_depth = 0;
+            state.html_tag_expression_base = state.html_expression_depth;
             color = .syntax_plain;
         } else if (language == .html and
             state.html_in_tag and
-            state.html_expression_depth == 0 and
+            state.html_expression_depth == state.html_tag_expression_base and
             rest[0] == '>')
         {
             index += 1;
             state.html_in_tag = false;
             state.html_expect_tag_name = false;
-            state.html_expression_depth = 0;
             color = .syntax_plain;
         } else if (language == .html and rest[0] == '{') {
             index += 1;
@@ -496,6 +546,8 @@ pub fn highlightWithState(
         } else {
             index += 1;
         }
+
+        if (language == .html) updateHtmlPreviousSignificant(state, source[start..index]);
 
         // The last span already covers the entire plain-syntax remainder once
         // capacity fills, but keep scanning it so state handed to the next

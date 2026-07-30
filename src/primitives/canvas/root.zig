@@ -357,6 +357,7 @@ pub const ColorContrast = token_model.ColorContrast;
 pub const ThemeOptions = token_model.ThemeOptions;
 pub const ThemePack = token_model.ThemePack;
 pub const ColorTokens = token_model.ColorTokens;
+pub const colorTokenValue = token_model.colorTokenValue;
 pub const FontFamily = token_model.FontFamily;
 pub const TypographyTokens = token_model.TypographyTokens;
 pub const SpacingTokens = token_model.SpacingTokens;

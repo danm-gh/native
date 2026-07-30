@@ -48,6 +48,17 @@ fn appendTextWidgets(widget: canvas.Widget, output: *std.ArrayListUnmanaged(u8),
     for (widget.children) |child| try appendTextWidgets(child, output, allocator);
 }
 
+fn displayListTextBytes(display_list: canvas.DisplayList) usize {
+    var count: usize = 0;
+    for (display_list.commands) |command| {
+        switch (command) {
+            .draw_text => |draw| count += draw.text.len,
+            else => {},
+        }
+    }
+    return count;
+}
+
 fn expectCompleteSpanLayouts(widget: canvas.Widget) !void {
     if (widget.kind == .text and widget.spans.len > 0) {
         var runs: [text_spans.max_text_span_runs_per_paragraph]text_spans.TextSpanRun = undefined;
@@ -89,6 +100,28 @@ test "HTML and JSX highlighting distinguishes tags attributes expressions and st
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "\"item-1\"").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "Accessible?").?.color.?);
+}
+
+test "JSX relational less-than preserves expression state and nested tags" {
+    const source = "<span>{count<limit ? <Low/> : <High/>}</span>";
+    var state: code_model.HighlightState = .{};
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlightWithState(source, .html, &storage, &state);
+
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "limit").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "Low").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "High").?.color.?);
+    try testing.expectEqual(@as(usize, 0), state.html_expression_depth);
+    try testing.expect(!state.html_in_tag);
+
+    var chunked_state: code_model.HighlightState = .{};
+    var first_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    _ = code_model.highlightWithState("<span>{count", .html, &first_storage, &chunked_state);
+    var second_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const second = code_model.highlightWithState("<limit ? <Low/> : <High/>}</span>", .html, &second_storage, &chunked_state);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(second, "limit").?.color.?);
+    try testing.expectEqual(@as(usize, 0), chunked_state.html_expression_depth);
+    try testing.expect(!chunked_state.html_in_tag);
 }
 
 test "HTML and JSX lexer state survives logical line boundaries" {
@@ -239,6 +272,23 @@ test "both built-in packs use the Geist Code Block syntax palette" {
         try testing.expectEqual(canvas.Color.rgb8(255, 97, 102), dark.syntax_property);
         try testing.expectEqual(canvas.Color.rgb8(82, 168, 255), dark.syntax_constant);
     }
+}
+
+test "omitted custom syntax colors inherit readable text roles" {
+    const colors = canvas.ColorTokens{
+        .background = canvas.Color.rgb8(12, 10, 9),
+        .surface_subtle = canvas.Color.rgb8(41, 37, 36),
+        .text = canvas.Color.rgb8(250, 250, 249),
+        .text_muted = canvas.Color.rgb8(166, 160, 155),
+    };
+
+    try testing.expectEqual(colors.text, text_spans.textSpanColorValue(colors, .syntax_plain));
+    try testing.expectEqual(colors.text, text_spans.textSpanColorValue(colors, .syntax_keyword));
+    try testing.expectEqual(colors.text_muted, text_spans.textSpanColorValue(colors, .syntax_comment));
+
+    var explicit = colors;
+    explicit.syntax_keyword = canvas.Color.rgb8(247, 95, 143);
+    try testing.expectEqual(explicit.syntax_keyword, text_spans.textSpanColorValue(explicit, .syntax_keyword));
 }
 
 test "code wraps by default and no-wrap composes one horizontal scroller" {
@@ -460,6 +510,42 @@ test "maximal newline-heavy code stays within retained span and node budgets" {
     defer recovered.deinit(testing.allocator);
     try appendTextWidgets(view.root, &recovered, testing.allocator);
     try testing.expectEqualStrings(source.items, recovered.items);
+}
+
+test "large code retains all source while emitting only visible text" {
+    const source = try testing.allocator.alloc(u8, 65_536);
+    defer testing.allocator.free(source);
+    @memset(source, 'x');
+
+    for ([_]bool{ true, false }) |wrap| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var ui = Ui.init(arena.allocator());
+        const view = try ui.finalize(ui.code(.{
+            .wrap = wrap,
+            .height = 80,
+        }, source));
+
+        var recovered: std.ArrayListUnmanaged(u8) = .empty;
+        defer recovered.deinit(testing.allocator);
+        try appendTextWidgets(view.root, &recovered, testing.allocator);
+        try testing.expectEqualStrings(source, recovered.items);
+
+        var nodes: [1024]canvas.WidgetLayoutNode = undefined;
+        const layout = try canvas.layoutWidgetTree(
+            view.root,
+            geometry.RectF.init(0, 0, 320, 80),
+            &nodes,
+        );
+        var commands: [2048]canvas.CanvasCommand = undefined;
+        var builder = canvas.Builder.init(&commands);
+        try canvas.emitWidgetLayout(&builder, layout, .{});
+        const display_list = builder.displayList();
+
+        try testing.expect(display_list.commands.len < commands.len);
+        try testing.expect(displayListTextBytes(display_list) <= canvas.max_display_list_text_bytes);
+        try testing.expect(displayListTextBytes(display_list) < source.len);
+    }
 }
 
 test "wrapped code chunks long logical lines before span layout can truncate them" {

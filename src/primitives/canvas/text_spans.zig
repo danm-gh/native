@@ -146,9 +146,7 @@ pub fn textSpanFontId(span: TextSpan, typography: token_model.TypographyTokens) 
 }
 
 pub fn textSpanColorValue(colors: token_model.ColorTokens, ref: TextSpanColor) Color {
-    return switch (ref) {
-        inline else => |tag| @field(colors, @tagName(tag)),
-    };
+    return token_model.colorTokenValue(colors, ref);
 }
 
 pub fn textSpanScale(span: TextSpan) f32 {

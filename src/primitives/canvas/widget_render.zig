@@ -170,6 +170,35 @@ pub fn widgetLayoutRootBounds(layout: anytype) ?geometry.RectF {
     return bounds;
 }
 
+/// The rectangular part of one layout node that can reach the surface:
+/// window bounds intersected with every clipping ancestor. Code paragraphs
+/// use this during emission so a retained 64 KiB source charges only its
+/// visible runs to the display-list budgets.
+fn widgetLayoutNodeVisibleBounds(layout: anytype, node_index: usize, bounds: geometry.RectF) ?geometry.RectF {
+    if (node_index >= layout.nodes.len) return null;
+    var clipped = bounds.normalized();
+    if (widgetLayoutRootBounds(layout)) |root_bounds| {
+        clipped = geometry.RectF.intersection(clipped, root_bounds.normalized());
+        if (clipped.isEmpty()) return null;
+    }
+
+    var current = node_index;
+    while (true) {
+        // Hoisted anchored surfaces escape ancestor clips, but the window
+        // intersection above still bounds their display-list demand.
+        if (widget_tree.widgetIsAnchored(layout.nodes[current].widget)) break;
+        const parent_index = layout.nodes[current].parent_index orelse break;
+        if (parent_index >= layout.nodes.len) return null;
+        const parent = layout.nodes[parent_index];
+        if (widgetClipsContent(parent.widget)) {
+            clipped = geometry.RectF.intersection(clipped, parent.frame.normalized());
+            if (clipped.isEmpty()) return null;
+        }
+        current = parent_index;
+    }
+    return clipped;
+}
+
 /// The late z-pass for anchored floating surfaces: they are skipped by
 /// the in-tree walk above and emitted here LAST, at the top level, so no
 /// ancestor scroll/clip region crops them (window-clipped, not
@@ -579,7 +608,15 @@ fn emitWidgetLayoutNodeContent(
         .resizable, .panel => try widget_render_surfaces.emitPanelWidgetChrome(builder, paint_widget, tokens),
         .popover => try widget_render_surfaces.emitPopoverWidgetChrome(builder, paint_widget, tokens),
         .menu_surface, .dropdown_menu => try widget_render_surfaces.emitMenuSurfaceWidgetChrome(builder, paint_widget, tokens),
-        .text => try emitTextWidget(builder, paint_widget, tokens),
+        .text => {
+            if (isSyntaxCodeParagraph(paint_widget)) {
+                if (widgetLayoutNodeVisibleBounds(layout, node_index, paint_widget.frame)) |visible_bounds| {
+                    try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, visible_bounds);
+                }
+            } else {
+                try emitTextWidget(builder, paint_widget, tokens);
+            }
+        },
         .icon => try emitIconWidget(builder, paint_widget, tokens),
         .image => try emitImageWidget(builder, paint_widget),
         .media_surface => try emitMediaSurfaceWidget(builder, paint_widget),
@@ -1106,6 +1143,155 @@ fn emitTextSpansWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) 
             });
             decoration_ordinal += 1;
         }
+    }
+}
+
+fn isSyntaxColor(color: text_spans_model.TextSpanColor) bool {
+    return switch (color) {
+        .syntax_plain,
+        .syntax_comment,
+        .syntax_keyword,
+        .syntax_literal,
+        .syntax_function,
+        .syntax_property,
+        .syntax_constant,
+        => true,
+        else => false,
+    };
+}
+
+/// `Ui.code` lowers to ordinary text widgets whose spans are all monospace
+/// syntax-token runs. Keep that marker structural instead of adding another
+/// public widget kind solely for an emission optimization.
+fn isSyntaxCodeParagraph(widget: Widget) bool {
+    if (widget.kind != .text or widget.spans.len == 0) return false;
+    for (widget.spans) |span| {
+        if (!span.monospace or
+            !isSyntaxColor(span.color orelse return false) or
+            span.background != null or
+            span.underline or
+            span.strikethrough or
+            span.link.len != 0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+const VisibleCodeRun = struct {
+    text: []const u8,
+    x: f32,
+};
+
+fn utf8ScalarCount(text: []const u8) usize {
+    var count: usize = 0;
+    var cursor: usize = 0;
+    while (cursor < text.len) : (count += 1) {
+        const sequence_len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch 1;
+        cursor += @min(sequence_len, text.len - cursor);
+    }
+    return count;
+}
+
+fn utf8ByteOffsetForScalar(text: []const u8, scalar_index: usize) usize {
+    var advanced: usize = 0;
+    var cursor: usize = 0;
+    while (cursor < text.len and advanced < scalar_index) : (advanced += 1) {
+        const sequence_len = std.unicode.utf8ByteSequenceLength(text[cursor]) catch 1;
+        cursor += @min(sequence_len, text.len - cursor);
+    }
+    return cursor;
+}
+
+fn clampedScalarIndex(value: f32, scalar_count: usize, round_up: bool) usize {
+    if (!std.math.isFinite(value) or value <= 0) return 0;
+    const limit: f32 = @floatFromInt(scalar_count);
+    if (value >= limit) return scalar_count;
+    return @intFromFloat(if (round_up) @ceil(value) else @floor(value));
+}
+
+/// Crop a partially visible fixed-pitch run without changing its retained
+/// text or layout width. One scalar of guard ink on each side absorbs pixel
+/// snapping and provider rounding at the clip edge.
+fn visibleCodeRun(run: text_spans_model.TextSpanRun, absolute_x: f32, visible_bounds: geometry.RectF) ?VisibleCodeRun {
+    if (run.text.len == 0) return null;
+    if (run.width <= 0 or
+        (absolute_x >= visible_bounds.x and absolute_x + run.width <= visible_bounds.maxX()))
+    {
+        return .{ .text = run.text, .x = absolute_x };
+    }
+
+    const scalar_count = utf8ScalarCount(run.text);
+    if (scalar_count == 0) return null;
+    const advance = run.width / @as(f32, @floatFromInt(scalar_count));
+    if (!std.math.isFinite(advance) or advance <= 0) {
+        return .{ .text = run.text, .x = absolute_x };
+    }
+
+    var first = clampedScalarIndex((visible_bounds.x - absolute_x) / advance, scalar_count, false);
+    var last = clampedScalarIndex((visible_bounds.maxX() - absolute_x) / advance, scalar_count, true);
+    first = first -| 1;
+    last = @min(scalar_count, last +| 1);
+    if (first >= last) return null;
+
+    const byte_start = utf8ByteOffsetForScalar(run.text, first);
+    const byte_end = utf8ByteOffsetForScalar(run.text, last);
+    return .{
+        .text = run.text[byte_start..byte_end],
+        .x = absolute_x + advance * @as(f32, @floatFromInt(first)),
+    };
+}
+
+/// Viewport-aware code emission: the full source remains in retained
+/// paragraph widgets for layout, selection, copy, and scroll extents, while
+/// the display list contains only line runs that intersect the current
+/// window/scroll clip. Long no-wrap runs are sliced horizontally as well.
+fn emitVisibleCodeTextSpansWidget(
+    builder: *Builder,
+    widget: Widget,
+    tokens: DesignTokens,
+    visible_bounds: geometry.RectF,
+) Error!void {
+    const content = widget.frame.inset(widget.layout.padding);
+    var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
+    const layout = text_spans_model.layoutTextSpans(
+        widget.spans,
+        widget_metrics.widgetTextSpanLayoutOptions(widget, tokens, textWrapMaxWidth(tokens, content.width)),
+        &runs,
+    );
+
+    try emitStaticTextSelection(builder, widget, tokens);
+    for (layout.runs, 0..) |run, ordinal| {
+        if (run.text.len == 0) continue;
+        const local_bounds = text_spans_model.textSpanRunBounds(layout, run);
+        const run_bounds = geometry.RectF.init(
+            content.x + local_bounds.x,
+            content.y + local_bounds.y,
+            local_bounds.width,
+            local_bounds.height,
+        );
+        if (!run_bounds.intersects(visible_bounds)) continue;
+
+        const visible = visibleCodeRun(run, content.x + run.x, visible_bounds) orelse continue;
+        const span = widget.spans[run.span_index];
+        const color = text_spans_model.textSpanColorValue(tokens.colors, span.color.?);
+        const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(visible.x, content.y + run.baseline));
+        try builder.drawText(.{
+            .id = textSpanRunCommandId(widget.id, ordinal),
+            .font_id = run.font_id,
+            .size = run.size,
+            .origin = origin,
+            .color = color,
+            .text = visible.text,
+            .text_layout = .{
+                .max_width = 0,
+                .line_height = layout.line_height,
+                .wrap = .none,
+                .alignment = .start,
+                .measure = tokens.text_measure,
+            },
+        });
     }
 }
 

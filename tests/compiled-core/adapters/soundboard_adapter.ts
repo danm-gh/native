@@ -140,11 +140,18 @@ export function searchText(model: Model): Uint8Array {
 export function visibleAlbums(model: Model): AlbumCell[] {
   return h_visibleAlbums(model) as AlbumCell[];
 }
+// Classed helper returns prove at this boundary: bind the helper's
+// value, range-guard it (an ordered comparison excludes NaN), and state
+// wholeness with Math.trunc at the return.
 export function gridColumns(model: Model): number {
-  return h_gridColumns(model);
+  const count = h_gridColumns(model);
+  if (count >= -9007199254740991 && count <= 9007199254740991) return Math.trunc(count);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function gridShownColumns(model: Model): number {
-  return h_gridShownColumns(model);
+  const count = h_gridShownColumns(model);
+  if (count >= -9007199254740991 && count <= 9007199254740991) return Math.trunc(count);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function gridTileWidth(model: Model): number {
   return h_gridTileWidth(model);
@@ -165,16 +172,24 @@ export function openAlbumRows(model: Model): TrackRow[] {
   return h_openAlbumRows(model) as TrackRow[];
 }
 export function visibleAlbumCount(model: Model): number {
-  return h_visibleAlbumCount(model);
+  const count = h_visibleAlbumCount(model);
+  if (count >= -9007199254740991 && count <= 9007199254740991) return Math.trunc(count);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function albumCount(model: Model): number {
-  return h_albumCount(model);
+  const count = h_albumCount(model);
+  if (count >= -9007199254740991 && count <= 9007199254740991) return Math.trunc(count);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function visibleTrackCount(model: Model): number {
-  return h_visibleTrackCount(model);
+  const count = h_visibleTrackCount(model);
+  if (count >= -9007199254740991 && count <= 9007199254740991) return Math.trunc(count);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function trackCount(model: Model): number {
-  return h_trackCount(model);
+  const count = h_trackCount(model);
+  if (count >= -9007199254740991 && count <= 9007199254740991) return Math.trunc(count);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function noAlbumMatches(model: Model): boolean {
   return h_noAlbumMatches(model);
@@ -186,7 +201,9 @@ export function noMatchesLabel(model: Model): Uint8Array {
   return h_noMatchesLabel(model);
 }
 export function openAlbumId(model: Model): number {
-  return h_openAlbumId(model);
+  const id = h_openAlbumId(model);
+  if (id >= -9007199254740991 && id <= 9007199254740991) return Math.trunc(id);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function openAlbumTitle(model: Model): Uint8Array {
   return h_openAlbumTitle(model);
@@ -195,7 +212,9 @@ export function openAlbumInitials(model: Model): Uint8Array {
   return h_openAlbumInitials(model);
 }
 export function openAlbumCover(model: Model): number {
-  return h_openAlbumCover(model);
+  const cover = h_openAlbumCover(model);
+  if (cover >= -9007199254740991 && cover <= 9007199254740991) return Math.trunc(cover);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function openAlbumMeta(model: Model): Uint8Array {
   return h_openAlbumMeta(model);
@@ -213,7 +232,9 @@ export function nowPlayingInitials(model: Model): Uint8Array {
   return h_nowPlayingInitials(model);
 }
 export function nowPlayingCover(model: Model): number {
-  return h_nowPlayingCover(model);
+  const cover = h_nowPlayingCover(model);
+  if (cover >= -9007199254740991 && cover <= 9007199254740991) return Math.trunc(cover);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function playPauseIcon(model: Model): Uint8Array {
   return h_playPauseIcon(model);
@@ -228,7 +249,9 @@ export function durationLabel(model: Model): Uint8Array {
   return h_durationLabel(model);
 }
 export function queueLen(model: Model): number {
-  return h_queueLen(model);
+  const len = h_queueLen(model);
+  if (len >= -9007199254740991 && len <= 9007199254740991) return Math.trunc(len);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 
 // The designated shape-flag exports: init returns the bare model

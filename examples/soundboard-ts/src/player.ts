@@ -18,12 +18,15 @@ export function nowTrack(model: Model): TrackInfo | undefined {
 /// rule), a fresh attempt clears the degraded notices, and the stale-event
 /// guard goes up until the new playback's `loaded` lands.
 export function startedModel(model: Model, trackId: number, durationMs: number): Model {
+  // The id and duration land in i64-classed slots: range-guard each (an
+  // ordered comparison excludes NaN) and state wholeness with Math.trunc
+  // at the write.
   return {
     ...model,
-    now: trackId,
+    now: trackId >= 0 && trackId <= 9007199254740991 ? Math.trunc(trackId) : 0,
     playing: true,
     elapsedMs: 0,
-    nowDurationMs: durationMs,
+    nowDurationMs: durationMs >= 0 && durationMs <= 9007199254740991 ? Math.trunc(durationMs) : 0,
     platformDurationMs: 0,
     loadPending: true,
     buffering: false,
@@ -93,9 +96,15 @@ export function localOnly(model: Model): boolean {
 /// Mirror the platform's duration report, and adopt it as the displayed
 /// total ONLY when the manifest gave none (the duration rule).
 export function adoptPlatformDuration(model: Model, reportedMs: number): Model {
-  if (reportedMs === 0) return model;
-  if (model.nowDurationMs === 0) {
-    return { ...model, platformDurationMs: reportedMs, nowDurationMs: reportedMs };
+  // The report lands in i64-classed slots: range-guard it (an ordered
+  // comparison excludes NaN) and state wholeness with Math.trunc at the
+  // write; a zero or unprovable report changes nothing.
+  if (reportedMs > 0 && reportedMs <= 9007199254740991) {
+    const reported = Math.trunc(reportedMs);
+    if (model.nowDurationMs === 0) {
+      return { ...model, platformDurationMs: reported, nowDurationMs: reported };
+    }
+    return { ...model, platformDurationMs: reported };
   }
-  return { ...model, platformDurationMs: reportedMs };
+  return model;
 }

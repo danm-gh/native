@@ -259,9 +259,14 @@ export function trackRow(model: Model, track: TrackInfo, withAlbum: boolean): Tr
       subtitle = dashJoin(album.artist, album.title);
     }
   }
+  // Ids and numbers land in i64-classed slots: bind, range-guard (an
+  // ordered comparison excludes NaN), and state wholeness with
+  // Math.trunc at the write.
+  const trackId = track.id;
+  const trackNumber = track.number;
   return {
-    id: track.id,
-    number: track.number,
+    id: trackId >= 0 && trackId <= 9007199254740991 ? Math.trunc(trackId) : 0,
+    number: trackNumber >= 0 && trackNumber <= 9007199254740991 ? Math.trunc(trackNumber) : 0,
     title: track.title,
     subtitle: subtitle,
     duration: formatMs(track.durationMs),

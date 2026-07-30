@@ -345,6 +345,18 @@ pub fn attributeDoc(name: []const u8) ?[]const u8 {
     return findDoc(&if_attr_docs, name);
 }
 
+/// Resolve an attribute in its element context before falling back to the
+/// shared registry. Composite elements intentionally reuse names such as
+/// `source`, so context-free lookup cannot choose the right authoring help.
+pub fn attributeDocForElement(element: []const u8, name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, element, "markdown")) {
+        if (findDoc(&markdown_attr_docs, name)) |doc| return doc;
+    } else if (std.mem.eql(u8, element, "code")) {
+        if (findDoc(&code_attr_docs, name)) |doc| return doc;
+    }
+    return attributeDoc(name);
+}
+
 fn findDoc(list: []const Doc, name: []const u8) ?[]const u8 {
     for (list) |entry| {
         if (std.mem.eql(u8, entry.name, name)) return entry.doc;

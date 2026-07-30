@@ -1061,11 +1061,19 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
 
         /// Click-drag selection inside one static `.text` widget. Press
         /// collapses at the hit offset, drag extends from the press
-        /// anchor. Cross-widget selection is out of scope: the selection
-        /// model is the widget's own `text_selection` — there is no
-        /// document model ordering text across widgets to extend into.
+        /// anchor. Ordinary widgets remain independently selectable;
+        /// bounded code paragraphs opt into one ordered source group.
         fn applyCanvasWidgetStaticTextPointer(self: *RuntimeView, index: usize, target_id: canvas.ObjectId, point: geometry.PointF, extend: bool) anyerror!?geometry.RectF {
             const widget = self.widget_layout_nodes[index].widget;
+            if (widget.static_text_group_id != 0) {
+                return applyCanvasWidgetStaticTextGroupPointer(
+                    self,
+                    target_id,
+                    point,
+                    extend,
+                    widget.static_text_group_id,
+                );
+            }
             if (extend and self.canvas_widget_selected_text_id != target_id) return null;
             const current_selection = widget.text_selection orelse canvas.TextSelection.collapsed(0);
             const anchor: ?usize = if (extend) current_selection.anchor else null;
@@ -1074,9 +1082,128 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
 
             self.widget_layout_nodes[index].widget.text_selection = next_selection;
             self.canvas_widget_selected_text_id = target_id;
+            self.canvas_widget_selected_text_group_id = 0;
+            self.canvas_widget_selected_text_group_anchor = 0;
+            self.canvas_widget_selected_text_group_focus = 0;
             try self.refreshCanvasWidgetSemantics();
             self.widget_revision += 1;
             return self.canvasWidgetDirtyBounds(index, widget.frame);
+        }
+
+        fn applyCanvasWidgetStaticTextGroupPointer(
+            self: *RuntimeView,
+            target_id: canvas.ObjectId,
+            point: geometry.PointF,
+            extend: bool,
+            group_id: canvas.ObjectId,
+        ) anyerror!?geometry.RectF {
+            if (extend and
+                (self.canvas_widget_selected_text_id != target_id or
+                    self.canvas_widget_selected_text_group_id != group_id))
+            {
+                return null;
+            }
+
+            var point_index: ?usize = null;
+            var point_offset: usize = 0;
+            var best_distance = std.math.inf(f32);
+            const layout = self.widgetLayoutTree();
+            for (self.widget_layout_nodes[0..self.widget_layout_node_count], 0..) |node, candidate_index| {
+                const candidate = node.widget;
+                if (candidate.static_text_group_id != group_id or
+                    canvasWidgetLayoutNodeHidden(layout, candidate_index) or
+                    !canvas.widgetStaticTextSelectable(candidate))
+                {
+                    continue;
+                }
+                const frame = candidate.frame.normalized();
+                const dx = if (point.x < frame.x)
+                    frame.x - point.x
+                else if (point.x > frame.maxX())
+                    point.x - frame.maxX()
+                else
+                    0;
+                const dy = if (point.y < frame.y)
+                    frame.y - point.y
+                else if (point.y > frame.maxY())
+                    point.y - frame.maxY()
+                else
+                    0;
+                const distance = dx * dx + dy * dy;
+                if (distance > best_distance) continue;
+                const local = canvas.staticTextSelectionForWidgetPoint(
+                    candidate,
+                    point,
+                    null,
+                    self.widget_tokens,
+                ) orelse continue;
+                if (distance == best_distance and point_index != null) continue;
+                best_distance = distance;
+                point_index = candidate_index;
+                point_offset = local.focus;
+            }
+            const selected_index = point_index orelse return null;
+            const selected_widget = self.widget_layout_nodes[selected_index].widget;
+            const focus = selected_widget.static_text_group_offset + point_offset;
+            const anchor = if (extend)
+                self.canvas_widget_selected_text_group_anchor
+            else
+                focus;
+            const selection_start = @min(anchor, focus);
+            const selection_end = @max(anchor, focus);
+
+            var dirty: ?geometry.RectF = null;
+            var changed = false;
+            for (self.widget_layout_nodes[0..self.widget_layout_node_count], 0..) |*node, candidate_index| {
+                const candidate = node.widget;
+                if (candidate.static_text_group_id != group_id) {
+                    continue;
+                }
+                const source_start = candidate.static_text_group_offset;
+                const source_end = source_start +| candidate.text.len;
+                const next_selection: ?canvas.TextSelection = if (selection_start == selection_end)
+                    if (candidate_index == selected_index)
+                        canvas.TextSelection.collapsed(point_offset)
+                    else
+                        null
+                else if (@max(selection_start, source_start) < @min(selection_end, source_end))
+                    .{
+                        .anchor = @max(selection_start, source_start) - source_start,
+                        .focus = @min(selection_end, source_end) - source_start,
+                    }
+                else
+                    null;
+                const current_selection = candidate.text_selection;
+                const same = if (current_selection) |current|
+                    if (next_selection) |next|
+                        canvasTextSelectionsEqual(current, next)
+                    else
+                        false
+                else
+                    next_selection == null;
+                if (same) continue;
+                node.widget.text_selection = next_selection;
+                changed = true;
+                dirty = unionRects(
+                    dirty,
+                    self.canvasWidgetDirtyBounds(candidate_index, candidate.frame),
+                );
+            }
+            if (!changed and
+                self.canvas_widget_selected_text_id == target_id and
+                self.canvas_widget_selected_text_group_anchor == anchor and
+                self.canvas_widget_selected_text_group_focus == focus)
+            {
+                return null;
+            }
+
+            self.canvas_widget_selected_text_id = target_id;
+            self.canvas_widget_selected_text_group_id = group_id;
+            self.canvas_widget_selected_text_group_anchor = anchor;
+            self.canvas_widget_selected_text_group_focus = focus;
+            try self.refreshCanvasWidgetSemantics();
+            self.widget_revision += 1;
+            return dirty;
         }
 
         /// Drop the view's static text selection (pointer pressed
@@ -1086,6 +1213,31 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             const id = self.canvas_widget_selected_text_id;
             if (id == 0) return null;
             self.canvas_widget_selected_text_id = 0;
+            const group_id = self.canvas_widget_selected_text_group_id;
+            self.canvas_widget_selected_text_group_id = 0;
+            self.canvas_widget_selected_text_group_anchor = 0;
+            self.canvas_widget_selected_text_group_focus = 0;
+            if (group_id != 0) {
+                var dirty: ?geometry.RectF = null;
+                var changed = false;
+                for (self.widget_layout_nodes[0..self.widget_layout_node_count], 0..) |*node, index| {
+                    if (node.widget.static_text_group_id != group_id or
+                        node.widget.text_selection == null)
+                    {
+                        continue;
+                    }
+                    node.widget.text_selection = null;
+                    changed = true;
+                    dirty = unionRects(
+                        dirty,
+                        self.canvasWidgetDirtyBounds(index, node.widget.frame),
+                    );
+                }
+                if (!changed) return null;
+                try self.refreshCanvasWidgetSemantics();
+                self.widget_revision += 1;
+                return dirty;
+            }
             const index = self.canvasWidgetNodeIndexById(id) orelse return null;
             if (self.widget_layout_nodes[index].widget.text_selection == null) return null;
             self.widget_layout_nodes[index].widget.text_selection = null;
@@ -1098,7 +1250,7 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
         /// focused editable widget's selection or focused terminal's
         /// emulator selection when it has one, else the view's static
         /// text selection.
-        pub fn canvasWidgetCopyText(self: *const RuntimeView) ?[]const u8 {
+        pub fn canvasWidgetCopyText(self: *const RuntimeView, group_buffer: []u8) ?[]const u8 {
             if (self.canvas_widget_focused_id != 0) {
                 if (self.canvasWidgetNodeIndexById(self.canvas_widget_focused_id)) |index| {
                     const focused = self.widget_layout_nodes[index].widget;
@@ -1111,9 +1263,47 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 if (canvasWidgetSelectionSliceById(self, self.canvas_widget_focused_id, true)) |slice| return slice;
             }
             if (self.canvas_widget_selected_text_id != 0) {
+                if (self.canvas_widget_selected_text_group_id != 0) {
+                    return canvasWidgetStaticTextGroupCopy(self, group_buffer);
+                }
                 if (canvasWidgetSelectionSliceById(self, self.canvas_widget_selected_text_id, false)) |slice| return slice;
             }
             return null;
+        }
+
+        fn canvasWidgetStaticTextGroupCopy(self: *const RuntimeView, output: []u8) ?[]const u8 {
+            const group_id = self.canvas_widget_selected_text_group_id;
+            if (group_id == 0) return null;
+            const start = @min(
+                self.canvas_widget_selected_text_group_anchor,
+                self.canvas_widget_selected_text_group_focus,
+            );
+            const end = @max(
+                self.canvas_widget_selected_text_group_anchor,
+                self.canvas_widget_selected_text_group_focus,
+            );
+            if (start >= end or end - start > output.len) return null;
+            var copied: usize = 0;
+            for (self.widget_layout_nodes[0..self.widget_layout_node_count]) |node| {
+                const widget = node.widget;
+                if (widget.static_text_group_id != group_id) {
+                    continue;
+                }
+                const source_start = widget.static_text_group_offset;
+                const source_end = source_start +| widget.text.len;
+                const copy_start = @max(start, source_start);
+                const copy_end = @min(end, source_end);
+                if (copy_start >= copy_end) continue;
+                const destination_start = copy_start - start;
+                const len = copy_end - copy_start;
+                @memcpy(
+                    output[destination_start..][0..len],
+                    widget.text[copy_start - source_start ..][0..len],
+                );
+                copied += len;
+            }
+            if (copied != end - start) return null;
+            return output[0 .. end - start];
         }
 
         fn canvasWidgetSelectionSliceById(self: *const RuntimeView, id: canvas.ObjectId, editable_only: bool) ?[]const u8 {

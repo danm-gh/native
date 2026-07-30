@@ -936,6 +936,11 @@ pub fn Ui(comptime Msg: type) type {
             on_terminal: ?TerminalMsgFn = null,
             context_menu: []const ContextMenuItem = &.{},
             nodes: []const Node = &.{},
+            /// Internal source fingerprint for adjacent code paragraphs
+            /// that form one selectable document. `finalizeNode` combines
+            /// it with their parent structural id into a source-sensitive
+            /// group identity.
+            static_text_group_fingerprint: u64 = 0,
             /// Markup authoring provenance, stamped by the markup engines
             /// when the builder carries a `provenance_sink`; null for
             /// builder-authored (Zig) nodes, which is itself the honest
@@ -2428,6 +2433,7 @@ pub fn Ui(comptime Msg: type) type {
                 self.failed = true;
                 return self.column(.{}, .{});
             };
+            const group_fingerprint = std.hash.Wyhash.hash(0, source) | 1;
             var chunk_index: usize = 0;
             var chunk_start: usize = 0;
             while (chunk_start < source.len) {
@@ -2440,6 +2446,8 @@ pub fn Ui(comptime Msg: type) type {
                     state,
                     budget,
                 );
+                chunks[chunk_index].static_text_group_fingerprint = group_fingerprint;
+                chunks[chunk_index].widget.static_text_group_offset = chunk_start;
                 chunk_index += 1;
                 chunk_start = chunk_end;
             }
@@ -2559,7 +2567,9 @@ pub fn Ui(comptime Msg: type) type {
             canvas.text_spans.max_text_span_lines_per_paragraph;
 
         fn codeLineCount(source: []const u8) usize {
-            return std.mem.count(u8, source, "\n") + 1;
+            if (source.len == 0) return 1;
+            return std.mem.count(u8, source, "\n") +
+                @intFromBool(source[source.len - 1] != '\n');
         }
 
         fn decimalDigits(value: usize) usize {
@@ -3179,6 +3189,13 @@ pub fn Ui(comptime Msg: type) type {
                 structuralId(global_id_seed, widget.kind, global_key)
             else
                 structuralId(parent_id, widget.kind, key);
+            if (node.static_text_group_fingerprint != 0) {
+                widget.static_text_group_id = structuralId(
+                    parent_id,
+                    .stack,
+                    .{ .int = node.static_text_group_fingerprint },
+                );
+            }
             // Provenance record (write-back's read half): this is the one
             // point where the markup-stamped source and the just-assigned
             // structural id are both in hand. Explicit keys (loop item

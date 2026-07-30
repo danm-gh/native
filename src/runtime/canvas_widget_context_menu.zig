@@ -30,6 +30,7 @@ const geometry = @import("geometry");
 const canvas = @import("canvas");
 const platform = @import("../platform/root.zig");
 const runtime_api = @import("api.zig");
+const canvas_limits = @import("canvas_limits.zig");
 const canvas_widget_runtime = @import("canvas_widget_runtime.zig");
 const runtime_canvas_widget_events = @import("canvas_widget_events.zig");
 
@@ -225,7 +226,15 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
 
                 // 4. Static text with a live selection: Copy only.
                 const selected_id = self.views[index].canvas_widget_selected_text_id;
-                if (selected_id != 0 and selected_id == target.id) {
+                const selected_group_target = if (selected_id != 0 and selected_id != target.id) blk: {
+                    const selected_index = self.views[index].canvasWidgetNodeIndexById(selected_id) orelse break :blk false;
+                    const target_index = self.views[index].canvasWidgetNodeIndexById(target.id) orelse break :blk false;
+                    const selected_widget = self.views[index].widget_layout_nodes[selected_index].widget;
+                    const target_widget = self.views[index].widget_layout_nodes[target_index].widget;
+                    break :blk selected_widget.static_text_group_id != 0 and
+                        selected_widget.static_text_group_id == target_widget.static_text_group_id;
+                } else false;
+                if (selected_id != 0 and (selected_id == target.id or selected_group_target)) {
                     if (!has_presenter) return;
                     items[0] = .{ .id = default_item_copy, .label = "Copy" };
                     _ = try showMenu(self, app, index, .{
@@ -389,7 +398,8 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                 .terminal => try applyDefaultTerminalAction(self, app, index, pending.target_id, event.item_id),
                 .static_copy => {
                     if (event.item_id != default_item_copy) return;
-                    const text = self.views[index].canvasWidgetCopyText() orelse return;
+                    var group_buffer: [canvas_limits.max_canvas_widget_text_bytes_per_view]u8 = undefined;
+                    const text = self.views[index].canvasWidgetCopyText(&group_buffer) orelse return;
                     self.writeClipboard(text) catch return;
                 },
             }

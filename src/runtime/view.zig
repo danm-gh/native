@@ -688,10 +688,14 @@ pub const RuntimeView = struct {
     /// updateCanvasWidgetInteractionFromPointer), so a pointer gliding
     /// within one sample repaints nothing.
     canvas_widget_hover_point: ?geometry.PointF = null,
-    /// The static `.text` widget owning the view's active click-drag
-    /// selection (0 = none). One static selection per view; starting a
-    /// selection elsewhere (or pressing anywhere else) clears it.
+    /// The static `.text` widget where the view's active click-drag
+    /// selection began (0 = none). Ordinary paragraphs keep their range
+    /// on that widget. Bounded code paragraphs additionally share the
+    /// global group range below so one gesture can cross internal chunks.
     canvas_widget_selected_text_id: canvas.ObjectId = 0,
+    canvas_widget_selected_text_group_id: canvas.ObjectId = 0,
+    canvas_widget_selected_text_group_anchor: usize = 0,
+    canvas_widget_selected_text_group_focus: usize = 0,
     /// Multi-click chain state for the double/triple-click text
     /// gestures. The runtime derives a click count from consecutive
     /// primary pointer-downs (recorded timestamps within the interval,

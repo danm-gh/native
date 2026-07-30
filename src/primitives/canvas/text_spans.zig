@@ -182,7 +182,13 @@ pub fn textSpansIntrinsicWidth(spans: []const TextSpan, options: TextSpanLayoutO
         var start: usize = 0;
         var cursor: usize = 0;
         while (cursor < span.text.len) {
-            if (span.text[cursor] == '\n') {
+            if (span.text[cursor] == '\r') {
+                // CR is presentation-free. In CRLF source the following
+                // LF owns the hard break; a bare CR remains selectable and
+                // copyable without painting a fallback control glyph.
+                width += measureSpanSlice(span, span.text[start..cursor], options);
+                start = cursor + 1;
+            } else if (span.text[cursor] == '\n') {
                 width += measureSpanSlice(span, span.text[start..cursor], options);
                 max_width = @max(max_width, width);
                 width = 0;
@@ -204,6 +210,22 @@ pub fn textSpansWrappedHeight(spans: []const TextSpan, options: TextSpanLayoutOp
 }
 
 fn measureSpanSlice(span: TextSpan, slice: []const u8, options: TextSpanLayoutOptions) f32 {
+    if (slice.len == 0) return 0;
+    const first_cr = std.mem.indexOfScalar(u8, slice, '\r') orelse
+        return measureSpanSliceExact(span, slice, options);
+    var width: f32 = 0;
+    var start: usize = 0;
+    var cr: ?usize = first_cr;
+    while (cr) |index| {
+        width += measureSpanSliceExact(span, slice[start..index], options);
+        start = index + 1;
+        cr = std.mem.indexOfScalarPos(u8, slice, start, '\r');
+    }
+    width += measureSpanSliceExact(span, slice[start..], options);
+    return width;
+}
+
+fn measureSpanSliceExact(span: TextSpan, slice: []const u8, options: TextSpanLayoutOptions) f32 {
     if (slice.len == 0) return 0;
     const font_id = textSpanFontId(span, options.typography);
     const size = textSpanSize(span, options.size);
@@ -625,6 +647,13 @@ fn layoutTextSpansUncached(
             offset += 1;
             continue;
         }
+        if (byte == '\r') {
+            // Preserve the byte in paragraph offsets/clipboard data but do
+            // not place it in a glyph run. LF remains the single hard-line
+            // delimiter for both Unix and Windows source.
+            offset += 1;
+            continue;
+        }
         if (isSpanBreakByte(byte)) {
             const end = spanWhitespaceEnd(text, offset);
             // Prose consumes whitespace at a fresh line start, but a
@@ -1025,7 +1054,7 @@ fn spanWhitespaceEnd(text: []const u8, start: usize) usize {
 
 fn spanWordEnd(text: []const u8, start: usize) usize {
     var end = start;
-    while (end < text.len and text[end] != '\n' and !isSpanBreakByte(text[end])) end += 1;
+    while (end < text.len and text[end] != '\n' and text[end] != '\r' and !isSpanBreakByte(text[end])) end += 1;
     return end;
 }
 
@@ -1162,7 +1191,7 @@ pub fn textSpanOffsetForPoint(
 fn paragraphOnlyUnpaintedWhitespace(paragraph: []const u8) bool {
     if (paragraph.len == 0) return false;
     for (paragraph) |byte| {
-        if (byte != '\n' and !isSpanBreakByte(byte)) return false;
+        if (byte != '\n' and byte != '\r' and !isSpanBreakByte(byte)) return false;
     }
     return true;
 }
@@ -1216,6 +1245,7 @@ fn textSpanParagraphRangeWidth(
 fn textSpanLineSourceEnd(paragraph: []const u8, painted_end: usize) usize {
     var end = @min(painted_end, paragraph.len);
     while (end < paragraph.len and isSpanBreakByte(paragraph[end])) end += 1;
+    if (end < paragraph.len and paragraph[end] == '\r') end += 1;
     if (end < paragraph.len and paragraph[end] == '\n') end += 1;
     return end;
 }

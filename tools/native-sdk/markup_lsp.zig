@@ -633,7 +633,11 @@ pub fn hoverAt(text: []const u8, offset: usize) ?HoverResult {
     }
     const open = lastTagOpen(text, start) orelse return null;
     if (insideQuotes(text, open, start)) return null;
-    const doc = attributeDoc(word) orelse return null;
+    var element_start = open + 1;
+    if (element_start < text.len and text[element_start] == '/') element_start += 1;
+    var element_end = element_start;
+    while (element_end < text.len and isNameChar(text[element_end])) element_end += 1;
+    const doc = attributeDocForElement(text[element_start..element_end], word) orelse return null;
     return .{ .name = word, .doc = doc };
 }
 
@@ -663,6 +667,7 @@ pub const reactions_attr_docs = markup_docs.reactions_attr_docs;
 pub const event_docs = markup_docs.event_docs;
 pub const elementDoc = markup_docs.elementDoc;
 pub const attributeDoc = markup_docs.attributeDoc;
+pub const attributeDocForElement = markup_docs.attributeDocForElement;
 
 // ------------------------------------------------------------------ tests
 
@@ -913,6 +918,18 @@ test "hoverAt resolves element and attribute docs" {
     // Closing tag name hovers like the opening one.
     const closing = hoverAt(source, 45).?;
     try testing.expectEqualStrings("button", closing.name);
+}
+
+test "hoverAt resolves reused attributes in their element context" {
+    const source = "<markdown source=\"{docs}\"/><code source=\"{snippet}\"/>";
+    const markdown_source = std.mem.indexOf(u8, source, "source").?;
+    const code_open = std.mem.indexOf(u8, source, "<code").?;
+    const code_source = std.mem.indexOfPos(u8, source, code_open, "source").?;
+
+    const markdown_hover = hoverAt(source, markdown_source).?;
+    try testing.expect(std.mem.startsWith(u8, markdown_hover.doc, "markdown:"));
+    const code_hover = hoverAt(source, code_source).?;
+    try testing.expect(std.mem.startsWith(u8, code_hover.doc, "code:"));
 }
 
 test "doc tables cover every known element, attribute, and event" {

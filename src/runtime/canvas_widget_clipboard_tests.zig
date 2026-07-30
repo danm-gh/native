@@ -501,6 +501,90 @@ test "static text drag selection highlights, copies, and clears" {
     try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_up, 211, 75));
 }
 
+test "grouped code paragraphs select and copy across chunk boundaries" {
+    var app_state: ClipboardTestApp = .{};
+    const app = app_state.app();
+    const harness = try createClipboardHarness(app);
+    defer harness.destroy(std.testing.allocator);
+
+    const first = "alpha\r\n";
+    const second = "beta";
+    const first_spans = [_]canvas.TextSpan{.{
+        .text = first,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const second_spans = [_]canvas.TextSpan{.{
+        .text = second,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const group_id: canvas.ObjectId = 77;
+    const children = [_]canvas.Widget{
+        .{
+            .id = 2,
+            .kind = .text,
+            .frame = geometry.RectF.init(12, 16, 220, 40),
+            .text = first,
+            .spans = &first_spans,
+            .static_text_group_id = group_id,
+            .static_text_group_offset = 0,
+        },
+        .{
+            .id = 3,
+            .kind = .text,
+            .frame = geometry.RectF.init(12, 64, 220, 40),
+            .text = second,
+            .spans = &second_spans,
+            .static_text_group_id = group_id,
+            .static_text_group_offset = first.len,
+        },
+        .{
+            .id = 4,
+            .kind = .button,
+            .frame = geometry.RectF.init(12, 128, 100, 32),
+            .text = "Clear",
+        },
+    };
+    var nodes: [4]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &children },
+        geometry.RectF.init(0, 0, 320, 200),
+        &nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_down, 13, 18));
+    try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_drag, 231, 103));
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(
+        canvas.TextSelection{ .anchor = 0, .focus = first.len },
+        retained.findById(2).?.widget.text_selection.?,
+    );
+    try std.testing.expectEqualDeep(
+        canvas.TextSelection{ .anchor = 0, .focus = second.len },
+        retained.findById(3).?.widget.text_selection.?,
+    );
+
+    try harness.runtime.dispatchPlatformEvent(app, keyInput("c", cmd));
+    var clipboard_buffer: [32]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "alpha\r\nbeta",
+        try harness.runtime.readClipboard(&clipboard_buffer),
+    );
+
+    // Every selected chunk survives an unchanged rebuild, and pressing
+    // elsewhere clears the whole grouped highlight.
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expect(retained.findById(2).?.widget.text_selection != null);
+    try std.testing.expect(retained.findById(3).?.widget.text_selection != null);
+    try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_down, 20, 140));
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expect(retained.findById(2).?.widget.text_selection == null);
+    try std.testing.expect(retained.findById(3).?.widget.text_selection == null);
+}
+
 test "span paragraph drag selection copies the concatenated bytes" {
     var app_state: ClipboardTestApp = .{};
     const app = app_state.app();

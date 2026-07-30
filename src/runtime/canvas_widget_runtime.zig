@@ -149,6 +149,7 @@ pub const CanvasWidgetTextReconcileEntry = struct {
     id: canvas.ObjectId = 0,
     kind: canvas.WidgetKind = .text_field,
     text: []const u8 = &.{},
+    static_text_group_id: canvas.ObjectId = 0,
     source_text_len: usize = 0,
     source_text_hash: u64 = 0,
     /// The selection declared by the previous SOURCE tree, distinct from
@@ -604,6 +605,7 @@ pub fn collectCanvasWidgetTextReconcileEntries(
             .id = node.widget.id,
             .kind = node.widget.kind,
             .text = text_storage[text_range.start..text_range.end],
+            .static_text_group_id = node.widget.static_text_group_id,
             .source_text_len = source_text.len,
             .source_text_hash = source_text.hash,
             .source_text_selection = if (source_entry) |entry| entry.text_selection else null,
@@ -783,9 +785,12 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
 
     if (copy.widget.kind == .text) {
         // Static text selections survive rebuilds only while the source
-        // text is byte-identical; changed text drops the selection.
+        // text and its optional grouped document are byte-identical.
         if (previous.firstWithKind(copy.widget.id, copy.widget.kind)) |entry| {
-            if (copy.widget.text_selection == null and std.mem.eql(u8, entry.text, copy.widget.text)) {
+            if (copy.widget.text_selection == null and
+                std.mem.eql(u8, entry.text, copy.widget.text) and
+                entry.static_text_group_id == copy.widget.static_text_group_id)
+            {
                 copy.widget.text_selection = entry.text_selection;
             }
         }

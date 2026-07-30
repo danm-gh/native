@@ -10,6 +10,7 @@ const std = @import("std");
 const text_spans = @import("text_spans.zig");
 
 pub const TextSpan = text_spans.TextSpan;
+const max_html_tag_contexts: usize = 32;
 
 pub const Language = enum {
     plain,
@@ -38,6 +39,13 @@ pub const HighlightState = struct {
     /// inside `{...}`; their closing `>` must return to that expression,
     /// not erase it.
     html_tag_expression_base: usize = 0,
+    /// JSX permits an element inside an attribute expression before the
+    /// enclosing opening tag has closed. Preserve those enclosing tag
+    /// contexts so the inner `>` resumes attribute highlighting instead
+    /// of ending it.
+    html_tag_context_bases: [max_html_tag_contexts]usize = [_]usize{0} ** max_html_tag_contexts,
+    html_tag_context_expect_names: [max_html_tag_contexts]bool = [_]bool{false} ** max_html_tag_contexts,
+    html_tag_context_len: usize = 0,
     /// Last non-whitespace source byte from the preceding presentation
     /// chunk. JSX comparison/tag disambiguation needs its left context even
     /// when a bounded paragraph happens to split immediately before `<`.
@@ -48,6 +56,24 @@ pub const HighlightState = struct {
     preprocessor_line: bool = false,
     string_quote: ?u8 = null,
 };
+
+fn pushHtmlTagContext(state: *HighlightState) void {
+    if (!state.html_in_tag or state.html_tag_context_len >= max_html_tag_contexts) return;
+    const index = state.html_tag_context_len;
+    state.html_tag_context_bases[index] = state.html_tag_expression_base;
+    state.html_tag_context_expect_names[index] = state.html_expect_tag_name;
+    state.html_tag_context_len += 1;
+}
+
+fn restoreHtmlTagContext(state: *HighlightState) bool {
+    if (state.html_tag_context_len == 0) return false;
+    state.html_tag_context_len -= 1;
+    const index = state.html_tag_context_len;
+    state.html_in_tag = true;
+    state.html_tag_expression_base = state.html_tag_context_bases[index];
+    state.html_expect_tag_name = state.html_tag_context_expect_names[index];
+    return true;
+}
 
 /// Resolve a public language name. Unknown names remain plain instead of
 /// guessing a grammar and coloring ordinary identifiers as keywords.
@@ -459,6 +485,7 @@ pub fn highlightWithState(
         {
             index += 1;
             if (index < source.len and source[index] == '/') index += 1;
+            pushHtmlTagContext(state);
             state.html_in_tag = true;
             state.html_expect_tag_name = true;
             state.html_tag_expression_base = state.html_expression_depth;
@@ -469,8 +496,10 @@ pub fn highlightWithState(
             rest[0] == '>')
         {
             index += 1;
-            state.html_in_tag = false;
-            state.html_expect_tag_name = false;
+            if (!restoreHtmlTagContext(state)) {
+                state.html_in_tag = false;
+                state.html_expect_tag_name = false;
+            }
             color = .syntax_plain;
         } else if (language == .html and rest[0] == '{') {
             index += 1;

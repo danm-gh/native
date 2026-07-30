@@ -870,6 +870,12 @@ pub const Widget = struct {
     /// Stamped only by `Ui.code`; there is no generic builder/markup
     /// channel for turning arbitrary paragraphs into numbered code.
     code_line_number_digits: u8 = 0,
+    /// Nonzero on bounded paragraph chunks that together present one
+    /// selectable source-code document. The group id is the structural id
+    /// of their internal parent; offsets order each chunk's exact source
+    /// bytes without duplicating the full source in retained storage.
+    static_text_group_id: ObjectId = 0,
+    static_text_group_offset: usize = 0,
     /// What a single-line text run does with content that does not fit
     /// its frame (`ElementOptions.overflow` / markup `overflow=` on
     /// text leaves): `.ellipsis` (default) elides the tail behind a

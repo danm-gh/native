@@ -124,6 +124,28 @@ test "JSX relational less-than preserves expression state and nested tags" {
     try testing.expect(!chunked_state.html_in_tag);
 }
 
+test "nested JSX attribute tags restore the enclosing opening tag" {
+    const source = "<Comp render={<Inner />} disabled=\"yes\">";
+    var state: code_model.HighlightState = .{};
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlightWithState(source, .html, &storage, &state);
+
+    try testing.expectEqual(
+        canvas.TextSpanColor.syntax_literal,
+        spanWithFragment(spans, "Inner").?.color.?,
+    );
+    try testing.expectEqual(
+        canvas.TextSpanColor.syntax_function,
+        spanWithFragment(spans, "disabled").?.color.?,
+    );
+    try testing.expectEqual(
+        canvas.TextSpanColor.syntax_literal,
+        spanWithFragment(spans, "\"yes\"").?.color.?,
+    );
+    try testing.expectEqual(@as(usize, 0), state.html_tag_context_len);
+    try testing.expect(!state.html_in_tag);
+}
+
 test "HTML and JSX lexer state survives logical line boundaries" {
     var state: code_model.HighlightState = .{};
     var first_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
@@ -514,6 +536,27 @@ test "empty code retains the exact source text" {
     try testing.expectEqual(@as(u8, 1), paragraph.code_line_number_digits);
 }
 
+test "code preserves CRLF source without painting carriage returns" {
+    const source = "const alpha = 1;\r\nconst beta = 2;";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{ .language = .zig }, source));
+
+    const paragraph = findByText(view.root, source).?;
+    var runs: [text_spans.max_text_span_runs_per_paragraph]text_spans.TextSpanRun = undefined;
+    const layout = text_spans.layoutTextSpans(
+        paragraph.spans,
+        .{ .size = 14, .max_width = 10_000 },
+        &runs,
+    );
+    try testing.expectEqual(@as(usize, 2), layout.line_count);
+    for (layout.runs) |run| {
+        try testing.expect(std.mem.indexOfScalar(u8, run.text, '\r') == null);
+    }
+    try testing.expectEqualStrings(source, paragraph.text);
+}
+
 test "large code blocks split at the paragraph line capacity without hiding their tail" {
     var source: std.ArrayListUnmanaged(u8) = .empty;
     defer source.deinit(testing.allocator);
@@ -526,6 +569,20 @@ test "large code blocks split at the paragraph line capacity without hiding thei
     const view = try ui.finalize(ui.code(.{ .language = .plain }, source.items));
 
     try testing.expect(countByKind(view.root, .text) > 1);
+    const chunk_column = view.root.children[0];
+    var expected_offset: usize = 0;
+    var group_id: ?canvas.ObjectId = null;
+    for (chunk_column.children) |chunk| {
+        try testing.expect(chunk.static_text_group_id != 0);
+        try testing.expectEqual(expected_offset, chunk.static_text_group_offset);
+        if (group_id) |expected| {
+            try testing.expectEqual(expected, chunk.static_text_group_id);
+        } else {
+            group_id = chunk.static_text_group_id;
+        }
+        expected_offset += chunk.text.len;
+    }
+    try testing.expectEqual(source.items.len, expected_offset);
     try expectCompleteSpanLayouts(view.root);
     var recovered: std.ArrayListUnmanaged(u8) = .empty;
     defer recovered.deinit(testing.allocator);
@@ -793,9 +850,9 @@ test "wrapped code keeps an over-capacity logical line in one paragraph" {
 test "numbered code keeps one selectable source paragraph at its limit" {
     var source: std.ArrayListUnmanaged(u8) = .empty;
     defer source.deinit(testing.allocator);
-    for (0..Ui.max_code_lines) |index| {
-        if (index > 0) try source.append(testing.allocator, '\n');
+    for (0..Ui.max_code_lines) |_| {
         try source.append(testing.allocator, 'x');
+        try source.append(testing.allocator, '\n');
     }
 
     var numbered_arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -821,7 +878,6 @@ test "numbered code keeps one selectable source paragraph at its limit" {
         findByText(numbered.root, source.items).?.code_line_number_digits,
     );
 
-    try source.append(testing.allocator, '\n');
     try source.append(testing.allocator, 'x');
     var fallback_arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer fallback_arena.deinit();

@@ -103,6 +103,12 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             }
             if (raw.kind != .text) return press_target;
             if (self.views[view_index].canvas_widget_selected_text_id != raw.id) return press_target;
+            if (self.views[view_index].canvas_widget_selected_text_group_id != 0 and
+                self.views[view_index].canvas_widget_selected_text_group_anchor !=
+                    self.views[view_index].canvas_widget_selected_text_group_focus)
+            {
+                return null;
+            }
             const node = self.views[view_index].widgetLayoutTree().findById(raw.id) orelse return press_target;
             const selection = node.widget.text_selection orelse return press_target;
             if (selection.isCollapsed(node.widget.text.len)) return press_target;
@@ -1952,7 +1958,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
 
             switch (action) {
                 .copy => {
-                    const text = self.views[index].canvasWidgetCopyText() orelse return;
+                    const text = self.views[index].canvasWidgetCopyText(paste_buffer) orelse return;
                     self.writeClipboard(text) catch return;
                 },
                 .cut => {

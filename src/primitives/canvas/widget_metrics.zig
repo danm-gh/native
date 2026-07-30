@@ -1,6 +1,8 @@
 const std = @import("std");
+const geometry = @import("geometry");
 const token_model = @import("tokens.zig");
 const widget_model = @import("widgets.zig");
+const text_model = @import("text.zig");
 const text_spans_model = @import("text_spans.zig");
 
 const Density = token_model.Density;
@@ -108,6 +110,33 @@ pub fn widgetTextSpanLayoutOptions(widget: Widget, tokens: DesignTokens, max_wid
         .typography = tokens.typography,
         .measure = tokens.text_measure,
     };
+}
+
+/// Width reserved before a numbered code paragraph: the largest muted
+/// monospace marker plus the component's fixed marker-to-source gap.
+/// Marker bytes never live in `Widget.text`; paint selects them from a
+/// compile-time table.
+pub fn widgetCodeLineNumberGutterWidth(widget: Widget, tokens: DesignTokens) f32 {
+    if (widget.code_line_number_digits == 0) return 0;
+    const zeros: [20]u8 = @splat('0');
+    const digits = @min(@as(usize, widget.code_line_number_digits), zeros.len);
+    return text_model.measureTextWidthForFont(
+        tokens.text_measure,
+        tokens.typography.mono_font_id,
+        zeros[0..digits],
+        widgetBodyTextSize(widget, tokens),
+    ) + 12;
+}
+
+/// Span paragraph content after authored padding and the engine-owned code
+/// gutter. Layout, painting, hit mapping, and selection all use this exact
+/// frame so numbered source stays one coherent text model.
+pub fn widgetTextSpanContentFrame(widget: Widget, tokens: DesignTokens) geometry.RectF {
+    var content = widget.frame.inset(widget.layout.padding);
+    const gutter = @min(content.width, widgetCodeLineNumberGutterWidth(widget, tokens));
+    content.x += gutter;
+    content.width -= gutter;
+    return content;
 }
 
 /// The ONE control height register — buttons, inputs, and select

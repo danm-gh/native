@@ -2311,12 +2311,9 @@ pub fn Ui(comptime Msg: type) type {
         /// Markdown fences lower through this same component.
         pub fn code(self: *Self, options: CodeOptions, source: []const u8) Node {
             const line_count = codeLineCount(source);
-            const numbered = options.line_numbers and
-                line_count <= max_code_lines and
-                numberedCodeNodeCount(source, options.wrap) <= max_numbered_code_nodes and
-                numberedCodeSpansFit(source, options.language, options.wrap);
+            const numbered = options.line_numbers and line_count <= max_code_lines;
             const content = if (numbered)
-                self.numberedCodeLines(source, options.language, options.wrap)
+                self.numberedCodeParagraph(source, options.language, options.wrap, line_count)
             else
                 self.codeParagraphChunks(source, options.language, options.wrap);
             const body = if (options.wrap)
@@ -2360,37 +2357,21 @@ pub fn Ui(comptime Msg: type) type {
             return surface;
         }
 
-        /// Line-number mode creates one paired row per logical source
-        /// line, so a wrapped line grows beside its number while the next
-        /// number remains attached to the next logical line.
-        fn numberedCodeLines(self: *Self, source: []const u8, language: code_model.Language, wrap: bool) Node {
-            const count = codeLineCount(source);
-            const digits = decimalDigits(count);
-            const rows = self.arena.alloc(Node, count) catch {
-                self.failed = true;
-                return self.column(.{}, .{});
-            };
-            var highlight_state: code_model.HighlightState = .{};
-            var lines = std.mem.splitScalar(u8, source, '\n');
-            var index: usize = 0;
-            while (lines.next()) |line| : (index += 1) {
-                const code_line = self.codeParagraphChunksWithState(line, language, wrap, 1, &highlight_state);
-                // Numbered lines are handed to the highlighter without
-                // their newline separator. End line-scoped lexer state
-                // explicitly; block comments, strings, and HTML/JSX
-                // structure intentionally continue into the next line.
-                endCodeLineHighlight(&highlight_state);
-                const number = self.codeLineNumber(index + 1, digits);
-                const marker = self.paragraph(.{
-                    .style_tokens = .{ .foreground = .text_muted },
-                }, &.{.{ .text = number, .monospace = true }});
-                const marker_top = self.column(.{}, .{marker});
-                rows[index] = self.row(.{ .gap = 12, .cross = .stretch }, .{
-                    marker_top,
-                    code_line,
-                });
-            }
-            return self.column(.{}, .{rows});
+        /// Keep numbered source in one selectable paragraph. The renderer
+        /// owns its muted gutter, so marker digits never enter retained
+        /// text or clipboard bytes; it derives each marker baseline from
+        /// this paragraph's real wrapped layout.
+        fn numberedCodeParagraph(
+            self: *Self,
+            source: []const u8,
+            language: code_model.Language,
+            wrap: bool,
+            line_count: usize,
+        ) Node {
+            var state: code_model.HighlightState = .{};
+            var source_node = self.codeParagraphWithState(source, language, wrap, 1, &state, null);
+            source_node.widget.code_line_number_digits = @intCast(decimalDigits(line_count));
+            return source_node;
         }
 
         /// Keep ordinary code in one text widget so static selection and copy
@@ -2500,94 +2481,15 @@ pub fn Ui(comptime Msg: type) type {
             return self.paragraph(.{ .wrap = wrap, .grow = grow }, highlighted);
         }
 
-        fn codeLineNumber(self: *Self, number: usize, digits: usize) []const u8 {
-            const result = self.arena.alloc(u8, digits) catch {
-                self.failed = true;
-                return "";
-            };
-            @memset(result, ' ');
-            var value = number;
-            var cursor = digits;
-            while (cursor > 0 and value > 0) {
-                cursor -= 1;
-                result[cursor] = '0' + @as(u8, @intCast(value % 10));
-                value /= 10;
-            }
-            return result;
-        }
-
-        /// Upper bound for allocating one numbered row per logical code line.
-        /// A numbered line costs four retained widgets; 128 keeps a maximal
-        /// gutter near half of the 1024-node per-view budget. Code highlighting
-        /// likewise uses at most half of the 1024-span budget. Sources that
-        /// exceed either component share keep all text but omit the gutter.
+        /// Upper bound for formatting renderer-owned logical-line markers.
+        /// Sources above it keep every source byte and omit the gutter.
         pub const max_code_lines: usize = 128;
-        const max_numbered_code_nodes: usize = 520;
         pub const max_code_spans_per_surface: usize = 512;
 
         const CodeSpanBudget = struct {
             used: usize = 0,
             remaining_chunks: usize,
         };
-
-        fn numberedCodeNodeCount(source: []const u8, wrap: bool) usize {
-            // Panel + content column, plus the horizontal-scroll wrapper,
-            // track, and scrollbar spacer in no-wrap mode.
-            var count: usize = if (wrap) 2 else 5;
-            var lines = std.mem.splitScalar(u8, source, '\n');
-            while (lines.next()) |line| {
-                const chunks = codeParagraphChunkCount(line, wrap);
-                // Row + marker column + marker text + one code text.
-                count += 4;
-                // A split code line replaces that one text with a column
-                // holding every chunk: net growth is `chunks`.
-                if (chunks > 1) count += chunks;
-                if (count > max_numbered_code_nodes) return count;
-            }
-            return count;
-        }
-
-        fn numberedCodeSpansFit(source: []const u8, language: code_model.Language, wrap: bool) bool {
-            var count: usize = 0;
-            var state: code_model.HighlightState = .{};
-            var lines = std.mem.splitScalar(u8, source, '\n');
-            while (lines.next()) |line| {
-                count += highlightedCodeSpanCount(line, language, wrap, &state);
-                endCodeLineHighlight(&state);
-                // Every numbered row also retains one marker span.
-                count += 1;
-                if (count > max_code_spans_per_surface) return false;
-            }
-            return true;
-        }
-
-        fn highlightedCodeSpanCount(
-            source: []const u8,
-            language: code_model.Language,
-            wrap: bool,
-            state: *code_model.HighlightState,
-        ) usize {
-            if (source.len == 0) return 1;
-            var storage: [canvas.text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
-            var count: usize = 0;
-            var chunk_start: usize = 0;
-            while (chunk_start < source.len) {
-                const chunk_end = codeParagraphChunkEnd(source, chunk_start, wrap);
-                count += code_model.highlightWithState(
-                    source[chunk_start..chunk_end],
-                    language,
-                    &storage,
-                    state,
-                ).len;
-                chunk_start = chunk_end;
-            }
-            return count;
-        }
-
-        fn endCodeLineHighlight(state: *code_model.HighlightState) void {
-            state.line_comment = false;
-            state.preprocessor_line = false;
-        }
 
         fn codeParagraphChunkCount(source: []const u8, wrap: bool) usize {
             if (source.len == 0) return 1;

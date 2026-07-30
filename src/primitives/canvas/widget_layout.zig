@@ -42,6 +42,7 @@ const widgetControlInset = widget_metrics.widgetControlInset;
 const widgetSizedDensityValue = widget_metrics.widgetSizedDensityValue;
 const densityValue = widget_metrics.densityValue;
 const widgetControlHeight = widget_metrics.widgetControlHeight;
+const widgetCodeLineNumberGutterWidth = widget_metrics.widgetCodeLineNumberGutterWidth;
 const widgetStatusBarPadding = widget_render.widgetStatusBarPadding;
 const controlStrokeWidth = widget_render.controlStrokeWidth;
 const componentControlVisualTokens = widget_render.componentControlVisualTokens;
@@ -825,7 +826,11 @@ fn rowChildWidth(row: Widget, available_width: f32, index: usize, tokens: Design
 fn spanParagraphHeight(widget: Widget, width: f32, tokens: DesignTokens) f32 {
     return text_spans_model.textSpansWrappedHeight(
         widget.spans,
-        widgetTextSpanLayoutOptions(widget, tokens, width),
+        widgetTextSpanLayoutOptions(
+            widget,
+            tokens,
+            @max(0, width - widgetCodeLineNumberGutterWidth(widget, tokens)),
+        ),
     );
 }
 
@@ -836,7 +841,7 @@ fn spanParagraphHeight(widget: Widget, width: f32, tokens: DesignTokens) f32 {
 /// an empty frame (never hit-testable).
 fn layoutTextSpanLinkChildren(
     widget: Widget,
-    content: geometry.RectF,
+    raw_content: geometry.RectF,
     parent_index: usize,
     depth: usize,
     output: []WidgetLayoutNode,
@@ -845,6 +850,12 @@ fn layoutTextSpanLinkChildren(
 ) Error!void {
     if (widget.children.len == 0) return;
     if (widget.spans.len == 0) return;
+    var content = raw_content;
+    if (widget.kind == .text) {
+        const gutter = @min(content.width, widgetCodeLineNumberGutterWidth(widget, tokens));
+        content.x += gutter;
+        content.width -= gutter;
+    }
 
     var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
     const layout = text_spans_model.layoutTextSpans(
@@ -1798,7 +1809,8 @@ fn intrinsicTextWidgetSize(widget: Widget, tokens: DesignTokens, text_size: f32)
     if (widgetIsSpanParagraph(widget)) {
         const options = widgetTextSpanLayoutOptions(widget, tokens, 0);
         return geometry.SizeF.init(
-            text_spans_model.textSpansIntrinsicWidth(widget.spans, options),
+            text_spans_model.textSpansIntrinsicWidth(widget.spans, options) +
+                widgetCodeLineNumberGutterWidth(widget, tokens),
             widgetLineHeight(text_size * text_spans_model.textSpansMaxScale(widget.spans)),
         );
     }

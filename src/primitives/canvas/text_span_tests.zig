@@ -635,6 +635,43 @@ test "span selection maps points to paragraph offsets and back to rects" {
     try testing.expectEqual(@as(usize, 0), text_spans.textSpanSelectionRects(paragraph, &spans, options, .{ .start = 3, .end = 3 }, &rects).len);
 }
 
+test "span hit mapping and selection page beyond the first 128 visual lines" {
+    const paragraph = "a" ** 140;
+    const spans = [_]TextSpan{.{ .text = paragraph, .monospace = true }};
+    const options = text_spans.TextSpanLayoutOptions{ .size = 14, .max_width = 1 };
+    var runs: [text_spans.max_text_span_runs_per_paragraph]TextSpanRun = undefined;
+    const layout_result = layout(&spans, options, &runs);
+    try testing.expectEqual(@as(usize, 140), layout_result.line_count);
+
+    const later_line: usize = 132;
+    const y = (@as(f32, @floatFromInt(later_line)) + 0.5) * layout_result.line_height;
+    try testing.expectEqual(
+        later_line,
+        text_spans.textSpanOffsetForPoint(
+            paragraph,
+            &spans,
+            options,
+            geometry.PointF.init(-1, y),
+        ).?,
+    );
+
+    var rects: [16]canvas.TextSelectionRect = undefined;
+    const selection = text_spans.textSpanSelectionRects(
+        paragraph,
+        &spans,
+        options,
+        .{ .start = later_line, .end = paragraph.len },
+        &rects,
+    );
+    try testing.expectEqual(paragraph.len - later_line, selection.len);
+    try testing.expectEqual(later_line, selection[0].range.start);
+    try testing.expectEqual(
+        @as(f32, @floatFromInt(later_line)) * layout_result.line_height,
+        selection[0].rect.y,
+    );
+    try testing.expectEqual(paragraph.len, selection[selection.len - 1].range.end);
+}
+
 test "span selection degrades to unsupported when spans alias other storage" {
     const paragraph = "Hello world";
     // Spans that do NOT slice into `paragraph` (a stack copy: the bytes

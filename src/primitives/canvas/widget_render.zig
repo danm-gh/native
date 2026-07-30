@@ -170,33 +170,62 @@ pub fn widgetLayoutRootBounds(layout: anytype) ?geometry.RectF {
     return bounds;
 }
 
-/// The rectangular part of one layout node that can reach the surface:
-/// window bounds intersected with every clipping ancestor. Code paragraphs
-/// use this during emission so a retained 64 KiB source charges only its
-/// visible runs to the display-list budgets.
+/// Accumulated transform active while `node_index` emits. Anchored surfaces
+/// are hoisted into the late top-level pass, so their original ancestors do
+/// not contribute transforms there.
+fn widgetLayoutNodeEmissionTransform(layout: anytype, node_index: usize) ?Affine {
+    if (node_index >= layout.nodes.len) return null;
+    var indices: [widget_layout.max_widget_depth]usize = undefined;
+    var len: usize = 0;
+    var current: ?usize = node_index;
+    while (current) |index| {
+        if (index >= layout.nodes.len or len >= indices.len) return null;
+        indices[len] = index;
+        len += 1;
+        if (widget_tree.widgetIsAnchored(layout.nodes[index].widget)) break;
+        current = layout.nodes[index].parent_index;
+    }
+
+    var transform = Affine.identity();
+    while (len > 0) {
+        len -= 1;
+        transform = transform.multiply(widgetTransform(layout.nodes[indices[len]].widget));
+    }
+    return transform;
+}
+
+/// The rectangular part of one layout node that can reach the surface,
+/// returned in the node's untransformed layout coordinate space. Window
+/// and ancestor clip bounds are intersected in device space, then mapped
+/// back through the exact transform stack active at node emission. Code
+/// paragraphs use this so transformed sources neither disappear nor lose
+/// later pages while still charging only visible runs to display budgets.
 fn widgetLayoutNodeVisibleBounds(layout: anytype, node_index: usize, bounds: geometry.RectF) ?geometry.RectF {
     if (node_index >= layout.nodes.len) return null;
-    var clipped = bounds.normalized();
-    if (widgetLayoutRootBounds(layout)) |root_bounds| {
-        clipped = geometry.RectF.intersection(clipped, root_bounds.normalized());
-        if (clipped.isEmpty()) return null;
-    }
+    var device_visible = (widgetLayoutRootBounds(layout) orelse return null).normalized();
 
     var current = node_index;
     while (true) {
-        // Hoisted anchored surfaces escape ancestor clips, but the window
-        // intersection above still bounds their display-list demand.
+        // Hoisted anchored surfaces escape their original ancestor clips,
+        // but the window intersection still bounds display-list demand.
         if (widget_tree.widgetIsAnchored(layout.nodes[current].widget)) break;
         const parent_index = layout.nodes[current].parent_index orelse break;
         if (parent_index >= layout.nodes.len) return null;
         const parent = layout.nodes[parent_index];
         if (widgetClipsContent(parent.widget)) {
-            clipped = geometry.RectF.intersection(clipped, parent.frame.normalized());
-            if (clipped.isEmpty()) return null;
+            const parent_transform = widgetLayoutNodeEmissionTransform(layout, parent_index) orelse return null;
+            const device_clip = parent_transform.transformRect(parent.frame.normalized());
+            device_visible = geometry.RectF.intersection(device_visible, device_clip);
+            if (device_visible.isEmpty()) return null;
         }
         current = parent_index;
     }
-    return clipped;
+
+    const transform = widgetLayoutNodeEmissionTransform(layout, node_index) orelse return null;
+    const inverse = transform.inverse() orelse return null;
+    const local_visible = inverse.transformRect(device_visible);
+    const clipped = geometry.RectF.intersection(bounds.normalized(), local_visible.normalized());
+    return if (clipped.isEmpty()) null else clipped;
 }
 
 /// The late z-pass for anchored floating surfaces: they are skipped by
@@ -1048,14 +1077,20 @@ fn emitStaticTextSelection(builder: *Builder, widget: Widget, tokens: DesignToke
 /// decorations get stable hashed command ids derived from the widget id
 /// and their ordinal, so retained diffing works across frames.
 fn emitTextSpansWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
-    const content = widget.frame.inset(widget.layout.padding);
+    const content = widget_metrics.widgetTextSpanContentFrame(widget, tokens);
+    const layout_options = widget_metrics.widgetTextSpanLayoutOptions(
+        widget,
+        tokens,
+        textWrapMaxWidth(tokens, content.width),
+    );
     var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
     const layout = text_spans_model.layoutTextSpans(
         widget.spans,
-        widget_metrics.widgetTextSpanLayoutOptions(widget, tokens, textWrapMaxWidth(tokens, content.width)),
+        layout_options,
         &runs,
     );
 
+    try emitCodeLineNumberGutter(builder, widget, tokens, content, widget.frame, layout_options);
     // Span background highlights (intra-line diff emphasis): one
     // full-line-height rect per run, the same geometry selection rects
     // use, painted before selection and glyphs. Edge-snapped rects of
@@ -1189,7 +1224,7 @@ fn emitVisibleCodeTextSpansWidget(
     tokens: DesignTokens,
     visible_bounds: geometry.RectF,
 ) Error!void {
-    const content = widget.frame.inset(widget.layout.padding);
+    const content = widget_metrics.widgetTextSpanContentFrame(widget, tokens);
     const layout_options = widget_metrics.widgetTextSpanLayoutOptions(
         widget,
         tokens,
@@ -1203,53 +1238,186 @@ fn emitVisibleCodeTextSpansWidget(
         @intFromFloat(@floor((visible_bounds.y - content.y) / line_height))
     else
         0;
+    const last_visible_line: usize = if (line_height > 0 and
+        std.math.isFinite(line_height) and
+        std.math.isFinite(visible_bounds.maxY() - content.y) and
+        visible_bounds.maxY() > content.y)
+        @intFromFloat(@floor((visible_bounds.maxY() - content.y) / line_height))
+    else
+        visible_line;
     var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
-    const layout = text_spans_model.layoutTextSpansFromLine(
-        widget.spans,
-        layout_options,
-        visible_line -| 1,
-        &runs,
-    );
 
+    try emitCodeLineNumberGutter(builder, widget, tokens, content, visible_bounds, layout_options);
     try emitStaticTextSelection(builder, widget, tokens);
-    for (layout.runs, 0..) |run, ordinal| {
-        if (run.text.len == 0) continue;
-        const local_bounds = text_spans_model.textSpanRunBounds(layout, run);
-        const run_bounds = geometry.RectF.init(
-            content.x + local_bounds.x,
-            content.y + local_bounds.y,
-            local_bounds.width,
-            local_bounds.height,
-        );
-        if (!run_bounds.intersects(visible_bounds)) continue;
-
-        const span = widget.spans[run.span_index];
-        const absolute_x = content.x + run.x;
-        const visible = text_spans_model.textSpanRunVisibleSlice(
-            span,
-            run,
+    var page_first_line = visible_line -| 1;
+    while (true) {
+        const layout = text_spans_model.layoutTextSpansFromLine(
+            widget.spans,
             layout_options,
-            visible_bounds.x - absolute_x,
-            visible_bounds.maxX() - absolute_x,
-        ) orelse continue;
-        const color = text_spans_model.textSpanColorValue(tokens.colors, span.color.?);
-        const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(absolute_x + visible.x, content.y + run.baseline));
-        try builder.drawText(.{
-            .id = textSpanRunCommandId(widget.id, ordinal),
-            .font_id = run.font_id,
-            .size = run.size,
-            .origin = origin,
-            .color = color,
-            .text = visible.text,
-            .text_layout = .{
-                .max_width = 0,
-                .line_height = layout.line_height,
-                .wrap = .none,
-                .alignment = .start,
-                .measure = tokens.text_measure,
-            },
-        });
+            page_first_line,
+            &runs,
+        );
+        for (layout.runs) |run| {
+            if (run.text.len == 0) continue;
+            const local_bounds = text_spans_model.textSpanRunBounds(layout, run);
+            const run_bounds = geometry.RectF.init(
+                content.x + local_bounds.x,
+                content.y + local_bounds.y,
+                local_bounds.width,
+                local_bounds.height,
+            );
+            if (!run_bounds.intersects(visible_bounds)) continue;
+
+            const span = widget.spans[run.span_index];
+            const absolute_x = content.x + run.x;
+            const visible = text_spans_model.textSpanRunVisibleSlice(
+                span,
+                run,
+                layout_options,
+                visible_bounds.x - absolute_x,
+                visible_bounds.maxX() - absolute_x,
+            ) orelse continue;
+            const color = text_spans_model.textSpanColorValue(tokens.colors, span.color.?);
+            const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(absolute_x + visible.x, content.y + run.baseline));
+            try builder.drawText(.{
+                .id = codeTextSpanRunCommandId(widget, run),
+                .font_id = run.font_id,
+                .size = run.size,
+                .origin = origin,
+                .color = color,
+                .text = visible.text,
+                .text_layout = .{
+                    .max_width = 0,
+                    .line_height = layout.line_height,
+                    .wrap = .none,
+                    .alignment = .start,
+                    .measure = tokens.text_measure,
+                },
+            });
+        }
+
+        const next_first_line = page_first_line +| text_spans_model.max_text_span_lines_per_paragraph;
+        if (next_first_line <= page_first_line or
+            next_first_line > last_visible_line or
+            next_first_line >= layout.line_count)
+        {
+            break;
+        }
+        page_first_line = next_first_line;
     }
+}
+
+/// Muted logical-line markers for one coherent code paragraph. Each
+/// logical line is measured independently with the same monospace layout
+/// options; summing those wrapped extents places the next marker on the
+/// exact first visual line occupied by its source.
+fn emitCodeLineNumberGutter(
+    builder: *Builder,
+    widget: Widget,
+    tokens: DesignTokens,
+    content: geometry.RectF,
+    visible_bounds: geometry.RectF,
+    layout_options: text_spans_model.TextSpanLayoutOptions,
+) Error!void {
+    if (widget.code_line_number_digits == 0) return;
+    const line_height = text_spans_model.textSpanLineHeight(widget.spans, layout_options);
+    if (line_height <= 0 or !std.math.isFinite(line_height)) return;
+
+    const padded = widget.frame.inset(widget.layout.padding);
+    const marker_width = @max(0, content.x - 12 - padded.x);
+    const digits = @min(@as(usize, widget.code_line_number_digits), 20);
+    var line_runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
+    var logical_line: usize = 1;
+    var visual_line: usize = 0;
+    var line_start: usize = 0;
+    while (line_start <= widget.text.len) : (logical_line += 1) {
+        // A terminal newline closes the preceding painted line; the span
+        // breaker intentionally does not reserve another empty visual line.
+        if (line_start == widget.text.len and widget.text.len > 0) break;
+        const newline = std.mem.indexOfScalarPos(u8, widget.text, line_start, '\n');
+        const line_end = newline orelse widget.text.len;
+        const baseline = content.y + layout_options.size +
+            @as(f32, @floatFromInt(visual_line)) * line_height;
+        const marker_bounds = geometry.RectF.init(
+            padded.x,
+            baseline - layout_options.size,
+            marker_width,
+            line_height,
+        );
+        if (marker_bounds.intersects(visible_bounds)) {
+            const marker_text = codeLineNumberText(logical_line, digits);
+            try builder.drawText(.{
+                .id = codeLineNumberCommandId(widget.id, logical_line),
+                .font_id = tokens.typography.mono_font_id,
+                .size = layout_options.size,
+                .origin = pixelSnapTextPoint(tokens, geometry.PointF.init(padded.x, baseline)),
+                .color = tokens.colors.text_muted,
+                .text = marker_text,
+                .text_layout = .{
+                    .max_width = marker_width,
+                    .line_height = line_height,
+                    .wrap = .none,
+                    .alignment = .end,
+                    .measure = tokens.text_measure,
+                },
+            });
+        }
+
+        const line = widget.text[line_start..line_end];
+        if (line.len == 0) {
+            visual_line += 1;
+        } else {
+            const line_spans = [_]text_spans_model.TextSpan{.{
+                .text = line,
+                .monospace = true,
+                .color = .syntax_plain,
+            }};
+            const line_layout = text_spans_model.layoutTextSpans(
+                &line_spans,
+                layout_options,
+                &line_runs,
+            );
+            visual_line += @max(1, line_layout.line_count);
+        }
+        if (newline == null) break;
+        line_start = line_end + 1;
+    }
+}
+
+const code_line_number_texts = blk: {
+    var values: [128][3]u8 = @splat(@splat(' '));
+    for (&values, 1..) |*text, line_number| {
+        var value = line_number;
+        var cursor: usize = text.len;
+        while (cursor > 0 and value > 0) {
+            cursor -= 1;
+            text[cursor] = '0' + @as(u8, @intCast(value % 10));
+            value /= 10;
+        }
+    }
+    break :blk values;
+};
+
+fn codeLineNumberText(logical_line: usize, digits: usize) []const u8 {
+    if (logical_line == 0 or logical_line > code_line_number_texts.len) return "";
+    const text = &code_line_number_texts[logical_line - 1];
+    const len = @min(digits, text.len);
+    return text[text.len - len ..];
+}
+
+fn codeTextSpanRunCommandId(widget: Widget, run: text_spans_model.TextSpanRun) ObjectId {
+    const range = text_spans_model.textSpanRunParagraphRange(widget.text, run) orelse
+        text_model.TextRange.init(0, run.text.len);
+    var hasher = std.hash.Wyhash.init(0x5eed_59a2_0000_0011);
+    hasher.update(std.mem.asBytes(&widget.id));
+    hasher.update(std.mem.asBytes(&run.line_index));
+    hasher.update(std.mem.asBytes(&range.start));
+    const value = hasher.final();
+    return if (value == 0) 1 else value;
+}
+
+fn codeLineNumberCommandId(widget_id: ObjectId, logical_line: usize) ObjectId {
+    return textSpanCommandId(0x5eed_59a2_0000_0012, widget_id, logical_line);
 }
 
 pub fn textSpanRunCommandId(widget_id: ObjectId, ordinal: usize) ObjectId {

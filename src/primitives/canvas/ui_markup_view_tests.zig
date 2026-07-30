@@ -1978,8 +1978,8 @@ test "code markup builds the reusable component with opt-in numbers and horizont
     try collectIds(hand_tree.root, &hand_ids, testing.allocator);
     try testing.expectEqualSlices(canvas.ObjectId, hand_ids.items, markup_ids.items);
     try testing.expectEqual(canvas.ScrollAxes.horizontal, findByKind(markup_tree.root, .scroll_view).?.scroll_axes);
-    try testing.expect(findByText(markup_tree.root, .text, "1") != null);
-    try testing.expect(findByText(markup_tree.root, .text, "3") != null);
+    const source = findByText(markup_tree.root, .text, model.snippet).?;
+    try testing.expectEqual(@as(u8, 1), source.code_line_number_digits);
     try testing.expectEqualStrings("Example code", markup_tree.root.semantics.label);
 }
 

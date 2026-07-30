@@ -265,6 +265,7 @@ fn widgetChange(previous: WidgetLayoutNode, next: WidgetLayoutNode, previous_ind
         previous.depth != next.depth or
         previous.parent_index != next.parent_index or
         !rectsEqual(previous.frame, next.frame) or
+        previous.widget.code_line_number_digits != next.widget.code_line_number_digits or
         !widgetLayoutStylesEqual(previous.widget.layout, next.widget.layout);
     const content_dirty = !std.mem.eql(u8, previous.widget.text, next.widget.text) or
         !textSpansEqual(previous.widget.spans, next.widget.spans) or

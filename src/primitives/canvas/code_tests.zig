@@ -449,10 +449,33 @@ test "line numbers are opt-in and stay paired with logical source lines" {
         .language = .plain,
         .line_numbers = true,
     }, "alpha\nbeta"));
-    try testing.expect(findByText(numbered.root, "1") != null);
-    try testing.expect(findByText(numbered.root, "2") != null);
-    try testing.expect(findByText(numbered.root, "alpha") != null);
-    try testing.expect(findByText(numbered.root, "beta") != null);
+    try testing.expectEqual(@as(usize, 1), countByKind(numbered.root, .text));
+    const numbered_text = findByText(numbered.root, "alpha\nbeta").?;
+    try testing.expectEqual(@as(u8, 1), numbered_text.code_line_number_digits);
+
+    var numbered_nodes: [8]canvas.WidgetLayoutNode = undefined;
+    const numbered_layout = try canvas.layoutWidgetTree(
+        numbered.root,
+        geometry.RectF.init(0, 0, 160, 80),
+        &numbered_nodes,
+    );
+    var numbered_commands: [32]canvas.CanvasCommand = undefined;
+    var numbered_builder = canvas.Builder.init(&numbered_commands);
+    try canvas.emitWidgetLayout(&numbered_builder, numbered_layout, .{});
+    var first_marker_y: ?f32 = null;
+    var second_marker_y: ?f32 = null;
+    for (numbered_builder.displayList().commands) |command| {
+        switch (command) {
+            .draw_text => |draw| {
+                if (std.mem.eql(u8, draw.text, "1")) first_marker_y = draw.origin.y;
+                if (std.mem.eql(u8, draw.text, "2")) second_marker_y = draw.origin.y;
+            },
+            else => {},
+        }
+    }
+    try testing.expect(first_marker_y != null);
+    try testing.expect(second_marker_y != null);
+    try testing.expect(second_marker_y.? > first_marker_y.?);
 
     var comment_arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer comment_arena.deinit();
@@ -461,8 +484,8 @@ test "line numbers are opt-in and stay paired with logical source lines" {
         .language = .zig,
         .line_numbers = true,
     }, "// first\nconst second = true;"));
-    const second = findByText(comments.root, "const second = true;").?;
-    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(second.spans, "const").?.color.?);
+    const comment_text = findByText(comments.root, "// first\nconst second = true;").?;
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(comment_text.spans, "const").?.color.?);
 }
 
 test "large code blocks split at the paragraph line capacity without hiding their tail" {
@@ -548,6 +571,102 @@ test "large code retains all source while emitting only visible text" {
     }
 }
 
+test "maximal one-line numbered code adds no retained gutter bytes" {
+    const source = try testing.allocator.alloc(u8, 65_536);
+    defer testing.allocator.free(source);
+    @memset(source, 'x');
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .plain,
+        .line_numbers = true,
+        .wrap = false,
+    }, source));
+
+    try testing.expectEqual(@as(usize, 1), countByKind(view.root, .text));
+    const paragraph = findByText(view.root, source).?;
+    try testing.expectEqual(@as(u8, 1), paragraph.code_line_number_digits);
+    var retained_text: std.ArrayListUnmanaged(u8) = .empty;
+    defer retained_text.deinit(testing.allocator);
+    try appendTextWidgets(view.root, &retained_text, testing.allocator);
+    try testing.expectEqual(source.len, retained_text.items.len);
+    try testing.expectEqualStrings(source, retained_text.items);
+}
+
+test "transformed code culling maps the window back into paragraph space" {
+    const source = ("x\n" ** 139) ++ "x";
+    const spans = [_]canvas.TextSpan{.{
+        .text = source,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const root_frame = geometry.RectF.init(0, 0, 100, 100);
+
+    const translated_frame = geometry.RectF.init(0, 200, 20, 2450);
+    const translated_nodes = [_]canvas.WidgetLayoutNode{
+        .{
+            .widget = .{ .id = 1, .kind = .stack },
+            .frame = root_frame,
+            .depth = 0,
+        },
+        .{
+            .widget = .{
+                .id = 2,
+                .kind = .text,
+                .text = source,
+                .spans = &spans,
+                .transform = canvas.Affine.translate(0, -200),
+            },
+            .frame = translated_frame,
+            .depth = 1,
+            .parent_index = 0,
+        },
+    };
+    var translated_commands: [64]canvas.CanvasCommand = undefined;
+    var translated_builder = canvas.Builder.init(&translated_commands);
+    try canvas.emitWidgetLayout(
+        &translated_builder,
+        canvas.WidgetLayoutTree{ .nodes = &translated_nodes },
+        .{},
+    );
+    try testing.expect(displayListTextBytes(translated_builder.displayList()) > 0);
+
+    const scaled_frame = geometry.RectF.init(0, 0, 20, 2450);
+    const scaled_nodes = [_]canvas.WidgetLayoutNode{
+        .{
+            .widget = .{ .id = 1, .kind = .stack },
+            .frame = root_frame,
+            .depth = 0,
+        },
+        .{
+            .widget = .{
+                .id = 2,
+                .kind = .text,
+                .text = source,
+                .spans = &spans,
+                .transform = canvas.Affine.scale(0.01, 0.01),
+            },
+            .frame = scaled_frame,
+            .depth = 1,
+            .parent_index = 0,
+        },
+    };
+    var scaled_commands: [160]canvas.CanvasCommand = undefined;
+    var scaled_builder = canvas.Builder.init(&scaled_commands);
+    try canvas.emitWidgetLayout(
+        &scaled_builder,
+        canvas.WidgetLayoutTree{ .nodes = &scaled_nodes },
+        .{},
+    );
+    var drawn_lines: usize = 0;
+    for (scaled_builder.displayList().commands) |command| {
+        if (command == .draw_text) drawn_lines += 1;
+    }
+    try testing.expectEqual(@as(usize, 140), drawn_lines);
+}
+
 test "wrapped code keeps an over-capacity logical line in one paragraph" {
     var source: std.ArrayListUnmanaged(u8) = .empty;
     defer source.deinit(testing.allocator);
@@ -578,7 +697,7 @@ test "wrapped code keeps an over-capacity logical line in one paragraph" {
     try testing.expectEqualStrings(source.items, recovered.items);
 }
 
-test "numbered code stays below the retained widget node budget at its limit" {
+test "numbered code keeps one selectable source paragraph at its limit" {
     var source: std.ArrayListUnmanaged(u8) = .empty;
     defer source.deinit(testing.allocator);
     for (0..Ui.max_code_lines) |index| {
@@ -600,11 +719,13 @@ test "numbered code stays below the retained widget node budget at its limit" {
         geometry.RectF.init(0, 0, 320, 4000),
         &numbered_nodes,
     );
-    // Panel + horizontal scroll + track + content column + scrollbar
-    // spacer, then four retained widgets per numbered source line.
+    // Panel + horizontal scroll + track + one source paragraph +
+    // scrollbar spacer. Gutter markers are renderer-owned decoration.
+    try testing.expectEqual(@as(usize, 5), numbered_layout.nodes.len);
+    try testing.expectEqual(@as(usize, 1), countByKind(numbered.root, .text));
     try testing.expectEqual(
-        @as(usize, Ui.max_code_lines * 4 + 5),
-        numbered_layout.nodes.len,
+        @as(u8, 3),
+        findByText(numbered.root, source.items).?.code_line_number_digits,
     );
 
     try source.append(testing.allocator, '\n');
@@ -616,7 +737,10 @@ test "numbered code stays below the retained widget node budget at its limit" {
         .line_numbers = true,
         .wrap = false,
     }, source.items));
-    try testing.expectEqual(@as(usize, 0), countByKind(fallback.root, .row));
+    try testing.expectEqual(
+        @as(u8, 0),
+        findByKind(fallback.root, .text).?.code_line_number_digits,
+    );
     var fallback_nodes: [1024]canvas.WidgetLayoutNode = undefined;
     _ = try canvas.layoutWidgetTree(
         fallback.root,
@@ -636,9 +760,13 @@ test "numbered code stays below the retained widget node budget at its limit" {
     const long_fallback = try long_ui.finalize(long_ui.code(.{
         .line_numbers = true,
     }, long_source.items));
-    // Long logical lines stay in one paragraph apiece, so the numbered
-    // form remains below the retained node budget.
-    try testing.expectEqual(@as(usize, 100), countByKind(long_fallback.root, .row));
+    // Long logical lines remain one selectable paragraph even when their
+    // visual wrapping crosses the painter's first retained line page.
+    try testing.expectEqual(@as(usize, 1), countByKind(long_fallback.root, .text));
+    try testing.expectEqual(
+        @as(u8, 3),
+        findByText(long_fallback.root, long_source.items).?.code_line_number_digits,
+    );
     var long_nodes: [1024]canvas.WidgetLayoutNode = undefined;
     _ = try canvas.layoutWidgetTree(
         long_fallback.root,
@@ -647,7 +775,7 @@ test "numbered code stays below the retained widget node budget at its limit" {
     );
 }
 
-test "token-dense numbered code falls back below the retained span budget" {
+test "token-dense numbered code preserves all source in one paragraph" {
     const dense_line = "const a0 = 0; const a1 = 1; const a2 = 2;";
     var source: std.ArrayListUnmanaged(u8) = .empty;
     defer source.deinit(testing.allocator);
@@ -664,10 +792,12 @@ test "token-dense numbered code falls back below the retained span budget" {
         .line_numbers = true,
     }, source.items));
 
-    // Numbered rendering would retain 1,027 spans: twelve highlighted
-    // spans plus one gutter span for each logical line.
-    try testing.expectEqual(@as(usize, 0), countByKind(fallback.root, .row));
-    try testing.expect(countTextSpans(fallback.root) <= Ui.max_code_spans_per_surface);
+    try testing.expectEqual(@as(usize, 1), countByKind(fallback.root, .text));
+    try testing.expect(countTextSpans(fallback.root) <= text_spans.max_text_spans_per_paragraph);
+    try testing.expectEqual(
+        @as(u8, 2),
+        findByText(fallback.root, source.items).?.code_line_number_digits,
+    );
 
     var recovered: std.ArrayListUnmanaged(u8) = .empty;
     defer recovered.deinit(testing.allocator);

@@ -539,6 +539,52 @@ test "span paragraph drag selection copies the concatenated bytes" {
     try std.testing.expectEqualStrings(paragraph, copied);
 }
 
+test "numbered code selection copies source without decorative gutter digits" {
+    var app_state: ClipboardTestApp = .{};
+    const app = app_state.app();
+    const harness = try createClipboardHarness(app);
+    defer harness.destroy(std.testing.allocator);
+
+    const source = "alpha\nbeta";
+    const spans = [_]canvas.TextSpan{.{
+        .text = source,
+        .monospace = true,
+        .color = .syntax_plain,
+    }};
+    const children = [_]canvas.Widget{.{
+        .id = 2,
+        .kind = .text,
+        .frame = geometry.RectF.init(12, 16, 220, 60),
+        .text = source,
+        .spans = &spans,
+        .code_line_number_digits = 1,
+    }};
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        .{ .kind = .stack, .children = &children },
+        geometry.RectF.init(0, 0, 320, 200),
+        &nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    // Start inside the source column (past the renderer-owned gutter) and
+    // drag beyond the final visual line.
+    try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_down, 34, 18));
+    try harness.runtime.dispatchPlatformEvent(app, pointerInput(.pointer_drag, 231, 75));
+    const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(
+        canvas.TextSelection{ .anchor = 0, .focus = source.len },
+        retained.nodes[1].widget.text_selection.?,
+    );
+
+    try harness.runtime.dispatchPlatformEvent(app, keyInput("c", cmd));
+    var clipboard_buffer: [32]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        source,
+        try harness.runtime.readClipboard(&clipboard_buffer),
+    );
+}
+
 test "focused editable selection wins copy over a stale static selection" {
     var app_state: ClipboardTestApp = .{};
     const app = app_state.app();

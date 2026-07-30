@@ -1078,8 +1078,8 @@ pub fn textSpanOffsetForPoint(
     point: geometry.PointF,
 ) ?usize {
     var runs: [max_text_span_runs_per_paragraph]TextSpanRun = undefined;
-    const layout = layoutTextSpans(spans, options, &runs);
-    if (layout.runs.len == 0 or layout.line_count == 0 or layout.line_height <= 0) return null;
+    var layout = layoutTextSpans(spans, options, &runs);
+    if (layout.line_count == 0 or layout.line_height <= 0) return null;
 
     const raw_line = point.y / layout.line_height;
     const max_line = layout.line_count - 1;
@@ -1087,6 +1087,19 @@ pub fn textSpanOffsetForPoint(
         0
     else
         @min(max_line, @as(usize, @intFromFloat(@floor(raw_line))));
+
+    // Page the same bounded paragraph layout the viewport painter uses.
+    // Page zero deliberately retains only 128 visual lines; without this
+    // handoff every point below that page collapsed onto its last source
+    // offset even though later runs were visibly painted.
+    if (line_index >= max_text_span_lines_per_paragraph) {
+        layout = layoutTextSpansFromLine(spans, options, line_index, &runs);
+    }
+    if (layout.runs.len == 0) {
+        // A later page made only of trailing blank logical lines has no
+        // glyph run to map. Its nearest source edge is the paragraph end.
+        return if (paragraph.len > 0) paragraph.len else null;
+    }
 
     var result: ?usize = null;
     var first_range: ?text_interaction.TextRange = null;
@@ -1163,16 +1176,104 @@ pub fn textSpanSelectionRects(
     if (normalized.isCollapsed(paragraph.len)) return output[0..0];
 
     var runs: [max_text_span_runs_per_paragraph]TextSpanRun = undefined;
-    const layout = layoutTextSpans(spans, options, &runs);
-    if (layout.line_height <= 0) return output[0..0];
+    const first_layout = layoutTextSpans(spans, options, &runs);
+    if (first_layout.line_height <= 0 or first_layout.line_count == 0) return output[0..0];
 
+    const page_count = (first_layout.line_count +
+        max_text_span_lines_per_paragraph - 1) /
+        max_text_span_lines_per_paragraph;
+    const first_page = textSpanSelectionFirstPage(
+        paragraph,
+        spans,
+        options,
+        normalized.start,
+        page_count,
+        &runs,
+    ) orelse return output[0..0];
     var len: usize = 0;
+    var page_index = first_page;
+    while (page_index < page_count and len < output.len) : (page_index += 1) {
+        const first_line = page_index * max_text_span_lines_per_paragraph;
+        const layout = if (page_index == 0)
+            first_layout
+        else
+            layoutTextSpansFromLine(spans, options, first_line, &runs);
+        const page_end = appendTextSpanSelectionPage(
+            paragraph,
+            spans,
+            options,
+            normalized,
+            layout,
+            output,
+            &len,
+        );
+        if (page_end >= normalized.end) break;
+    }
+    return output[0..len];
+}
+
+/// Earliest visual-line page whose retained source runs can intersect a
+/// selection beginning at `offset`. Binary search keeps a selection near
+/// the tail of a maximal paragraph to logarithmic full-layout passes.
+fn textSpanSelectionFirstPage(
+    paragraph: []const u8,
+    spans: []const TextSpan,
+    options: TextSpanLayoutOptions,
+    offset: usize,
+    page_count: usize,
+    runs: []TextSpanRun,
+) ?usize {
+    var low: usize = 0;
+    var high = page_count;
+    var saw_aliased_run = false;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        const layout = layoutTextSpansFromLine(
+            spans,
+            options,
+            middle * max_text_span_lines_per_paragraph,
+            runs,
+        );
+        var page_end: usize = 0;
+        var saw_run = false;
+        for (layout.runs) |run| {
+            const run_range = textSpanRunParagraphRange(paragraph, run) orelse continue;
+            saw_aliased_run = true;
+            saw_run = true;
+            page_end = @max(page_end, run_range.end);
+        }
+        // Empty visual pages contain no selectable ink. Move toward later
+        // source; a following non-empty page will supply the first rect.
+        if (!saw_run or page_end <= offset) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    if (!saw_aliased_run or low >= page_count) return null;
+    return low;
+}
+
+/// Append selection geometry from one absolute visual-line page. Returns
+/// the furthest paragraph byte represented by that page so the caller can
+/// stop once the selected tail has been covered.
+fn appendTextSpanSelectionPage(
+    paragraph: []const u8,
+    spans: []const TextSpan,
+    options: TextSpanLayoutOptions,
+    normalized: text_interaction.TextRange,
+    layout: TextSpanLayout,
+    output: []text_interaction.TextSelectionRect,
+    len: *usize,
+) usize {
+    var page_end: usize = 0;
     var current_line: ?usize = null;
     var line_left: f32 = 0;
     var line_right: f32 = 0;
     var line_range = text_interaction.TextRange.init(0, 0);
     for (layout.runs) |run| {
         const run_range = textSpanRunParagraphRange(paragraph, run) orelse continue;
+        page_end = @max(page_end, run_range.end);
         const start = @max(normalized.start, run_range.start);
         const end = @min(normalized.end, run_range.end);
         if (start >= end) continue;
@@ -1187,7 +1288,7 @@ pub fn textSpanSelectionRects(
                 line_range = text_interaction.TextRange.init(@min(line_range.start, start), @max(line_range.end, end));
                 continue;
             }
-            if (!flushSpanSelectionLine(layout, line, line_left, line_right, line_range, output, &len)) return output[0..len];
+            if (!flushSpanSelectionLine(layout, line, line_left, line_right, line_range, output, len)) return page_end;
         }
         current_line = run.line_index;
         line_left = @min(x0, x1);
@@ -1195,9 +1296,9 @@ pub fn textSpanSelectionRects(
         line_range = text_interaction.TextRange.init(start, end);
     }
     if (current_line) |line| {
-        if (!flushSpanSelectionLine(layout, line, line_left, line_right, line_range, output, &len)) return output[0..len];
+        _ = flushSpanSelectionLine(layout, line, line_left, line_right, line_range, output, len);
     }
-    return output[0..len];
+    return page_end;
 }
 
 fn flushSpanSelectionLine(

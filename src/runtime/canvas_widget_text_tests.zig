@@ -3744,6 +3744,63 @@ test "a widget text budget overflow on input degrades instead of exiting" {
     } });
 }
 
+test "maximal numbered code fits the retained text budget" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-numbered-code-budget", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    try harness.start(app_state.app());
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 320, 100),
+    });
+
+    const source = try std.testing.allocator.alloc(
+        u8,
+        runtime_module.max_canvas_widget_text_bytes_per_view,
+    );
+    defer std.testing.allocator.free(source);
+    @memset(source, 'x');
+
+    const CodeUi = canvas.Ui(enum { noop });
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = CodeUi.init(arena.allocator());
+    const tree = try ui.finalize(ui.code(.{
+        .language = .plain,
+        .line_numbers = true,
+        .wrap = false,
+        .width = 320,
+        .height = 100,
+    }, source));
+    var nodes: [16]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        tree.root,
+        geometry.RectF.init(0, 0, 320, 100),
+        &nodes,
+    );
+
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    var found_source = false;
+    for (retained.nodes) |node| {
+        if (node.widget.code_line_number_digits == 0) continue;
+        found_source = true;
+        try std.testing.expectEqual(@as(u8, 1), node.widget.code_line_number_digits);
+        try std.testing.expectEqual(source.len, node.widget.text.len);
+        try std.testing.expectEqualStrings(source, node.widget.text);
+    }
+    try std.testing.expect(found_source);
+}
+
 /// Scan the widget's frame for a pointer location whose caret offset is
 /// exactly `target`, so multi-click tests aim at text offsets without
 /// hard-coding font metrics.

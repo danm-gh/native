@@ -863,6 +863,13 @@ pub const Widget = struct {
     /// tooling and write-back can round-trip it. Span paragraphs
     /// (`spans`) wrap by design and ignore it.
     text_no_wrap: bool = false,
+    /// Renderer-owned logical-line gutter for a syntax-code paragraph.
+    /// Zero keeps an ordinary paragraph; a positive value is the decimal
+    /// digit width of the largest marker. The gutter is decoration, not
+    /// retained text, so selection/copy remains the exact source bytes.
+    /// Stamped only by `Ui.code`; there is no generic builder/markup
+    /// channel for turning arbitrary paragraphs into numbered code.
+    code_line_number_digits: u8 = 0,
     /// What a single-line text run does with content that does not fit
     /// its frame (`ElementOptions.overflow` / markup `overflow=` on
     /// text leaves): `.ellipsis` (default) elides the tail behind a

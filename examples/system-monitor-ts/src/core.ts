@@ -116,20 +116,28 @@ function searchApply(d: SearchDraft, event: TextInputEvent): SearchDraft {
     if (clamped === null) return d;
     const nextClamped = applyTextInputEvent(state, clamped, MAX_SEARCH);
     if (nextClamped === null) return d;
+    // Composition bounds land in i64-classed slots: bind them, guard
+    // the range (an ordered comparison excludes NaN), and state
+    // wholeness with Math.trunc at the write; -1 stays the
+    // no-composition sentinel.
+    const clampedStart = nextClamped.composition !== null ? nextClamped.composition.start : -1;
+    const clampedEnd = nextClamped.composition !== null ? nextClamped.composition.end : -1;
     return {
       bytes: nextClamped.text,
       anchor: nextClamped.selection.anchor,
       focus: nextClamped.selection.focus,
-      compStart: nextClamped.composition !== null ? nextClamped.composition.start : -1,
-      compEnd: nextClamped.composition !== null ? nextClamped.composition.end : -1,
+      compStart: clampedStart >= -1 && clampedStart <= 9007199254740991 ? Math.trunc(clampedStart) : -1,
+      compEnd: clampedEnd >= -1 && clampedEnd <= 9007199254740991 ? Math.trunc(clampedEnd) : -1,
     };
   }
+  const nextStart = next.composition !== null ? next.composition.start : -1;
+  const nextEnd = next.composition !== null ? next.composition.end : -1;
   return {
     bytes: next.text,
     anchor: next.selection.anchor,
     focus: next.selection.focus,
-    compStart: next.composition !== null ? next.composition.start : -1,
-    compEnd: next.composition !== null ? next.composition.end : -1,
+    compStart: nextStart >= -1 && nextStart <= 9007199254740991 ? Math.trunc(nextStart) : -1,
+    compEnd: nextEnd >= -1 && nextEnd <= 9007199254740991 ? Math.trunc(nextEnd) : -1,
   };
 }
 
@@ -560,6 +568,18 @@ function appliedPsSample(model: Model, sample: PsSample): Model {
   const cores = model.cores > 0 ? model.cores : 1;
   let percentTenths = intDivRound(sample.cpuSumTenths, cores);
   if (percentTenths > 1000) percentTenths = 1000;
+  // The sample's counts land in i64-classed slots: bind each value,
+  // range-guard it (an ordered comparison excludes NaN), and state
+  // wholeness with Math.trunc at the write; anything outside the
+  // provable window keeps the previous sample's value.
+  const sampleCount = sample.processCount;
+  const processCount = sampleCount >= 0 && sampleCount <= 9007199254740991 ? Math.trunc(sampleCount) : model.processCount;
+  const sampleUptime = sample.uptimeSeconds;
+  const uptimeSeconds = sampleUptime >= 0 && sampleUptime <= 9007199254740991 ? Math.trunc(sampleUptime) : model.uptimeSeconds;
+  const cpuTenths = percentTenths >= 0 && percentTenths <= 1000 ? Math.trunc(percentTenths) : model.cpuPercentTenths;
+  const samplesTaken = model.samplesTaken < 9007199254740991 ? model.samplesTaken + 1 : 9007199254740991;
+  const grownFailures = model.parseFailures + sample.skippedLines;
+  const parseFailures = grownFailures >= 0 && grownFailures <= 9007199254740991 ? Math.trunc(grownFailures) : model.parseFailures;
   // The process-count history pushes inline rather than through
   // pushHistory: the count stays integer-classed (it also formats into
   // the Processes tile), and the shared helper's value slot carries the
@@ -580,28 +600,35 @@ function appliedPsSample(model: Model, sample: PsSample): Model {
     note: retiresNote ? new Uint8Array(0) : model.note,
     noteClearsOnSample: model.noteClearsOnSample && !retiresNote,
     psInflight: false,
-    processCount: sample.processCount,
-    uptimeSeconds: sample.uptimeSeconds,
+    processCount: processCount,
+    uptimeSeconds: uptimeSeconds,
     rows: sample.rows,
-    cpuPercentTenths: percentTenths,
-    samplesTaken: model.samplesTaken + 1,
-    parseFailures: model.parseFailures + sample.skippedLines,
+    cpuPercentTenths: cpuTenths,
+    samplesTaken: samplesTaken,
+    parseFailures: parseFailures,
     cpuHistory: pushHistory(model.cpuHistory, permilleFraction(percentTenths)),
     procHistory: grownProcHistory,
   };
 }
 
 function appliedMemSample(model: Model, sample: MemSample): Model {
-  const totalBytes = sample.totalBytes > 0 ? sample.totalBytes : model.memTotalBytes;
+  // Byte counts land in i64-classed slots: bind, range-guard (an
+  // ordered comparison excludes NaN), and state wholeness with
+  // Math.trunc at the write; values outside the provable window keep
+  // the previous sample's.
+  const sampleTotal = sample.totalBytes;
+  const totalBytes = sampleTotal > 0 && sampleTotal <= 9007199254740991 ? Math.trunc(sampleTotal) : model.memTotalBytes;
+  const sampleUsed = sample.usedBytes;
+  const usedBytes = sampleUsed >= 0 && sampleUsed <= 9007199254740991 ? Math.trunc(sampleUsed) : model.memUsedBytes;
   let permille = 0;
   if (totalBytes > 0) {
-    permille = intDivRound(sample.usedBytes * 1000, totalBytes);
+    permille = intDivRound(usedBytes * 1000, totalBytes);
     if (permille > 1000) permille = 1000;
   }
   return {
     ...model,
     memInflight: false,
-    memUsedBytes: sample.usedBytes,
+    memUsedBytes: usedBytes,
     memTotalBytes: totalBytes,
     memHistory: pushHistory(model.memHistory, permilleFraction(permille)),
   };
@@ -615,7 +642,7 @@ function sampling(model: Model): Model {
     ...model,
     psInflight: true,
     memInflight: true,
-    sampleGeneration: model.sampleGeneration + 1,
+    sampleGeneration: model.sampleGeneration < 9007199254740991 ? model.sampleGeneration + 1 : 9007199254740991,
   };
 }
 
@@ -644,9 +671,15 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       // never sits empty for a whole interval.
       if (msg.code === 0) {
         const info = parseHostInfo(msg.output, true);
-        if (info !== null) {
+        // The parsed counts land in i64-classed slots: bind, range-guard
+        // (an ordered comparison excludes NaN), and state wholeness with
+        // Math.trunc at the write; an unprovable probe falls through to
+        // the Linux path like any other unparseable answer.
+        const parsedCores = info !== null ? info.cores : -1;
+        const parsedMemory = info !== null ? info.memoryBytes : -1;
+        if (parsedCores >= 0 && parsedCores <= 9007199254740991 && parsedMemory >= 0 && parsedMemory <= 9007199254740991) {
           return [
-            sampling({ ...model, phase: "ready", memCommand: "vmstat", cores: info.cores, memTotalBytes: info.memoryBytes }),
+            sampling({ ...model, phase: "ready", memCommand: "vmstat", cores: Math.trunc(parsedCores), memTotalBytes: Math.trunc(parsedMemory) }),
             Cmd.batch([
               Cmd.spawn([asciiBytes("/bin/ps"), asciiBytes("axo"), asciiBytes("pid=,pcpu=,pmem=,rss=,etime=,comm=")], {
                 key: "ps",
@@ -678,9 +711,11 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
     case "info2_done": {
       if (msg.code === 0) {
         const info = parseHostInfo(msg.output, false);
-        if (info !== null) {
+        // Same bind-guard-trunc proof as the macOS probe above.
+        const parsedCores = info !== null ? info.cores : -1;
+        if (parsedCores >= 0 && parsedCores <= 9007199254740991) {
           return [
-            sampling({ ...model, phase: "ready", memCommand: "meminfo", cores: info.cores }),
+            sampling({ ...model, phase: "ready", memCommand: "meminfo", cores: Math.trunc(parsedCores) }),
             Cmd.batch([
               Cmd.spawn([asciiBytes("/bin/ps"), asciiBytes("axo"), asciiBytes("pid=,pcpu=,pmem=,rss=,etime=,comm=")], {
                 key: "ps",
@@ -708,7 +743,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       // and counted — overlapping two ps runs would only add the load
       // this app measures.
       if (model.psInflight || model.memInflight) {
-        return [{ ...model, ticksSkipped: model.ticksSkipped + 1 }, Cmd.none];
+        return [{ ...model, ticksSkipped: model.ticksSkipped < 9007199254740991 ? model.ticksSkipped + 1 : 9007199254740991 }, Cmd.none];
       }
       if (model.memCommand === "vmstat") {
         return [
@@ -748,7 +783,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
     }
     case "ps_err":
       return [withNote(
-        { ...model, psInflight: false, parseFailures: model.parseFailures + 1 },
+        { ...model, psInflight: false, parseFailures: model.parseFailures < 9007199254740991 ? model.parseFailures + 1 : 9007199254740991 },
         concat3(asciiBytes("ps failed ("), msg.reason, asciiBytes(")")),
       ), Cmd.none];
     case "mem_done": {
@@ -757,13 +792,13 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       }
       const sample = model.memCommand === "vmstat" ? parseVmStat(msg.output) : parseMeminfo(msg.output);
       if (sample === null) {
-        return [{ ...model, memInflight: false, parseFailures: model.parseFailures + 1 }, Cmd.none];
+        return [{ ...model, memInflight: false, parseFailures: model.parseFailures < 9007199254740991 ? model.parseFailures + 1 : 9007199254740991 }, Cmd.none];
       }
       return [appliedMemSample(model, sample), Cmd.none];
     }
     case "mem_err":
       return [withNote(
-        { ...model, memInflight: false, parseFailures: model.parseFailures + 1 },
+        { ...model, memInflight: false, parseFailures: model.parseFailures < 9007199254740991 ? model.parseFailures + 1 : 9007199254740991 },
         concat3(asciiBytes("memory sample failed ("), msg.reason, asciiBytes(")")),
       ), Cmd.none];
     case "stamped":
@@ -777,7 +812,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       // (the Zig original samples immediately on resume too).
       if (model.phase !== "ready") return [{ ...model, paused: false }, Cmd.none];
       if (model.psInflight || model.memInflight) {
-        return [{ ...model, paused: false, ticksSkipped: model.ticksSkipped + 1 }, Cmd.none];
+        return [{ ...model, paused: false, ticksSkipped: model.ticksSkipped < 9007199254740991 ? model.ticksSkipped + 1 : 9007199254740991 }, Cmd.none];
       }
       if (model.memCommand === "vmstat") {
         return [

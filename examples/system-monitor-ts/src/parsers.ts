@@ -350,10 +350,17 @@ function parsePsLine(line: Bytes): ParsedPsLine | null {
   }
   const command = trimAsciiSpaces(line.subarray(cursor));
   if (command.length === 0) return null;
-  return {
-    process: { pid: pid, cpuTenths: cpuTenths, memTenths: memTenths, rssKb: rssKb, name: basename(command) },
-    etimeSeconds: etimeSeconds,
-  };
+  // The four counts land in i64-classed slots: the range guard (an
+  // ordered comparison excludes NaN) plus Math.trunc prove them whole;
+  // a value past the provable window skips the line like any other
+  // malformed row.
+  if (pid >= 0 && pid <= 9007199254740991 && cpuTenths >= 0 && cpuTenths <= 9007199254740991 && memTenths >= 0 && memTenths <= 9007199254740991 && rssKb >= 0 && rssKb <= 9007199254740991) {
+    return {
+      process: { pid: Math.trunc(pid), cpuTenths: Math.trunc(cpuTenths), memTenths: Math.trunc(memTenths), rssKb: Math.trunc(rssKb), name: basename(command) },
+      etimeSeconds: etimeSeconds,
+    };
+  }
+  return null;
 }
 
 /// Stable descending order by %cpu tenths: a straight insertion sort,

@@ -37,6 +37,37 @@
     "init_export": "init",
     "update_export": "coreUpdate",
     "subscriptions_export": "coreSubscriptions",
-    "integer_slots": []
+    "integer_slots": [
+      { "slot": "Model.ticksSkipped", "class": "i64" },
+      { "slot": "Model.samplesTaken", "class": "i64" },
+      { "slot": "Model.sampledAtDayMs", "class": "i64" },
+      { "slot": "Model.cores", "class": "i64" },
+      { "slot": "Model.memTotalBytes", "class": "i64" },
+      { "slot": "Model.cpuPercentTenths", "class": "i64" },
+      { "slot": "Model.memUsedBytes", "class": "i64" },
+      { "slot": "Model.processCount", "class": "i64" },
+      { "slot": "Model.uptimeSeconds", "class": "i64" },
+      { "slot": "Model.parseFailures", "class": "i64" },
+      { "slot": "Model.sampleGeneration", "class": "i64" },
+      { "slot": "Model.noteStampGeneration", "class": "i64" },
+      { "slot": "ParsedProcess.pid", "class": "i64" },
+      { "slot": "ParsedProcess.cpuTenths", "class": "i64" },
+      { "slot": "ParsedProcess.memTenths", "class": "i64" },
+      { "slot": "ParsedProcess.rssKb", "class": "i64" },
+      { "slot": "SearchDraft.anchor", "class": "i64" },
+      { "slot": "SearchDraft.focus", "class": "i64" },
+      { "slot": "SearchDraft.compStart", "class": "i64" },
+      { "slot": "SearchDraft.compEnd", "class": "i64" },
+      { "slot": "PendingKill.pid", "class": "i64" },
+      { "slot": "TextSelection.anchor", "class": "i64" },
+      { "slot": "TextSelection.focus", "class": "i64" },
+      { "slot": "TextInputEvent_set_composition.cursor", "class": "i64" },
+      { "slot": "TableRow.pid", "class": "i64" },
+      { "slot": "Msg.info_done.code", "class": "i64" },
+      { "slot": "Msg.stamped", "class": "i64" },
+      { "slot": "Msg.request_kill", "class": "i64" },
+      { "slot": "helpers.matchCount.return", "class": "i64" },
+      { "slot": "helpers.shownCount.return", "class": "i64" }
+    ]
   }
 }

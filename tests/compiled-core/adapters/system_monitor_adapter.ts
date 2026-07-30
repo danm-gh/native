@@ -51,7 +51,6 @@ import {
   readF64,
   subBytes,
   trap,
-  truncTowardZero,
   wBool,
   wBytes,
   wF64,
@@ -168,11 +167,18 @@ export function sortDirectionLabel(model: Model): Uint8Array {
 export function visibleRows(model: Model): TableRow[] {
   return h_visibleRows(model) as TableRow[];
 }
+// Classed helper returns prove at this boundary: bind the helper's
+// value, range-guard it (an ordered comparison excludes NaN), and state
+// wholeness with Math.trunc at the return.
 export function matchCount(model: Model): number {
-  return h_matchCount(model);
+  const count = h_matchCount(model);
+  if (count >= -9007199254740991 && count <= 9007199254740991) return Math.trunc(count);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function shownCount(model: Model): number {
-  return h_shownCount(model);
+  const count = h_shownCount(model);
+  if (count >= -9007199254740991 && count <= 9007199254740991) return Math.trunc(count);
+  trap("a helper return is NaN or past ±(2^53 − 1) — the i64 slot has no honest value for it");
 }
 export function emptyTitle(model: Model): Uint8Array {
   return h_emptyTitle(model);
@@ -313,30 +319,43 @@ export function dispatch_bytes(tag: number, payload: Uint8Array): Uint8Array {
 }
 
 export function dispatch_number(tag: number, value: number): Uint8Array {
-  if (tag === TAG_tick) return commit(coreUpdate(committed, { kind: "tick", at: value }));
-  if (tag === TAG_stamped) return commit(coreUpdate(committed, { kind: "stamped", at: value }));
-  if (tag === TAG_request_kill) return commit(coreUpdate(committed, { kind: "request_kill", pid: truncTowardZero(value) }));
-  if (tag === TAG_copy_name) return commit(coreUpdate(committed, { kind: "copy_name", pid: truncTowardZero(value) }));
-  trapUnknownTag("number", tag);
+  // Integer-classed arms (timestamps and pids) prove in place:
+  // range-guard the raw f64 (an ordered comparison excludes NaN) and
+  // state wholeness with Math.trunc at the write.
+  if (value >= -9007199254740991 && value <= 9007199254740991) {
+    const whole = Math.trunc(value);
+    if (tag === TAG_tick) return commit(coreUpdate(committed, { kind: "tick", at: whole }));
+    if (tag === TAG_stamped) return commit(coreUpdate(committed, { kind: "stamped", at: whole }));
+    if (tag === TAG_request_kill) return commit(coreUpdate(committed, { kind: "request_kill", pid: whole }));
+    if (tag === TAG_copy_name) return commit(coreUpdate(committed, { kind: "copy_name", pid: whole }));
+    trapUnknownTag("number", tag);
+  }
+  trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
 }
 
 export function dispatch_number_bytes(tag: number, value: number, payload: Uint8Array): Uint8Array {
-  if (tag === TAG_info_done) {
-    return commit(coreUpdate(committed, { kind: "info_done", code: truncTowardZero(value), output: payload }));
+  // Exit codes are i64-classed: the same guard-and-trunc proof as
+  // dispatch_number.
+  if (value >= -9007199254740991 && value <= 9007199254740991) {
+    const code = Math.trunc(value);
+    if (tag === TAG_info_done) {
+      return commit(coreUpdate(committed, { kind: "info_done", code: code, output: payload }));
+    }
+    if (tag === TAG_info2_done) {
+      return commit(coreUpdate(committed, { kind: "info2_done", code: code, output: payload }));
+    }
+    if (tag === TAG_ps_done) {
+      return commit(coreUpdate(committed, { kind: "ps_done", code: code, output: payload }));
+    }
+    if (tag === TAG_mem_done) {
+      return commit(coreUpdate(committed, { kind: "mem_done", code: code, output: payload }));
+    }
+    if (tag === TAG_kill_done) {
+      return commit(coreUpdate(committed, { kind: "kill_done", code: code, output: payload }));
+    }
+    trapUnknownTag("number-with-bytes", tag);
   }
-  if (tag === TAG_info2_done) {
-    return commit(coreUpdate(committed, { kind: "info2_done", code: truncTowardZero(value), output: payload }));
-  }
-  if (tag === TAG_ps_done) {
-    return commit(coreUpdate(committed, { kind: "ps_done", code: truncTowardZero(value), output: payload }));
-  }
-  if (tag === TAG_mem_done) {
-    return commit(coreUpdate(committed, { kind: "mem_done", code: truncTowardZero(value), output: payload }));
-  }
-  if (tag === TAG_kill_done) {
-    return commit(coreUpdate(committed, { kind: "kill_done", code: truncTowardZero(value), output: payload }));
-  }
-  trapUnknownTag("number-with-bytes", tag);
+  trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
 }
 
 export function dispatch_bool(tag: number, value: number): Uint8Array {

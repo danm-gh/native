@@ -4,6 +4,7 @@ const canvas = @import("root.zig");
 const text_spans = @import("text_spans.zig");
 const text_metrics = @import("text_metrics.zig");
 const ui_model = @import("ui.zig");
+const widget_text_select = @import("widget_text_select.zig");
 
 const testing = std.testing;
 const TextSpan = text_spans.TextSpan;
@@ -670,6 +671,27 @@ test "span hit mapping and selection page beyond the first 128 visual lines" {
         selection[0].rect.y,
     );
     try testing.expectEqual(paragraph.len, selection[selection.len - 1].range.end);
+
+    // The renderer's fixed rect budget folds every remaining line,
+    // including the second layout page, into its final highlight.
+    var bounded_rects: [widget_text_select.max_static_text_selection_rects]canvas.TextSelectionRect = undefined;
+    const bounded = text_spans.textSpanSelectionRects(
+        paragraph,
+        &spans,
+        options,
+        .{ .start = 0, .end = paragraph.len },
+        &bounded_rects,
+    );
+    try testing.expectEqual(bounded_rects.len, bounded.len);
+    try testing.expectEqual(@as(usize, 63), bounded[bounded.len - 1].range.start);
+    try testing.expectEqual(paragraph.len, bounded[bounded.len - 1].range.end);
+    try testing.expectApproxEqAbs(@as(f32, 0), bounded[bounded.len - 1].rect.x, 0.001);
+    try testing.expectApproxEqAbs(63 * layout_result.line_height, bounded[bounded.len - 1].rect.y, 0.001);
+    try testing.expectApproxEqAbs(
+        (paragraph.len - 63) * layout_result.line_height,
+        bounded[bounded.len - 1].rect.height,
+        0.001,
+    );
 }
 
 test "span selection degrades to unsupported when spans alias other storage" {

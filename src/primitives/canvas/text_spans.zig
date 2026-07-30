@@ -1163,8 +1163,9 @@ fn lineFallbackOffset(paragraph: []const u8, layout: TextSpanLayout, line_index:
 
 /// Selection highlight rects (relative to the paragraph origin) for a
 /// paragraph byte range: one rect per line, spanning the selected extent
-/// across that line's runs. Returns the rects that fit in `output`;
-/// overflow truncates deterministically like span layout itself.
+/// across that line's runs. A range spanning more lines than `output`
+/// holds folds the overflow into the last rectangle, matching plain text
+/// selection so long selections stay truthfully highlighted.
 pub fn textSpanSelectionRects(
     paragraph: []const u8,
     spans: []const TextSpan,
@@ -1174,6 +1175,7 @@ pub fn textSpanSelectionRects(
 ) []const text_interaction.TextSelectionRect {
     const normalized = text_interaction.snapTextRange(paragraph, range);
     if (normalized.isCollapsed(paragraph.len)) return output[0..0];
+    if (output.len == 0) return output[0..0];
 
     var runs: [max_text_span_runs_per_paragraph]TextSpanRun = undefined;
     const first_layout = layoutTextSpans(spans, options, &runs);
@@ -1192,7 +1194,7 @@ pub fn textSpanSelectionRects(
     ) orelse return output[0..0];
     var len: usize = 0;
     var page_index = first_page;
-    while (page_index < page_count and len < output.len) : (page_index += 1) {
+    while (page_index < page_count) : (page_index += 1) {
         const first_line = page_index * max_text_span_lines_per_paragraph;
         const layout = if (page_index == 0)
             first_layout
@@ -1288,7 +1290,7 @@ fn appendTextSpanSelectionPage(
                 line_range = text_interaction.TextRange.init(@min(line_range.start, start), @max(line_range.end, end));
                 continue;
             }
-            if (!flushSpanSelectionLine(layout, line, line_left, line_right, line_range, output, len)) return page_end;
+            flushSpanSelectionLine(layout, line, line_left, line_right, line_range, output, len);
         }
         current_line = run.line_index;
         line_left = @min(x0, x1);
@@ -1296,7 +1298,7 @@ fn appendTextSpanSelectionPage(
         line_range = text_interaction.TextRange.init(start, end);
     }
     if (current_line) |line| {
-        _ = flushSpanSelectionLine(layout, line, line_left, line_right, line_range, output, len);
+        flushSpanSelectionLine(layout, line, line_left, line_right, line_range, output, len);
     }
     return page_end;
 }
@@ -1309,15 +1311,20 @@ fn flushSpanSelectionLine(
     range: text_interaction.TextRange,
     output: []text_interaction.TextSelectionRect,
     len: *usize,
-) bool {
-    if (len.* >= output.len) return false;
+) void {
     const top = @as(f32, @floatFromInt(line_index)) * layout.line_height;
-    output[len.*] = .{
+    const selection = text_interaction.TextSelectionRect{
         .range = range,
         .rect = geometry.RectF.init(left, top, @max(1, right - left), @max(1, layout.line_height)),
     };
+    if (len.* >= output.len) {
+        const last = &output[output.len - 1];
+        last.range = text_interaction.TextRange.init(last.range.start, range.end);
+        last.rect = last.rect.unionWith(selection.rect);
+        return;
+    }
+    output[len.*] = selection;
     len.* += 1;
-    return true;
 }
 
 /// Deep equality for widget invalidation: styles, text bytes, and link

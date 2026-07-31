@@ -1,27 +1,17 @@
 #!/bin/sh
-# Determinism-fence negative control: prove the profile's fences FIRE,
-# not merely that clean cores pass under them.
+# Determinism-fence negative control: prove the profile's fences FIRE, not merely that clean cores pass under them.
 #
 #   NATIVE_SDK_CORE_COMPILER="<toolchain command>" \
 #     tests/compiled-core/fence_check.sh <workdir>
 #
 #   <workdir>: scratch directory (created; contents replaced)
 #
-# Two halves, one workdir (the markup fixture — the smallest core in
-# the corpus):
+# Two halves, one workdir (the markup fixture — the smallest core in the corpus):
 #
-#   1. positive control — build_core.sh compiles the pristine fixture
-#      and the co-emitted contract sidecar must attest
-#      `deterministic: true`;
-#   2. negative control — the staged fixture gets one injected fenced
-#      ambient read (Date.now() at the top of update), and the SAME
-#      compile invocation must refuse it, naming the fenced surface id
-#      (stdlib.date.now), with no archive and no attesting sidecar
-#      emitted.
+#   1. positive control — build_core.sh compiles the pristine fixture and the co-emitted contract sidecar must attest `deterministic: true`;
+#   2. negative control — the staged fixture gets one injected fenced ambient read (Date.now() at the top of update), and the SAME compile invocation must refuse it, naming the fenced surface id (stdlib.date.now), with no archive and no attesting sidecar emitted.
 #
-# Skip-clean like the parity battery: no external toolchain supplied
-# means the check reports the skip and exits 0, so unconditional
-# callers (local dev boxes without the toolchain) stay green.
+# Skip-clean like the parity battery: no external toolchain supplied means the check reports the skip and exits 0, so unconditional callers (local dev boxes without the toolchain) stay green.
 
 set -u
 
@@ -45,10 +35,7 @@ if ! grep -q '"deterministic": true' "$work/core.contract.json"; then
 fi
 echo "fence-check: pristine compile attests deterministic: true"
 
-# Half 2: one injected fenced ambient read must be refused. The
-# injection anchors on the staged fixture's update signature; if the
-# fixture is reshaped, the anchor check below fails the run with a
-# teaching instead of passing on a compile that never saw the read.
+# Half 2: one injected fenced ambient read must be refused. The injection anchors on the staged fixture's update signature; if the fixture is reshaped, the anchor check below fails the run with a teaching instead of passing on a compile that never saw the read.
 awk '
   { print }
   /^export function update\(/ && !injected {

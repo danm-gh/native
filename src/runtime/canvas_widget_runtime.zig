@@ -161,6 +161,7 @@ pub const CanvasWidgetTextReconcileEntry = struct {
     text_selection: ?canvas.TextSelection = null,
     text_composition: ?canvas.TextRange = null,
     value: f32 = 0,
+    value_x: f32 = 0,
 };
 
 pub const CanvasWidgetSourceScrollEntry = struct {
@@ -612,6 +613,7 @@ pub fn collectCanvasWidgetTextReconcileEntries(
             .text_selection = node.widget.text_selection,
             .text_composition = node.widget.text_composition,
             .value = node.widget.value,
+            .value_x = node.widget.value_x,
         };
         len += 1;
     }
@@ -819,6 +821,7 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
         // right after, so a resized or re-texted field never keeps a
         // stale offset).
         if (canvasWidgetEditableTextKind(copy.widget.kind)) copy.widget.value = entry.value;
+        if (copy.widget.code_editor) copy.widget.value_x = entry.value_x;
         if (copy.widget.text_selection == null and copy.widget.text_composition == null) {
             copy.widget.text_selection = entry.text_selection;
             copy.widget.text_composition = entry.text_composition;
@@ -1103,6 +1106,10 @@ pub fn clampCanvasWidgetLayoutTextOffsets(nodes: []canvas.WidgetLayoutNode, toke
     for (nodes) |*node| {
         if (node.widget.kind == .textarea) {
             node.widget.value = canvas.clampedTextInputScrollOffsetForWidget(node.widget, tokens, node.widget.value);
+            node.widget.value_x = if (node.widget.code_editor)
+                canvas.clampedTextInputHorizontalScrollOffsetForWidget(node.widget, tokens, node.widget.value_x)
+            else
+                0;
             continue;
         }
         if (!canvasWidgetSingleLineTextKind(node.widget.kind)) continue;
@@ -1499,8 +1506,10 @@ fn canvasWidgetTreeRowFocusTarget(layout: canvas.WidgetLayoutTree, node_index: u
 /// the focused row is a leaf or collapsed (an expanded row collapses
 /// instead — no focus move, the routed toggle intent handles it); Right
 /// moves to the FIRST CHILD row when the focused row is expanded (a
-/// collapsed row expands instead). Null = no tree move (the caller
-/// falls through to group/spatial focus).
+/// collapsed row expands instead). Flat sibling rows may declare a
+/// one-based `tree_level`; otherwise parent/child relationships derive
+/// from widget nesting. Null = no tree move (the caller falls through to
+/// group/spatial focus).
 pub fn canvasWidgetTreeDirectionalFocusTarget(
     layout: canvas.WidgetLayoutTree,
     focused: canvas.WidgetFocusTarget,
@@ -1578,6 +1587,20 @@ fn canvasWidgetTreeAdjacentRow(
 }
 
 fn canvasWidgetTreeParentRow(layout: canvas.WidgetLayoutTree, tree_index: usize, focused_index: usize) ?canvas.WidgetFocusTarget {
+    const focused_level = layout.nodes[focused_index].widget.tree_level;
+    if (focused_level > 1) {
+        var index = focused_index;
+        while (index > tree_index + 1) {
+            index -= 1;
+            const widget = layout.nodes[index].widget;
+            if (widget.semantics.role != .treeitem) continue;
+            if (widget.tree_level == focused_level - 1) {
+                return canvasWidgetTreeRowFocusTarget(layout, index);
+            }
+            if (widget.tree_level != 0 and widget.tree_level < focused_level - 1) return null;
+        }
+        return null;
+    }
     var current = layout.nodes[focused_index].parent_index;
     while (current) |index| {
         if (index >= layout.nodes.len or index == tree_index) return null;
@@ -1588,6 +1611,19 @@ fn canvasWidgetTreeParentRow(layout: canvas.WidgetLayoutTree, tree_index: usize,
 }
 
 fn canvasWidgetTreeFirstChildRow(layout: canvas.WidgetLayoutTree, focused_index: usize) ?canvas.WidgetFocusTarget {
+    const focused_level = layout.nodes[focused_index].widget.tree_level;
+    if (focused_level > 0) {
+        var index = focused_index + 1;
+        while (index < layout.nodes.len) : (index += 1) {
+            const widget = layout.nodes[index].widget;
+            if (widget.semantics.role != .treeitem) continue;
+            if (widget.tree_level == focused_level + 1) {
+                return canvasWidgetTreeRowFocusTarget(layout, index);
+            }
+            return null;
+        }
+        return null;
+    }
     const row_depth = layout.nodes[focused_index].depth;
     var index = focused_index + 1;
     while (index < layout.nodes.len and layout.nodes[index].depth > row_depth) : (index += 1) {

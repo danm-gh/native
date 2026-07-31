@@ -353,30 +353,30 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                     self.targetless_ime_preedit_label[0..self.targetless_ime_preedit_label_len],
                     input_event.label,
                 );
-            // A Tab key-down that moved focus INTO a live terminal is a
-            // focus gesture for its whole physical lifetime. Suppress
-            // its auto-repeats and release before any widget pass can
-            // reinterpret them against the newly focused terminal.
-            const terminal_focus_entry_tab_suppressed =
-                CanvasWidgetEventMethods().consumeCanvasWidgetTerminalFocusEntryTab(self, input_event);
+            // A Tab key-down that moved focus INTO a Tab-owning editor is
+            // a focus gesture for its whole physical lifetime. Suppress
+            // repeats and release before a live terminal or editable code
+            // can reinterpret them as input.
+            const tab_input_focus_entry_suppressed =
+                CanvasWidgetEventMethods().consumeCanvasWidgetTabInputFocusEntry(self, input_event);
             // Terminal Paste owns its matching physical V release even
             // when Command/Ctrl came up first. Classify it before focus,
             // routing, or app fallbacks can reinterpret the orphan.
             const terminal_paste_release_suppressed =
                 CanvasWidgetEventMethods().consumeCanvasWidgetTerminalPasteKeyLifetime(self, input_event);
-            const terminal_key_lifetime_suppressed =
-                terminal_focus_entry_tab_suppressed or terminal_paste_release_suppressed;
-            const keyboard_dismissed_id = if (targetless_composition_owns_keys or terminal_key_lifetime_suppressed)
+            const widget_key_lifetime_suppressed =
+                tab_input_focus_entry_suppressed or terminal_paste_release_suppressed;
+            const keyboard_dismissed_id = if (targetless_composition_owns_keys or widget_key_lifetime_suppressed)
                 0
             else
                 try CanvasWidgetEventMethods().dismissCanvasWidgetSurfaceFromKeyboardInput(self, input_event);
             if (keyboard_dismissed_id != 0) dismissed_surface_id = keyboard_dismissed_id;
             const widget_surface_dismissed = keyboard_dismissed_id != 0;
-            const widget_focus_moved = if (widget_surface_dismissed or targetless_composition_owns_keys or terminal_key_lifetime_suppressed)
+            const widget_focus_moved = if (widget_surface_dismissed or targetless_composition_owns_keys or widget_key_lifetime_suppressed)
                 false
             else
                 try CanvasWidgetEventMethods().updateCanvasWidgetFocusFromKeyboardInput(self, input_event);
-            var widget_keyboard_event = if (widget_surface_dismissed or targetless_composition_owns_keys or terminal_key_lifetime_suppressed)
+            var widget_keyboard_event = if (widget_surface_dismissed or targetless_composition_owns_keys or widget_key_lifetime_suppressed)
                 null
             else
                 CanvasWidgetEventMethods().routeCanvasWidgetKeyboardInput(self, input_event, &self.widget_event_route_entries) catch |err| switch (err) {
@@ -676,7 +676,7 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                     try self.dispatchEvent(app, .{ .canvas_widget_keyboard = followup });
                 }
             } else if ((input_event.kind == .key_down or input_event.kind == .key_up) and
-                !widget_surface_dismissed and !terminal_key_lifetime_suppressed)
+                !widget_surface_dismissed and !widget_key_lifetime_suppressed)
             {
                 // No focused widget routed this key (nothing is
                 // focused, or the focused id is gone from the tree): the

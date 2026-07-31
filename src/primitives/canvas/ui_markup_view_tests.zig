@@ -1,5 +1,7 @@
 const std = @import("std");
+const geometry = @import("geometry");
 const canvas = @import("root.zig");
+const code_model = @import("code.zig");
 const markup_view = @import("ui_markup_view.zig");
 
 const testing = std.testing;
@@ -1082,7 +1084,7 @@ pub const picker_markup_source =
     \\      <menu-item on-press="toggle:{open_count}">Alpha</menu-item>
     \\    </dropdown-menu>
     \\  </stack>
-    \\  <button on-press="add" on-hold="add">Crumb</button>
+    \\  <button on-press="add" on-double-press="toggle:{open_count}" on-hold="add">Crumb</button>
     \\</column>
 ;
 
@@ -1131,7 +1133,7 @@ test "markup binds the hover pair and makes listeners hover-hittable, never pres
     try testing.expect(!row.children[0].hover_msgs);
 }
 
-test "markup anchors dropdown-menus and binds dismiss and hold handlers" {
+test "markup anchors dropdown-menus and binds dismiss, hold, and double-press handlers" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -1152,6 +1154,8 @@ test "markup anchors dropdown-menus and binds dismiss and hold handlers" {
 
     const crumb = tree.root.children[1];
     try testing.expect(tree.msgFor(crumb.id, .hold) != null);
+    try testing.expectEqual(Msg.add, tree.msgForPointerClick(crumb.id, .up, 1).?);
+    try testing.expectEqual(@as(u32, 0), tree.msgForPointerClick(crumb.id, .up, 2).?.toggle);
     // A hold handler makes the element pressable, like on-press.
     try testing.expect(crumb.semantics.actions.press);
 
@@ -1928,7 +1932,10 @@ test "markdown misuse is caught by the model-agnostic validator with positions" 
 
 // ------------------------------------------------------- code component
 
-pub const CodeMsg = union(enum) { noop };
+pub const CodeMsg = union(enum) {
+    noop,
+    edit: canvas.TextInputEvent,
+};
 
 pub const CodeModel = struct {
     snippet: []const u8 =
@@ -1938,11 +1945,12 @@ pub const CodeModel = struct {
     ,
     show_lines: bool = true,
     wrap_code: bool = false,
+    editable_code: bool = false,
     count: usize = 3,
 };
 
 pub const code_markup_source =
-    \\<code source="{snippet}" language="tsx" line-numbers="{show_lines}" wrap="{wrap_code}" width="240" label="Example code" />
+    \\<code source="{snippet}" language="tsx" editable="{editable_code}" on-input="edit" line-numbers="{show_lines}" wrap="{wrap_code}" width="240" label="Example code" />
 ;
 
 pub const CodeUi = canvas.Ui(CodeMsg);
@@ -1950,6 +1958,8 @@ pub const CodeUi = canvas.Ui(CodeMsg);
 pub fn handCodeView(ui: *CodeUi, model: *const CodeModel) CodeUi.Node {
     return ui.code(.{
         .language = .html,
+        .editable = model.editable_code,
+        .on_input = CodeUi.inputMsg(.edit),
         .line_numbers = model.show_lines,
         .wrap = model.wrap_code,
         .width = 240,
@@ -1977,10 +1987,34 @@ test "code markup builds the reusable component with opt-in numbers and horizont
     try collectIds(markup_tree.root, &markup_ids, testing.allocator);
     try collectIds(hand_tree.root, &hand_ids, testing.allocator);
     try testing.expectEqualSlices(canvas.ObjectId, hand_ids.items, markup_ids.items);
+    try testing.expectEqual(canvas.WidgetKind.column, markup_tree.root.kind);
+    try testing.expectEqual(geometry.InsetsF{}, markup_tree.root.layout.padding);
+    try testing.expect(markup_tree.root.style.background == null);
+    try testing.expect(markup_tree.root.style.border == null);
+    try testing.expect(markup_tree.root.style.radius == null);
     try testing.expectEqual(canvas.ScrollAxes.horizontal, findByKind(markup_tree.root, .scroll_view).?.scroll_axes);
     const source = findByText(markup_tree.root, .text, model.snippet).?;
     try testing.expectEqual(@as(u8, 1), source.code_line_number_digits);
     try testing.expectEqualStrings("Example code", markup_tree.root.semantics.label);
+
+    var editable_model = model;
+    editable_model.editable_code = true;
+    var editable_ui = CodeUi.init(arena);
+    const editable_tree = try editable_ui.finalize(try view.build(&editable_ui, &editable_model));
+    try testing.expectEqual(canvas.WidgetKind.textarea, editable_tree.root.kind);
+    try testing.expect(editable_tree.root.code_editor);
+    try testing.expectEqual(@as(usize, 1), editable_tree.root.spans.len);
+    try testing.expectEqual(code_model.Language.tsx, editable_tree.root.code_language);
+    try testing.expect(editable_tree.root.text_no_wrap);
+    try testing.expect(canvas.widgetScrollsAxis(editable_tree.root, .horizontal));
+    try testing.expect(canvas.widgetScrollsAxis(editable_tree.root, .vertical));
+    try testing.expectEqual(geometry.InsetsF{}, editable_tree.root.layout.padding);
+    try testing.expect(editable_tree.root.style.background == null);
+    try testing.expect(editable_tree.root.style.border == null);
+    try testing.expect(editable_tree.root.style.radius == null);
+    try testing.expect(editable_tree.root.semantics.actions.set_text);
+    const edit = editable_tree.msgForTextEdit(editable_tree.root.id, .{ .insert_text = "x" }).?;
+    try testing.expectEqualStrings("x", edit.edit.insert_text);
 }
 
 test "code markup misuse reports the component's closed contract" {
@@ -3240,6 +3274,7 @@ test "columns off grid and misshapen alignment values fail with teaching message
 pub const Folder = struct {
     id: u32,
     name: []const u8,
+    level: u16 = 1,
     expanded: bool = false,
 
     fn key(folder: *const Folder) canvas.UiKey {
@@ -3268,7 +3303,7 @@ pub const pane_markup_source =
     \\<split value="{sidebar_fraction}" on-resize="sidebar_resized">
     \\  <tree label="Folders">
     \\    <for each="folders" key="id" as="f">
-    \\      <panel role="treeitem" expanded="{f.expanded}" on-press="select_folder:{f.id}" on-toggle="toggle_folder:{f.id}" label="{f.name}">
+    \\      <panel role="treeitem" tree-level="{f.level}" expanded="{f.expanded}" on-press="select_folder:{f.id}" on-change="select_folder:{f.id}" on-toggle="toggle_folder:{f.id}" label="{f.name}">
     \\        <text>{f.name}</text>
     \\      </panel>
     \\    </for>
@@ -3291,7 +3326,9 @@ pub fn handPaneView(ui: *PaneUi, model: *const PaneModel) PaneUi.Node {
 fn folderRow(ui: *PaneUi, folder: *const Folder) PaneUi.Node {
     return ui.panel(.{
         .expanded = folder.expanded,
+        .tree_level = folder.level,
         .on_press = PaneMsg{ .select_folder = folder.id },
+        .on_change = PaneMsg{ .select_folder = folder.id },
         .on_toggle = PaneMsg{ .toggle_folder = folder.id },
         .semantics = .{ .role = .treeitem, .label = folder.name },
     }, .{
@@ -3332,8 +3369,14 @@ test "markup split and tree build the hand-written view with the divider synthes
     // and both the press (selection) and toggle (disclosure) handlers.
     const row = findByKind(markup_tree.root, .panel).?;
     try testing.expectEqual(canvas.WidgetRole.treeitem, row.semantics.role);
+    try testing.expectEqual(@as(u16, 1), row.tree_level);
     try testing.expectEqual(@as(?bool, true), row.state.expanded);
     try testing.expectEqual(@as(u32, 1), markup_tree.msgForPointer(row.id, .up).?.select_folder);
+    try testing.expectEqual(@as(u32, 1), markup_tree.msgForKeyboard(row.id, .{
+        .phase = .key_down,
+        .key = "arrowdown",
+        .focus_moved = true,
+    }).?.select_folder);
     try testing.expectEqual(@as(u32, 1), markup_tree.msgFor(row.id, .toggle).?.toggle_folder);
 
     // min-width lands as a floor only (no definite max).

@@ -788,6 +788,8 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
                     if (std.mem.eql(u8, attribute.name, "kind")) continue;
                     const known = std.mem.eql(u8, attribute.name, "source") or
                         std.mem.eql(u8, attribute.name, "language") or
+                        std.mem.eql(u8, attribute.name, "editable") or
+                        std.mem.eql(u8, attribute.name, "on-input") or
                         std.mem.eql(u8, attribute.name, "line-numbers") or
                         std.mem.eql(u8, attribute.name, "wrap") or
                         std.mem.eql(u8, attribute.name, "width") or
@@ -824,6 +826,15 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
             }
             if (comptime (node.attr("line-numbers") != null)) {
                 options.line_numbers = videoFlagValue(node, entries, comptime node.attr("line-numbers").?, ui, model, scope);
+            }
+            if (comptime (node.attr("editable") != null)) {
+                options.editable = videoFlagValue(node, entries, comptime node.attr("editable").?, ui, model, scope);
+            }
+            if (comptime (node.attr("on-input") != null)) {
+                const expression = comptime (markup.parseMessageExpression(node.attr("on-input").?) orelse
+                    fail(node, "invalid message expression: on-* takes a Msg tag (\"add\") or tag with one binding payload (\"toggle:{item.id}\")"));
+                options.on_input = comptime (inputConstructor(expression.tag) orelse
+                    fail(node, "on-input tag must carry a TextInputEvent payload"));
             }
             if (comptime (node.attr("wrap") != null)) {
                 options.wrap = videoFlagValue(node, entries, comptime node.attr("wrap").?, ui, model, scope);
@@ -2091,6 +2102,8 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
             const msg = constructMessage(node, expression, entries, ui, model, scope);
             if (comptime std.mem.eql(u8, event, "press")) {
                 options.on_press = msg;
+            } else if (comptime std.mem.eql(u8, event, "double-press")) {
+                options.on_double_press = msg;
             } else if (comptime std.mem.eql(u8, event, "toggle")) {
                 options.on_toggle = msg;
             } else if (comptime std.mem.eql(u8, event, "change")) {

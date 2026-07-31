@@ -829,6 +829,20 @@ pub fn MarkupView(comptime ModelT: type, comptime MsgT: type) type {
                     options.line_numbers = try self.codeFlagAttr(scope, node, attribute);
                     continue;
                 }
+                if (std.mem.eql(u8, attribute.name, "editable")) {
+                    options.editable = try self.codeFlagAttr(scope, node, attribute);
+                    continue;
+                }
+                if (std.mem.eql(u8, attribute.name, "on-input")) {
+                    const typed = markup.attrTyped(attribute);
+                    if (typed != .message) {
+                        return self.failNode(node, "invalid message expression: on-* takes a Msg tag (\"add\") or tag with one binding payload (\"toggle:{item.id}\")");
+                    }
+                    options.on_input = inputConstructor(typed.message.tag) orelse {
+                        return self.failNode(node, "on-input tag must carry a TextInputEvent payload");
+                    };
+                    continue;
+                }
                 if (std.mem.eql(u8, attribute.name, "wrap")) {
                     options.wrap = try self.codeFlagAttr(scope, node, attribute);
                     continue;
@@ -2036,6 +2050,8 @@ pub fn MarkupView(comptime ModelT: type, comptime MsgT: type) type {
             const msg = try self.constructMessage(scope, node, expression);
             if (std.mem.eql(u8, event, "press")) {
                 options.on_press = msg;
+            } else if (std.mem.eql(u8, event, "double-press")) {
+                options.on_double_press = msg;
             } else if (std.mem.eql(u8, event, "toggle")) {
                 options.on_toggle = msg;
             } else if (std.mem.eql(u8, event, "change")) {

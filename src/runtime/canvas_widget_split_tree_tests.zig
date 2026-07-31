@@ -371,6 +371,64 @@ test "tree keymap walks visible rows, collapses, expands, and selects through re
     try std.testing.expect(!after_enter.findById(12).?.widget.state.selected);
 }
 
+test "flat tree levels resolve logical parents and children" {
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: ObservingApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 240, 160),
+    });
+
+    // The rows are layout siblings (the natural output of a declarative
+    // `for`), but their one-based levels describe the logical tree:
+    //   src (expanded)
+    //   └─ main.zig
+    //   README.md
+    const rows = [_]canvas.Widget{
+        blk: {
+            var row = treeRowPanel(21, 0, 24, true, &.{});
+            row.tree_level = 1;
+            break :blk row;
+        },
+        blk: {
+            var row = treeRowPanel(22, 30, 24, null, &.{});
+            row.tree_level = 2;
+            break :blk row;
+        },
+        blk: {
+            var row = treeRowPanel(23, 60, 24, null, &.{});
+            row.tree_level = 1;
+            break :blk row;
+        },
+    };
+    var nodes: [6]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .id = 20, .kind = .tree, .children = &rows }, geometry.RectF.init(0, 0, 240, 160), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    const view = &harness.runtime.views[0];
+
+    // Focus the flat child row, then use the standard tree moves. Left
+    // reaches its logical parent; Right on that expanded parent reaches
+    // the first logical child even though neither is a widget ancestor.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{ .window_id = 1, .label = "canvas", .kind = .pointer_down, .x = 10, .y = 35, .button = 0 } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{ .window_id = 1, .label = "canvas", .kind = .pointer_up, .x = 10, .y = 35, .button = 0 } });
+    try std.testing.expectEqual(@as(canvas.ObjectId, 22), view.canvas_widget_focused_id);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{ .window_id = 1, .label = "canvas", .kind = .key_down, .key = "arrowleft" } });
+    try std.testing.expectEqual(@as(canvas.ObjectId, 21), view.canvas_widget_focused_id);
+    try std.testing.expect(app_state.last_keyboard_focus_moved);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{ .window_id = 1, .label = "canvas", .kind = .key_down, .key = "arrowright" } });
+    try std.testing.expectEqual(@as(canvas.ObjectId, 22), view.canvas_widget_focused_id);
+    try std.testing.expect(app_state.last_keyboard_focus_moved);
+}
+
 test "a virtual list declaring the tree role scopes the tree keymap over its rows" {
     const harness = try TestHarness().create(std.testing.allocator, .{});
     defer harness.destroy(std.testing.allocator);

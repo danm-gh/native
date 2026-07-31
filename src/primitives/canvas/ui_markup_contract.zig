@@ -1348,9 +1348,16 @@ const Checker = struct {
                 try self.requireAttrKind(node, attribute, resolved.kind, &.{.string}, markup.code_source_message);
                 continue;
             }
-            if (std.mem.eql(u8, attribute.name, "line-numbers") or std.mem.eql(u8, attribute.name, "wrap")) {
+            if (std.mem.eql(u8, attribute.name, "line-numbers") or
+                std.mem.eql(u8, attribute.name, "wrap") or
+                std.mem.eql(u8, attribute.name, "editable"))
+            {
                 if (attribute.value.len == 0) continue;
                 _ = try self.attrKind(node, attribute, attribute.value);
+                continue;
+            }
+            if (std.mem.eql(u8, attribute.name, "on-input")) {
+                try self.checkMessageAttr(node, attribute);
                 continue;
             }
             if (std.mem.eql(u8, attribute.name, "width") or

@@ -1479,7 +1479,7 @@ fn widgetIconGlyphScale(widget: Widget) f32 {
     };
 }
 
-fn emitWidgetTextSelectionRects(
+pub fn emitWidgetTextSelectionRects(
     builder: *Builder,
     widget: Widget,
     text: DrawText,
@@ -1513,7 +1513,7 @@ fn emitWidgetTextSelectionRects(
 /// (re-shaping the selected substring instead would re-kern at the
 /// segment boundary and shift the halves apart). Runs after the base
 /// text so the recolored glyphs paint over their normal-ink twins.
-fn emitWidgetTextSelectedGlyphs(
+pub fn emitWidgetTextSelectedGlyphs(
     builder: *Builder,
     widget: Widget,
     text: DrawText,
@@ -1550,7 +1550,7 @@ fn textSelectionOverlayCommandId(seed: u64, widget_id: ObjectId, ordinal: usize)
     return if (value == 0) 1 else value;
 }
 
-fn emitWidgetTextCompositionLines(
+pub fn emitWidgetTextCompositionLines(
     builder: *Builder,
     widget: Widget,
     text: DrawText,
@@ -1587,7 +1587,7 @@ fn widgetTextRangePart(first_part: ObjectId, overflow_first_part: ObjectId, inde
     return overflow_first_part + @as(ObjectId, @intCast(index - 1));
 }
 
-fn emitWidgetTextCaret(
+pub fn emitWidgetTextCaret(
     builder: *Builder,
     widget: Widget,
     text: DrawText,

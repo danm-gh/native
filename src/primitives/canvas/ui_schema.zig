@@ -563,6 +563,14 @@ pub const attrs = [_]AttrInfo{
     // numbers are opt-in; wrapping reuses generic attr code 16.
     .{ .code = 90, .name = "language", .class = .option, .group = .composite },
     .{ .code = 91, .name = "line-numbers", .class = .flag, .group = .composite },
+    // Editable code is a composite-only opt-in: the default code surface
+    // remains selectable/read-only, while `editable` lowers it through
+    // the textarea behavior with code-specific bare rendering.
+    .{ .code = 92, .name = "editable", .class = .flag, .group = .composite },
+    // Flat loop-rendered tree rows can declare their one-based logical
+    // hierarchy without manufacturing nested layout containers. Zero (the
+    // default when absent) keeps structural widget nesting as the source.
+    .{ .code = 93, .name = "tree-level", .class = .whole, .group = .option, .field = "tree_level" },
 };
 
 // ----------------------------------------------------------------- events
@@ -596,6 +604,11 @@ pub const events = [_]EventInfo{
     // `scrollback` back (the on-scroll reconcile shape) and render
     // honest status. Emulator internals never ride it.
     .{ .code = 13, .name = "terminal", .payload = .terminal_state, .only_on_element = "terminal" },
+    // Double press is the second half of the desktop select-then-act
+    // gesture. The first release still dispatches `press`; a release
+    // whose runtime-derived click count reached two dispatches this
+    // channel in place of a second press.
+    .{ .code = 14, .name = "double-press" },
 };
 
 // ------------------------------------------------------- token vocabulary

@@ -1,0 +1,1 @@
+feature: **Double-click messages in Native markup**: `on-double-press` exposes the canvas runtime's additive double-click channel to `.native` views, so the first click can select or preview and the second can perform or pin without a timer.

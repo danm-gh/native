@@ -3128,7 +3128,7 @@ native_sdk_appkit_open_dialog_result_t native_sdk_appkit_show_open_dialog(native
             NSString *path = [[NSString alloc] initWithBytes:opts->default_path length:opts->default_path_len encoding:NSUTF8StringEncoding];
             panel.directoryURL = [NSURL fileURLWithPath:path];
         }
-        panel.canChooseFiles = YES;
+        panel.canChooseFiles = opts->allow_directories == 0;
         panel.canChooseDirectories = opts->allow_directories != 0;
         panel.allowsMultipleSelection = opts->allow_multiple != 0;
         NativeSdkConfigurePanelExtensions(panel, NativeSdkParseExtensions(opts->extensions, opts->extensions_len));

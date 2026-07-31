@@ -1384,6 +1384,7 @@ pub fn build(b: *std.Build) void {
         addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-soundboard-ts", "Run soundboard-ts example tests", "examples/soundboard-ts", .managed),
         addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-deck", "Run deck example tests", "examples/deck", .managed),
         addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-markdown-viewer", "Run markdown viewer example tests", "examples/markdown-viewer", .managed),
+        addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-code-editor", "Run code editor example tests", "examples/code-editor", .managed),
         addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-calculator", "Run calculator example tests", "examples/calculator", .managed),
         addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-notes", "Run notes example tests", "examples/notes", .managed),
         addExampleTestStep(b, host_cli_exe, native_examples_step, "test-example-split-collapse", "Run split collapse example tests", "examples/split-collapse", .managed),

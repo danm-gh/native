@@ -269,6 +269,7 @@ fn widgetChange(previous: WidgetLayoutNode, next: WidgetLayoutNode, previous_ind
         !widgetLayoutStylesEqual(previous.widget.layout, next.widget.layout);
     const content_dirty = !std.mem.eql(u8, previous.widget.text, next.widget.text) or
         !textSpansEqual(previous.widget.spans, next.widget.spans) or
+        previous.widget.code_language != next.widget.code_language or
         previous.widget.static_text_group_id != next.widget.static_text_group_id or
         previous.widget.static_text_group_offset != next.widget.static_text_group_offset or
         !chartDataEqual(previous.widget.chart, next.widget.chart) or

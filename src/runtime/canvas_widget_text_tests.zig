@@ -3801,6 +3801,123 @@ test "maximal numbered code fits the retained text budget" {
     try std.testing.expect(found_source);
 }
 
+test "editable code owns plain Tab and stamps its inferred indentation edit" {
+    const TestApp = struct {
+        edit_count: usize = 0,
+        insertion: [8]u8 = @splat(0),
+        insertion_len: usize = 0,
+
+        fn app(self: *@This()) App {
+            return .{
+                .context = self,
+                .name = "gpu-widget-code-tab",
+                .source = platform.WebViewSource.html("<h1>Hello</h1>"),
+                .event_fn = event,
+            };
+        }
+
+        fn event(context: *anyopaque, runtime: *Runtime, event_value: Event) anyerror!void {
+            _ = runtime;
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event_value) {
+                .canvas_widget_keyboard => |keyboard_event| {
+                    const edit = keyboard_event.keyboard.edit orelse return;
+                    switch (edit) {
+                        .insert_text => |text| {
+                            self.edit_count += 1;
+                            self.insertion_len = @min(text.len, self.insertion.len);
+                            @memcpy(self.insertion[0..self.insertion_len], text[0..self.insertion_len]);
+                        },
+                        else => {},
+                    }
+                },
+                else => {},
+            }
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 320, 180),
+    });
+
+    const source = "if (ready) {\n    run();\n}\n";
+    const children = [_]canvas.Widget{
+        .{
+            .id = 3,
+            .kind = .button,
+            .frame = geometry.RectF.init(240, 16, 68, 32),
+            .text = "Run",
+        },
+        .{
+            .id = 2,
+            .kind = .textarea,
+            .code_editor = true,
+            .text_no_wrap = true,
+            .frame = geometry.RectF.init(12, 16, 220, 100),
+            .text = source,
+            .text_selection = canvas.TextSelection.collapsed(source.len),
+        },
+    };
+    var nodes: [3]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        .{ .id = 1, .kind = .stack, .children = &children },
+        geometry.RectF.init(0, 0, 320, 180),
+        &nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    // Tab from the preceding button enters the editor as focus
+    // traversal and must not indent on that same physical gesture.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = 260,
+        .y = 28,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "tab",
+    } });
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_focused_id);
+    try std.testing.expectEqualStrings(source, retained.nodes[2].widget.text);
+    try std.testing.expectEqual(@as(usize, 0), app_state.edit_count);
+    try std.testing.expect(harness.runtime.views[0].canvas_widget_tab_input_focus_entry_held);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_up,
+        .key = "tab",
+    } });
+    try std.testing.expect(!harness.runtime.views[0].canvas_widget_tab_input_focus_entry_held);
+
+    // Once focused, plain Tab is an ordinary stamped edit. Four-space
+    // indentation wins from the source's existing leading whitespace.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "tab",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_focused_id);
+    try std.testing.expectEqualStrings("if (ready) {\n    run();\n}\n    ", retained.nodes[2].widget.text);
+    try std.testing.expectEqual(@as(usize, 1), app_state.edit_count);
+    try std.testing.expectEqualStrings("    ", app_state.insertion[0..app_state.insertion_len]);
+}
+
 /// Scan the widget's frame for a pointer location whose caret offset is
 /// exactly `target`, so multi-click tests aim at text offsets without
 /// hard-coding font metrics.
@@ -4344,4 +4461,80 @@ test "runtime scrolls single-line fields horizontally to keep the caret visible"
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualStrings("short", retained.nodes[1].widget.text);
     try std.testing.expectEqual(@as(f32, 0), retained.nodes[1].widget.value);
+}
+
+test "runtime scrolls editable no-wrap code horizontally and retains both axes" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-code-editor-scroll", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 260, 160),
+    });
+
+    const editor = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .code_editor = true,
+        .code_line_number_digits = 2,
+        .text_no_wrap = true,
+        .frame = geometry.RectF.init(12, 16, 120, 72),
+        .semantics = .{ .label = "Source" },
+    };
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{editor} }, geometry.RectF.init(0, 0, 260, 160), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = 20,
+        .y = 30,
+    } });
+
+    // The pinned line-number gutter is outside the source viewport and must
+    // not manufacture a horizontal range of its own.
+    try harness.runtime.dispatchAutomationCommand(app, "widget-wheel canvas 2 0 40");
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(@as(f32, 0), retained.nodes[1].widget.value_x);
+
+    _ = try harness.runtime.editCanvasWidgetText(
+        1,
+        "canvas",
+        2,
+        .{ .insert_text = "const deliberately_long_identifier = another_deliberately_long_identifier;" },
+    );
+
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expect(retained.nodes[1].widget.value_x > 0);
+    try std.testing.expectEqual(@as(f32, 0), retained.nodes[1].widget.value);
+    const viewport = canvas.textInputViewportForWidget(retained.nodes[1].widget, .{}).?;
+    const geometry_value = try harness.runtime.canvasWidgetTextGeometry(1, "canvas", 2);
+    const caret = geometry_value.caret_bounds.?;
+    try std.testing.expect(caret.x >= viewport.x - 0.001);
+    try std.testing.expect(caret.maxX() <= viewport.maxX() + 0.001);
+
+    var rebuild_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const rebuild = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{editor} }, geometry.RectF.init(0, 0, 260, 160), &rebuild_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", rebuild);
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expect(retained.nodes[1].widget.value_x > 0);
+
+    _ = try harness.runtime.editCanvasWidgetText(1, "canvas", 2, .{ .move_caret = .{ .direction = .start } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(0), retained.nodes[1].widget.text_selection.?);
+    try std.testing.expectEqual(@as(f32, 0), retained.nodes[1].widget.value_x);
 }

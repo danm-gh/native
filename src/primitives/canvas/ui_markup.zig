@@ -1148,10 +1148,11 @@ pub const anchor_offset_value_message = "anchor-offset takes a literal number: t
 pub const anchor_dependent_attr_message = "anchor-alignment and anchor-offset only apply together with anchor - add anchor=\"below\" (or \"above\") to float this surface";
 
 /// Elements whose widget KIND the engine never hit-tests: layout and
-/// decoration only. A bound `on-press`/`on-toggle` makes any element a
-/// hit target (widget-level: the handler stamps the press/toggle action,
-/// and presses on non-interactive content inside it fall through to it),
-/// so those two are legal everywhere; the remaining value/text handlers
+/// decoration only. A bound `on-press`/`on-double-press`/`on-toggle`
+/// makes any element a hit target (widget-level: the handler stamps the
+/// press/toggle action, and presses on non-interactive content inside it
+/// fall through to it), so those three are legal everywhere; the
+/// remaining value/text handlers
 /// (`on-change`/`on-submit`/`on-input`) have no behavior to bind to on
 /// these elements and stay validation errors. Registry-derived from the
 /// `hit_target` element predicate, which mirrors the engine's kind
@@ -1173,7 +1174,7 @@ pub fn deadHandlerOnNonHitTarget(attr_name: []const u8) bool {
 
 pub const autofocus_element_message = "autofocus is only supported on focusable controls (text fields, buttons, checkboxes, ...) - it moves keyboard focus to the element when it mounts or when the flag turns on, and nothing about this element can take focus";
 
-pub const non_hit_target_handler_message = "on-change/on-submit/on-input never fire here: this element has no control or text behavior - put them on a control (input, checkbox, slider) inside it (on-press/on-toggle are fine anywhere: a bound press handler makes any element pressable, and clicks on plain text or icons inside it fall through to it)";
+pub const non_hit_target_handler_message = "on-change/on-submit/on-input never fire here: this element has no control or text behavior - put them on a control (input, checkbox, slider) inside it (on-press/on-double-press/on-toggle are fine anywhere: a bound press handler makes any element pressable, and clicks on plain text or icons inside it fall through to it)";
 
 /// Elements whose widget kind layers its children on top of each other
 /// (every child gets the full content box), so `gap` can never space
@@ -1867,8 +1868,8 @@ pub const markdown_on_details_message = "on-details takes a bare Msg tag whose p
 pub const markdown_details_expanded_message = "details-expanded takes one {binding} naming a []const bool iterable (a model field, pub decl, or fn - the same sources for each accepts)";
 pub const code_source_message = "code requires a source attribute with one {binding} naming the source text (a []const u8 field or fn - arena fns work)";
 pub const code_children_message = "code takes no children or text content - the source binding provides the code";
-pub const code_attr_message = "unknown attribute for code - it takes source, language, line-numbers, wrap, width, height, min-width, grow, key, global-key, and label";
-pub const code_language_message = "language takes a literal lexer name: plain, zig, javascript/js, typescript/ts, jsx/tsx, json, shell/sh/bash/zsh, python/py, rust/rs, c/cpp/c++/csharp/java/kotlin/swift, go, html/xml/svg, css/scss/less, or sql";
+pub const code_attr_message = "unknown attribute for code - it takes source, language, editable, on-input, line-numbers, wrap, width, height, min-width, grow, key, global-key, and label";
+pub const code_language_message = "language takes a literal lexer name: plain, zig, javascript/js/mjs, typescript/ts, jsx/tsx, json, shell/sh/bash/zsh, python/py, rust/rs, c/cpp/c++/csharp/java/kotlin/swift, go, html/xml/svg, css/scss/less, or sql";
 pub const stepper_active_message = "stepper requires an active attribute (a number or one {binding}) naming the active step index";
 pub const stepper_attr_message = "unknown attribute for stepper - it takes active, key, global-key, and label";
 pub const stepper_children_message = "stepper takes only step children (each step is a text leaf: <step>Work</step>)";
@@ -2247,10 +2248,19 @@ fn validateCode(node: MarkupNode) ?MarkupErrorInfo {
             }
             continue;
         }
-        if (std.mem.eql(u8, attribute.name, "line-numbers") or std.mem.eql(u8, attribute.name, "wrap")) {
+        if (std.mem.eql(u8, attribute.name, "line-numbers") or
+            std.mem.eql(u8, attribute.name, "wrap") or
+            std.mem.eql(u8, attribute.name, "editable"))
+        {
             if (attribute.value.len == 0) continue;
             if (attrExpressionError(attribute.value, invalid_expression_message)) |message| {
                 return attrError(node, attribute, message);
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, attribute.name, "on-input")) {
+            if (parseMessageExpression(attribute.value) == null) {
+                return attrError(node, attribute, "invalid message expression: on-* takes a Msg tag (\"add\") or tag with one binding payload (\"toggle:{item.id}\")");
             }
             continue;
         }

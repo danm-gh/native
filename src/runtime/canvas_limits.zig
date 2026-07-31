@@ -169,12 +169,12 @@ pub const max_registered_canvas_font_bytes: usize = 24 * 1024 * 1024;
 // lockstep.
 pub const max_canvas_widget_nodes_per_view: usize = 1024;
 pub const max_canvas_widget_semantics_per_view: usize = 1024;
-// Raised from 2048 with the inline-span/markdown work: a rendered document
-// retains its full plain text (paragraph bytes are stored once; span slices
-// rebase into them) plus link payloads, and 2048 bytes could not hold a
-// README-sized document. Raised again with the node-budget raise:
-// a 1024-node view retains proportionally more text.
-pub const max_canvas_widget_text_bytes_per_view: usize = 65536;
+// Raised from 2048 with the inline-span/markdown work, then from 64 KiB for
+// editable code surfaces: a simple editor must retain a practical source
+// file (roughly 10k ordinary code lines) plus the surrounding view chrome.
+// Syntax paint remains viewport-bounded, so this larger SOURCE budget does
+// not enlarge the display list or retained span pools.
+pub const max_canvas_widget_text_bytes_per_view: usize = 512 * 1024;
 pub const max_canvas_widget_source_text_entries_per_view: usize = 256;
 /// Retained editor undo/redo is delta-based: changed bytes share this
 /// per-view pool and metadata stays bounded independently. Matching the

@@ -1,0 +1,1 @@
+fix: **Code-editor presentation polish**: JavaScript and TypeScript object keys and typed bindings now use the same syntax color as variables, while CSS declaration names retain their property color; numbered editors also use their full trailing width so fitting lines do not produce false horizontal scrolling.

@@ -164,9 +164,13 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
             if (!canvas.widgetScrollsAxis(scroll_node.widget, axis)) return false;
 
             if (scroll_node.widget.kind == .textarea) {
-                const max_offset = canvas.textInputMaxScrollOffsetForWidget(scroll_node.widget, self.widget_tokens);
+                const max_offset = if (axis == .vertical)
+                    canvas.textInputMaxScrollOffsetForWidget(scroll_node.widget, self.widget_tokens)
+                else
+                    canvas.textInputMaxHorizontalScrollOffsetForWidget(scroll_node.widget, self.widget_tokens);
                 if (max_offset <= 0) return false;
-                const current_offset = std.math.clamp(scroll_node.widget.value, 0, max_offset);
+                const value = if (axis == .vertical) scroll_node.widget.value else scroll_node.widget.value_x;
+                const current_offset = std.math.clamp(value, 0, max_offset);
                 return if (delta > 0) current_offset < max_offset else current_offset > 0;
             }
 
@@ -191,8 +195,8 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
             const scroll_node = self.widget_layout_nodes[scroll_index];
             if (!canvasWidgetScrollableKind(scroll_node.widget.kind)) return null;
             if (scroll_node.widget.kind == .textarea) {
-                if (axis != .vertical) return null;
-                return self.applyCanvasWidgetTextareaScroll(scroll_index, delta, source);
+                if (!canvas.widgetScrollsAxis(scroll_node.widget, axis)) return null;
+                return applyCanvasWidgetTextareaScrollAxis(self, scroll_index, axis, delta, source);
             }
             if (canvasWidgetModelDrivenVirtual(scroll_node.widget)) return null;
             if (!canvas.widgetScrollsAxis(scroll_node.widget, axis)) return null;
@@ -246,28 +250,43 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
         }
 
         pub fn applyCanvasWidgetTextareaScroll(self: *RuntimeView, scroll_index: usize, delta_y: f32, source: CanvasWidgetScrollSource) anyerror!?geometry.RectF {
+            return applyCanvasWidgetTextareaScrollAxis(self, scroll_index, .vertical, delta_y, source);
+        }
+
+        fn applyCanvasWidgetTextareaScrollAxis(self: *RuntimeView, scroll_index: usize, comptime axis: canvas.ScrollAxis, delta: f32, source: CanvasWidgetScrollSource) anyerror!?geometry.RectF {
             if (scroll_index >= self.widget_layout_node_count) return null;
             const widget = self.widget_layout_nodes[scroll_index].widget;
             if (widget.kind != .textarea) return null;
 
             const viewport = canvas.textInputViewportForWidget(widget, self.widget_tokens) orelse return null;
+            const vertical = axis == .vertical;
             const current = canvas.ScrollAxisState{
-                .offset = canvas.clampedTextInputScrollOffsetForWidget(widget, self.widget_tokens, widget.value),
-                .viewport_extent = viewport.height,
-                .content_extent = canvas.textInputContentExtentForWidget(widget, self.widget_tokens),
+                .offset = if (vertical)
+                    canvas.clampedTextInputScrollOffsetForWidget(widget, self.widget_tokens, widget.value)
+                else
+                    canvas.clampedTextInputHorizontalScrollOffsetForWidget(widget, self.widget_tokens, widget.value_x),
+                .viewport_extent = if (vertical) viewport.height else viewport.width,
+                .content_extent = if (vertical)
+                    canvas.textInputContentExtentForWidget(widget, self.widget_tokens)
+                else
+                    canvas.textInputContentWidthForWidget(widget, self.widget_tokens),
             };
             const next = switch (source) {
-                .wheel => current.applyWheelClamped(delta_y, self.widget_tokens.scroll),
+                .wheel => current.applyWheelClamped(delta, self.widget_tokens.scroll),
                 .discrete => discrete: {
                     var state = current;
-                    state.offset += delta_y;
+                    state.offset += delta;
                     state.velocity = 0;
                     break :discrete state.clamped();
                 },
             };
             if (next.offset == current.offset) return null;
 
-            self.widget_layout_nodes[scroll_index].widget.value = next.offset;
+            if (vertical) {
+                self.widget_layout_nodes[scroll_index].widget.value = next.offset;
+            } else {
+                self.widget_layout_nodes[scroll_index].widget.value_x = next.offset;
+            }
             try self.refreshCanvasWidgetSemantics();
             self.widget_revision += 1;
             return self.canvasWidgetDirtyBounds(scroll_index, widget.frame);
@@ -445,16 +464,21 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
 
         /// The horizontal content extent: how far the region's mounted
         /// descendants reach rightward, rebased to offset 0. Textareas
-        /// and virtualized containers never scroll horizontally, so
-        /// their horizontal content pins to the viewport width. Closed
+        /// ordinary textareas pin horizontally; editable no-wrap code
+        /// reports its longest logical line. Closed
         /// disclosure subtrees are skipped — concealed content lays out
         /// at full size and must not inflate the scrollable range on
         /// either axis (the semantics walker applies the same rule).
         pub fn canvasWidgetScrollContentExtentX(self: *const RuntimeView, scroll_index: usize, viewport: geometry.RectF) f32 {
-            if (scroll_index < self.widget_layout_node_count and
-                (self.widget_layout_nodes[scroll_index].widget.kind == .textarea or self.widget_layout_nodes[scroll_index].widget.layout.virtualized))
-            {
-                return viewport.width;
+            if (scroll_index < self.widget_layout_node_count) {
+                const widget = self.widget_layout_nodes[scroll_index].widget;
+                if (widget.kind == .textarea) {
+                    return if (widget.code_editor)
+                        @max(viewport.width, canvas.textInputContentWidthForWidget(widget, self.widget_tokens))
+                    else
+                        viewport.width;
+                }
+                if (widget.layout.virtualized) return viewport.width;
             }
             return canvas_widget_runtime.canvasWidgetLayoutScrollContentExtentX(
                 self.widget_layout_nodes[0..self.widget_layout_node_count],
@@ -488,8 +512,7 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
 
         /// Keep the editable field's caret inside its visible span after
         /// a text or caret change: textareas scroll vertically, single-
-        /// line fields horizontally — both through the widget's retained
-        /// `value` offset channel.
+        /// line fields horizontally, and no-wrap code editors do both.
         pub fn scrollCanvasTextInputCaretIntoView(self: *RuntimeView, index: usize) void {
             if (index >= self.widget_layout_node_count) return;
             var widget = self.widget_layout_nodes[index].widget;
@@ -501,6 +524,13 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
             }
             if (widget.kind != .textarea) return;
 
+            if (widget.code_editor and widget.text_no_wrap) {
+                const next_x = canvas.textInputCaretVisibleScrollOffsetForWidget(widget, self.widget_tokens, widget.value_x);
+                if (next_x != widget.value_x) {
+                    widget.value_x = next_x;
+                    self.widget_layout_nodes[index].widget.value_x = next_x;
+                }
+            }
             const viewport = canvas.textInputViewportForWidget(widget, self.widget_tokens) orelse return;
             const geometry_value = canvas.textGeometryForWidget(widget, self.widget_tokens);
             const caret = geometry_value.caret_bounds orelse return;

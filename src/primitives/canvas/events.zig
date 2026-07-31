@@ -134,6 +134,104 @@ pub fn widgetKeyboardNewlineTextEditEvent(kind: WidgetKind, event: WidgetKeyboar
     return .{ .insert_text = "\n" };
 }
 
+/// Editable code owns a plain Tab as indentation input. The file's
+/// leading whitespace votes for tabs versus spaces; space widths 2..8
+/// compete by how many indentation levels they divide cleanly, with the
+/// wider width winning exact ties (4-space files also divide by 2).
+/// Ambiguous or unindented source falls back to two spaces.
+pub fn widgetCodeTabTextEditEvent(widget: Widget, event: WidgetKeyboardEvent) ?TextInputEvent {
+    if (widget.kind != .textarea or !widget.code_editor or widget.state.disabled) return null;
+    if (event.phase != .key_down or event.focus_moved or event.text.len != 0) return null;
+    if (event.modifiers.shift or event.modifiers.hasNavigationModifier()) return null;
+    if (!std.ascii.eqlIgnoreCase(event.key, "tab")) return null;
+    return .{ .insert_text = codeIndentationInsertion(widget) };
+}
+
+const CodeIndentKind = enum { none, spaces, tabs };
+
+fn codeIndentationInsertion(widget: Widget) []const u8 {
+    var tab_lines: usize = 0;
+    var space_lines: usize = 0;
+    var space_width_scores: [9]usize = @splat(0);
+    var only_space_indent: ?usize = null;
+
+    var line_start: usize = 0;
+    while (line_start <= widget.text.len) {
+        const newline = std.mem.indexOfScalarPos(u8, widget.text, line_start, '\n');
+        const line_end = newline orelse widget.text.len;
+        const line = widget.text[line_start..line_end];
+        var cursor: usize = 0;
+        var spaces: usize = 0;
+        var tabs: usize = 0;
+        while (cursor < line.len) : (cursor += 1) {
+            switch (line[cursor]) {
+                ' ' => spaces += 1,
+                '\t' => tabs += 1,
+                else => break,
+            }
+        }
+        // Whitespace-only lines do not state a file convention.
+        if (cursor < line.len and cursor > 0) {
+            if (tabs > 0) {
+                tab_lines += 1;
+            } else {
+                space_lines += 1;
+                only_space_indent = if (space_lines == 1) spaces else null;
+                for (2..space_width_scores.len) |width| {
+                    if (spaces % width == 0) space_width_scores[width] += 1;
+                }
+            }
+        }
+
+        if (newline == null) break;
+        line_start = line_end + 1;
+    }
+
+    const selection = widget.text_selection orelse text_model.TextSelection.collapsed(widget.text.len);
+    const local_kind = codeIndentKindAt(widget.text, selection.focus);
+    const tabs_win = tab_lines > space_lines or
+        (tab_lines == space_lines and tab_lines > 0 and local_kind == .tabs);
+    if (tabs_win) return "\t";
+
+    var inferred_width: usize = 2;
+    if (space_lines == 1) {
+        const width = only_space_indent orelse 0;
+        if (width >= 2 and width <= 8) inferred_width = width;
+    } else if (space_lines > 1) {
+        var best_width: usize = 2;
+        var best_score: usize = 0;
+        for (2..space_width_scores.len) |width| {
+            const score = space_width_scores[width];
+            if (score > best_score or (score == best_score and score > 0 and width > best_width)) {
+                best_width = width;
+                best_score = score;
+            }
+        }
+        if (best_score * 2 >= space_lines) inferred_width = best_width;
+    }
+
+    return switch (inferred_width) {
+        3 => "   ",
+        4 => "    ",
+        5 => "     ",
+        6 => "      ",
+        7 => "       ",
+        8 => "        ",
+        else => "  ",
+    };
+}
+
+fn codeIndentKindAt(text: []const u8, offset: usize) CodeIndentKind {
+    const caret = @min(offset, text.len);
+    const line_start = if (std.mem.lastIndexOfScalar(u8, text[0..caret], '\n')) |newline| newline + 1 else 0;
+    if (line_start >= text.len) return .none;
+    return switch (text[line_start]) {
+        '\t' => .tabs,
+        ' ' => .spaces,
+        else => .none,
+    };
+}
+
 /// The single-line text-entry kinds: their value can never hold a line
 /// break (Enter submits instead of editing — see
 /// `widgetKeyboardNewlineTextEditEvent`), so text inserted into them

@@ -321,6 +321,32 @@ test "keyboard events resolve activation and submit messages" {
     try testing.expectEqual(@as(?Msg, null), tree.msgForKeyboard(checkbox.id, letter));
 }
 
+test "tree keyboard navigation can select without dispatching pointer activation" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+
+    var ui = InboxUi.init(arena_state.allocator());
+    const tree = try ui.finalize(ui.tree(.{}, .{
+        ui.listItem(.{
+            .on_press = .add,
+            .on_change = .load_more,
+            .semantics = .{ .role = .treeitem },
+        }, "main.zig"),
+    }));
+    const row = tree.root.children[0];
+
+    try testing.expectEqual(Msg.add, tree.msgForPointer(row.id, .up).?);
+    try testing.expectEqual(Msg.load_more, tree.msgForKeyboard(row.id, .{
+        .phase = .key_down,
+        .key = "arrowdown",
+        .focus_moved = true,
+    }).?);
+    try testing.expectEqual(Msg.add, tree.msgForKeyboard(row.id, .{
+        .phase = .key_down,
+        .key = "enter",
+    }).?);
+}
+
 test "textarea keyboard: enter edits a newline, submit rides the primary chord" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();

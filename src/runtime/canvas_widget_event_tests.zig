@@ -627,7 +627,7 @@ test "only a focused live terminal owns Tab and focus entry suppresses the whole
     try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_focused_id);
     try std.testing.expectEqual(@as(canvas.ObjectId, 2), app_state.target_id);
     try std.testing.expect(app_state.focus_moved);
-    try std.testing.expect(harness.runtime.views[0].canvas_widget_terminal_focus_entry_tab_held);
+    try std.testing.expect(harness.runtime.views[0].canvas_widget_tab_input_focus_entry_held);
 
     // Auto-repeat while Tab is held, then its key-up: neither produces
     // another widget event at the terminal.
@@ -646,7 +646,7 @@ test "only a focused live terminal owns Tab and focus entry suppresses the whole
         .modifiers = .{ .shift = true },
     } });
     try std.testing.expectEqual(@as(u32, 3), app_state.keyboard_count);
-    try std.testing.expect(!harness.runtime.views[0].canvas_widget_terminal_focus_entry_tab_held);
+    try std.testing.expect(!harness.runtime.views[0].canvas_widget_tab_input_focus_entry_held);
 
     // The same nonzero binding after session exit is no longer an input
     // owner: its published grid says the session cannot accept input,
@@ -2407,12 +2407,14 @@ test "a target-less composition stays target-less when a text field takes focus 
     // The composition STARTS target-less (nothing focused): the preedit
     // buffers for the surface's own consumer.
     harness.runtime.views[0].canvas_widget_focused_id = 0;
-    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = "canvas",
-        .kind = .ime_set_composition,
-        .text = "\xe3\x81\x8b", // か
-    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{
+        .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = .ime_set_composition,
+            .text = "\xe3\x81\x8b", // か
+        },
+    });
     try std.testing.expectEqual(@as(u32, 0), app_state.committed_count);
 
     // Focus lands on a text field mid-sequence. The empty commit
@@ -2600,12 +2602,14 @@ test "target-less IME preedit is per-surface and command chords never commit tex
     harness.runtime.views[1].focused = true;
 
     // Surface A composes; the preedit is provisional — nothing commits.
-    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
-        .window_id = 1,
-        .label = "canvas-a",
-        .kind = .ime_set_composition,
-        .text = "\xe3\x81\x8b", // か
-    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{
+        .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas-a",
+            .kind = .ime_set_composition,
+            .text = "\xe3\x81\x8b", // か
+        },
+    });
     try std.testing.expectEqual(@as(u32, 0), app_state.committed_count);
 
     // THE per-surface pin: surface B's empty commit must NOT insert

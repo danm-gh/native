@@ -120,14 +120,15 @@ pub fn widgetVirtualRuntimeScrolled(widget: Widget) bool {
 /// their axis through it, and the scrollbar/driver emit only the axes
 /// it grants. Vertical: every scrollable kind (scroll views unless
 /// declared `horizontal`, textareas, the virtualized containers).
-/// Horizontal: only a non-virtualized `.scroll_view` declared
-/// `horizontal` or `both` — virtualization is vertical machinery
-/// (windowed ranges price rows, not columns), so a virtualized region
-/// never grants the horizontal axis.
+/// Horizontal: a non-virtualized `.scroll_view` declared `horizontal` or
+/// `both`, plus an editable no-wrap code textarea. Virtualization is
+/// vertical machinery (windowed ranges price rows, not columns), so a
+/// virtualized region never grants the horizontal axis.
 pub fn widgetScrollsAxis(widget: Widget, axis: token_model.ScrollAxis) bool {
     return switch (axis) {
         .vertical => widget.kind != .scroll_view or widget.scroll_axes.scrollsVertically() or widget.layout.virtualized,
-        .horizontal => widget.kind == .scroll_view and widget.scroll_axes.scrollsHorizontally() and !widget.layout.virtualized,
+        .horizontal => (widget.kind == .scroll_view and widget.scroll_axes.scrollsHorizontally() and !widget.layout.virtualized) or
+            (widget.kind == .textarea and widget.code_editor and widget.text_no_wrap),
     };
 }
 

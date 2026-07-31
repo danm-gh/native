@@ -154,6 +154,9 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             // a newline; submit rides the primary-modifier chord instead.
             // Shared with the app dispatch path so the model's `on_input`
             // hears exactly the edit the retained text applied.
+            if (canvas.widgetCodeTabTextEditEvent(widget, keyboard)) |tab_edit| {
+                return tab_edit;
+            }
             if (canvas.widgetKeyboardNewlineTextEditEvent(widget.kind, keyboard)) |newline_edit| {
                 return newline_edit;
             }

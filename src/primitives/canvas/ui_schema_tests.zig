@@ -22,8 +22,8 @@ test "registry codes are stable: assigned at birth, never renumbered or renamed"
     // the new fingerprint ONLY for additions; renames/renumbers are
     // schema-version-bump events, not silent edits.
     try testing.expectEqual(@as(usize, 70), schema.elements.len);
-    try testing.expectEqual(@as(usize, 91), schema.attrs.len);
-    try testing.expectEqual(@as(usize, 13), schema.events.len);
+    try testing.expectEqual(@as(usize, 93), schema.attrs.len);
+    try testing.expectEqual(@as(usize, 14), schema.events.len);
     // The element table runs through the span composite (64), the
     // bubble-reactions composite (65), the media surface (66), the
     // runtime-image leaf (67), the video playback composite (68), and
@@ -43,16 +43,18 @@ test "registry codes are stable: assigned at birth, never renumbered or renamed"
     // autoplay (83), loop (84), and muted (85), the scroll-axis
     // attributes axis (86) and value-x (87), and the terminal
     // attributes pty (88) and scrollback (89), and the code language
-    // (90) and line-numbers (91) declarations.
+    // (90), line-numbers (91), and editable-code (92) declarations,
+    // plus the flat disclosure-tree hierarchy level tree-level (93).
     try testing.expectEqual(
-        @as(u64, 0x8c9311ac81d2a800),
+        @as(u64, 0x590814a0a23b9935),
         tableFingerprint(schema.AttrInfo, &schema.attrs),
     );
     // The event table runs through the pointer-hover containment pair
-    // hover-enter (11) and hover-leave (12) and the terminal view-state
-    // echo terminal (13).
+    // hover-enter (11) and hover-leave (12), the terminal view-state
+    // echo terminal (13), and the desktop gesture channel
+    // double-press (14).
     try testing.expectEqual(
-        @as(u64, 0x62d715c2db7951d6),
+        @as(u64, 0x0cdda4a2d5a85101),
         tableFingerprint(schema.EventInfo, &schema.events),
     );
 }

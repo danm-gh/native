@@ -1,0 +1,1 @@
+improvement: **Composable code presentation**: `ui.code` and `<code>` now provide bare highlighted content without their own background, border, radius, shadow, or padding; wrap them in a panel or card when surface chrome is wanted. An enabled line-number gutter remains opaque while horizontally scrolling so source glyphs cannot clash with its pinned markers.

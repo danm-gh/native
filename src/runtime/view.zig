@@ -161,12 +161,10 @@ pub fn clearImeGraceOnViewBlur(runtime: anytype, view: *RuntimeView) void {
     // otherwise leave the carry armed to swallow the refocused view's
     // first unrelated commit.
     view.canvas_widget_claimed_key_grace = .none;
-    // A Tab that entered a live terminal suppresses its repeats and
-    // release until the physical key comes up. If the view blurs first,
-    // that release may never arrive here; retire the latch with the
-    // other view-local input graces so a later Tab is never mistaken
-    // for the tail of the old gesture.
-    view.canvas_widget_terminal_focus_entry_tab_held = false;
+    // A Tab that entered a Tab-owning editor (live terminal or editable
+    // code) suppresses its repeats and release until the physical key
+    // comes up. If the view blurs first, retire the latch here.
+    view.canvas_widget_tab_input_focus_entry_held = false;
     // Same physical-lifetime rule for terminal Paste: a native menu can
     // synthesize only the key-down, and a real Cmd/Ctrl+V may release its
     // modifier before V. Blur retires either incomplete gesture so no
@@ -538,12 +536,11 @@ pub const RuntimeView = struct {
     /// one is still held, on hosts that emit input-method text before
     /// its key_down) flows instead of being eaten by a stale latch.
     canvas_widget_claimed_key_grace: CanvasWidgetClaimedKeyGrace = .none,
-    /// A physical Tab whose first key-down moved focus INTO a live
-    /// terminal. Its auto-repeats and eventual release still belong to
-    /// focus traversal, not the newly focused pty; the gpu-input pass
-    /// suppresses those transitions and clears this on key-up (or view
-    /// blur through `clearImeGraceOnViewBlur`).
-    canvas_widget_terminal_focus_entry_tab_held: bool = false,
+    /// A physical Tab whose first key-down moved focus INTO a Tab-owning
+    /// editor (live terminal or editable code). Its auto-repeats and
+    /// eventual release still belong to focus traversal, not input for
+    /// the newly focused target.
+    canvas_widget_tab_input_focus_entry_held: bool = false,
     /// A Cmd/Ctrl+V key-down the clipboard pass converted into terminal
     /// paste input. Its physical V release belongs to that paste even if
     /// the modifier came up first; the raw gpu-input pass consumes it

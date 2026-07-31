@@ -18,6 +18,7 @@ pub const Language = enum {
     javascript,
     typescript,
     json,
+    yaml,
     shell,
     python,
     rust,
@@ -26,6 +27,8 @@ pub const Language = enum {
     html,
     css,
     sql,
+    jsx,
+    tsx,
 };
 
 /// Lexer state carried between bounded source chunks by `Ui.code`.
@@ -80,10 +83,14 @@ fn restoreHtmlTagContext(state: *HighlightState) bool {
 pub fn languageFromName(name_raw: []const u8) Language {
     const name = std.mem.trim(u8, name_raw, " \t\r\n");
     if (std.ascii.eqlIgnoreCase(name, "zig")) return .zig;
-    if (std.ascii.eqlIgnoreCase(name, "jsx") or std.ascii.eqlIgnoreCase(name, "tsx")) return .html;
-    if (std.ascii.eqlIgnoreCase(name, "js") or std.ascii.eqlIgnoreCase(name, "javascript")) return .javascript;
+    if (std.ascii.eqlIgnoreCase(name, "jsx")) return .jsx;
+    if (std.ascii.eqlIgnoreCase(name, "tsx")) return .tsx;
+    if (std.ascii.eqlIgnoreCase(name, "js") or
+        std.ascii.eqlIgnoreCase(name, "mjs") or
+        std.ascii.eqlIgnoreCase(name, "javascript")) return .javascript;
     if (std.ascii.eqlIgnoreCase(name, "ts") or std.ascii.eqlIgnoreCase(name, "typescript")) return .typescript;
     if (std.ascii.eqlIgnoreCase(name, "json") or std.ascii.eqlIgnoreCase(name, "jsonc")) return .json;
+    if (std.ascii.eqlIgnoreCase(name, "yaml") or std.ascii.eqlIgnoreCase(name, "yml")) return .yaml;
     if (std.ascii.eqlIgnoreCase(name, "sh") or std.ascii.eqlIgnoreCase(name, "bash") or std.ascii.eqlIgnoreCase(name, "zsh") or std.ascii.eqlIgnoreCase(name, "shell")) return .shell;
     if (std.ascii.eqlIgnoreCase(name, "py") or std.ascii.eqlIgnoreCase(name, "python")) return .python;
     if (std.ascii.eqlIgnoreCase(name, "rs") or std.ascii.eqlIgnoreCase(name, "rust")) return .rust;
@@ -166,14 +173,16 @@ fn wordColor(language: Language, word: []const u8) ?text_spans.TextSpanColor {
     if (word.len > 0 and word[0] == '@') return .syntax_function;
     if (language == .zig) return zig_words.get(word);
     if (language == .python and wordInList(word, "True False None", false)) return .syntax_literal;
+    if (language == .yaml and wordInList(word, "true false null yes no on off", true)) return .syntax_literal;
     if (wordInList(word, "true false null nil none undefined this self super", language == .sql)) return .syntax_literal;
 
     const keywords = switch (language) {
         .plain => return null,
         .zig => unreachable,
-        .javascript => "async await break case catch class const continue debugger default delete do else export extends finally for from function get if import in instanceof let new of return set static switch throw try typeof var void while with yield",
-        .typescript => "abstract any as asserts async await bigint boolean break case catch class const constructor continue declare default delete do else enum export extends finally for from function get if implements import in infer interface instanceof is keyof let module namespace never new number object of override private protected public readonly require return satisfies set static string super switch symbol this throw try type typeof undefined unique unknown var void while with yield",
+        .javascript, .jsx => "async await break case catch class const continue debugger default delete do else export extends finally for from function get if import in instanceof let new of return set static switch throw try typeof var void while with yield",
+        .typescript, .tsx => "abstract any as asserts async await bigint boolean break case catch class const constructor continue declare default delete do else enum export extends finally for from function get if implements import in infer interface instanceof is keyof let module namespace never new number object of override private protected public readonly require return satisfies set static string super switch symbol this throw try type typeof undefined unique unknown var void while with yield",
         .json => "",
+        .yaml => "",
         .shell => "case coproc do done elif else esac fi for function if in select then time until while",
         .python => "and as assert async await break case class continue def del elif else except finally for from global if import in is lambda match nonlocal not or pass raise return try while with yield",
         .rust => "as async await break const continue crate dyn else enum extern fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait type union unsafe use where while",
@@ -189,7 +198,7 @@ fn wordColor(language: Language, word: []const u8) ?text_spans.TextSpanColor {
         .rust => "bool char str String Vec Option Result Box i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64",
         .c_like => "bool boolean byte char decimal double float int long object sbyte short string uint ulong ushort void",
         .go => "any bool byte comparable complex64 complex128 error float32 float64 int int8 int16 int32 int64 rune string uint uint8 uint16 uint32 uint64 uintptr",
-        .javascript, .typescript => "Array BigInt Boolean Date Error Map Number Object Promise RegExp Set String Symbol",
+        .javascript, .typescript, .jsx, .tsx => "Array BigInt Boolean Date Error Map Number Object Promise RegExp Set String Symbol",
         .python => "bool bytes dict float int list object set str tuple",
         else => "",
     };
@@ -202,10 +211,10 @@ fn identifierStructuralColor(language: Language, source: []const u8, end: usize)
     while (cursor < source.len and (source[cursor] == ' ' or source[cursor] == '\t')) cursor += 1;
     if (cursor >= source.len or source[cursor] == '\n') return null;
     if (source[cursor] == '(' and language != .plain and language != .json) return .syntax_function;
-    if (source[cursor] == ':' and switch (language) {
-        .javascript, .typescript, .css => true,
-        else => false,
-    }) return .syntax_property;
+    // JavaScript/TypeScript object keys and typed bindings use the same
+    // identifier ink as variables. CSS declarations retain the dedicated
+    // property role.
+    if (source[cursor] == ':' and language == .css) return .syntax_property;
     if (source[cursor] == '{' and language == .css) return .syntax_literal;
     return null;
 }
@@ -218,6 +227,92 @@ fn identifierContinue(byte: u8) bool {
     return std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '@' or byte == '$';
 }
 
+fn yamlMappingKeyEnd(source: []const u8, start: usize) ?usize {
+    if (start >= source.len) return null;
+    // Let the sequence/explicit-key indicator stand on its own; the key
+    // beginning after its whitespace is considered from the next token.
+    if ((source[start] == '-' or source[start] == '?') and
+        start + 1 < source.len and
+        (source[start + 1] == ' ' or source[start + 1] == '\t'))
+    {
+        return null;
+    }
+
+    var before = start;
+    while (before > 0 and (source[before - 1] == ' ' or source[before - 1] == '\t')) before -= 1;
+    if (before > 0) {
+        switch (source[before - 1]) {
+            '\n', '\r', '{', '[', ',', '-', '?' => {},
+            else => return null,
+        }
+    }
+
+    var quote: ?u8 = null;
+    var cursor = start;
+    while (cursor < source.len) {
+        const byte = source[cursor];
+        if (quote) |active_quote| {
+            if (active_quote == '"' and byte == '\\' and cursor + 1 < source.len) {
+                cursor += 2;
+                continue;
+            }
+            if (byte == active_quote) {
+                // YAML single-quoted strings escape a quote by doubling it.
+                if (active_quote == '\'' and cursor + 1 < source.len and source[cursor + 1] == '\'') {
+                    cursor += 2;
+                    continue;
+                }
+                quote = null;
+            }
+            cursor += 1;
+            continue;
+        }
+
+        if (byte == '"' or byte == '\'') {
+            quote = byte;
+            cursor += 1;
+            continue;
+        }
+        if (byte == ':') {
+            const separates_value = cursor + 1 == source.len or switch (source[cursor + 1]) {
+                ' ', '\t', '\r', '\n', ',', '}', ']' => true,
+                else => false,
+            };
+            if (!separates_value) {
+                cursor += 1;
+                continue;
+            }
+            var end = cursor;
+            while (end > start and (source[end - 1] == ' ' or source[end - 1] == '\t')) end -= 1;
+            return if (end > start) end else null;
+        }
+        if (byte == '\n' or byte == '\r' or byte == ',' or byte == '}' or byte == ']') return null;
+        cursor += 1;
+    }
+    return null;
+}
+
+fn yamlSymbolEnd(source: []const u8, start: usize) usize {
+    var cursor = start + 1;
+    while (cursor < source.len) : (cursor += 1) {
+        switch (source[cursor]) {
+            ' ', '\t', '\r', '\n', ',', '[', ']', '{', '}' => break,
+            else => {},
+        }
+    }
+    return cursor;
+}
+
+fn yamlDocumentMarkerLength(rest: []const u8) usize {
+    if (rest.len < 3) return 0;
+    if (!std.mem.startsWith(u8, rest, "---") and !std.mem.startsWith(u8, rest, "...")) return 0;
+    if (rest.len == 3) return 3;
+    return switch (rest[3]) {
+        ' ', '\t', '\r', '\n', '#' => 3,
+        else => 0,
+    };
+}
+
 fn htmlTagOpenerByte(byte: u8) bool {
     return identifierStart(byte) or byte == '/' or byte == '!' or byte == '?' or byte == '>';
 }
@@ -226,6 +321,18 @@ fn htmlPreviousAllowsTag(byte: u8) bool {
     return switch (byte) {
         0, '{', '(', '[', ',', ':', '?', '=', '>', '!', '&', '|', ';' => true,
         else => false,
+    };
+}
+
+fn isHtmlFamily(language: Language) bool {
+    return language == .html or language == .jsx or language == .tsx;
+}
+
+fn embeddedScriptLanguage(language: Language) Language {
+    return switch (language) {
+        .jsx => .javascript,
+        .html, .tsx => .typescript,
+        else => language,
     };
 }
 
@@ -242,6 +349,11 @@ fn htmlLessThanStartsTag(source: []const u8, index: usize, state: HighlightState
         cursor -= 1;
         const byte = source[cursor];
         if (byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n') continue;
+        if (identifierContinue(byte)) {
+            const end = cursor + 1;
+            while (cursor > 0 and identifierContinue(source[cursor - 1])) cursor -= 1;
+            return wordInList(source[cursor..end], "return throw yield", false);
+        }
         return htmlPreviousAllowsTag(byte);
     }
     return htmlPreviousAllowsTag(state.html_previous_significant);
@@ -266,7 +378,7 @@ fn stringQuote(language: Language, byte: u8) bool {
         // follows one scalar or escape; otherwise it introduces a lifetime
         // (`'a`, `'static`) and must not open multiline string state.
         .rust => byte == '"',
-        .shell, .javascript, .typescript, .go => byte == '"' or byte == '\'' or byte == '`',
+        .shell, .javascript, .typescript, .jsx, .tsx, .go => byte == '"' or byte == '\'' or byte == '`',
         else => byte == '"' or byte == '\'',
     };
 }
@@ -318,19 +430,27 @@ fn backslashEscapesQuote(language: Language, state: HighlightState, quote: u8) b
         // Plain HTML attributes do not use JavaScript escapes for either
         // quote style, but strings inside JSX expressions do.
         .html => state.html_expression_depth > 0,
+        // JSX attribute text follows HTML quote rules; JavaScript strings
+        // at top level or inside an attribute expression use escapes.
+        .jsx, .tsx => !state.html_in_tag or state.html_expression_depth > state.html_tag_expression_base,
         // Shell single quotes are literal. SQL quotes are escaped by
         // doubling them, never with a backslash.
         .shell => quote != '\'',
+        .yaml => quote == '"',
         .sql => false,
         else => true,
     };
 }
 
-fn lineCommentPrefix(language: Language, rest: []const u8) usize {
+fn lineCommentPrefix(language: Language, source: []const u8, index: usize) usize {
+    const rest = source[index..];
     if (rest.len == 0) return 0;
     return switch (language) {
-        .zig, .javascript, .typescript, .rust, .c_like, .go => if (std.mem.startsWith(u8, rest, "//")) 2 else 0,
+        .zig, .javascript, .typescript, .jsx, .tsx, .rust, .c_like, .go => if (std.mem.startsWith(u8, rest, "//")) 2 else 0,
         .shell, .python => if (rest[0] == '#') 1 else 0,
+        .yaml => if (rest[0] == '#' and
+            (index == 0 or source[index - 1] == ' ' or source[index - 1] == '\t' or
+                source[index - 1] == '\r' or source[index - 1] == '\n')) 1 else 0,
         .sql => if (std.mem.startsWith(u8, rest, "--")) 2 else 0,
         else => 0,
     };
@@ -338,7 +458,7 @@ fn lineCommentPrefix(language: Language, rest: []const u8) usize {
 
 fn hasBlockComments(language: Language) bool {
     return switch (language) {
-        .zig, .javascript, .typescript, .rust, .c_like, .go, .css, .sql => true,
+        .zig, .javascript, .typescript, .jsx, .tsx, .rust, .c_like, .go, .css, .sql => true,
         else => false,
     };
 }
@@ -471,7 +591,7 @@ pub fn highlightWithState(
                 state.block_comment = true;
             }
             color = .syntax_comment;
-        } else if (lineCommentPrefix(language, rest) != 0) {
+        } else if (lineCommentPrefix(language, source, index) != 0) {
             while (index < source.len and source[index] != '\n') index += 1;
             state.line_comment = index == source.len;
             color = .syntax_comment;
@@ -479,7 +599,7 @@ pub fn highlightWithState(
             while (index < source.len and source[index] != '\n') index += 1;
             state.preprocessor_line = index == source.len;
             color = .syntax_constant;
-        } else if (language == .html and
+        } else if (isHtmlFamily(language) and
             rest[0] == '<' and
             htmlLessThanStartsTag(source, index, state.*))
         {
@@ -490,7 +610,7 @@ pub fn highlightWithState(
             state.html_expect_tag_name = true;
             state.html_tag_expression_base = state.html_expression_depth;
             color = .syntax_plain;
-        } else if (language == .html and
+        } else if (isHtmlFamily(language) and
             state.html_in_tag and
             state.html_expression_depth == state.html_tag_expression_base and
             rest[0] == '>')
@@ -501,19 +621,36 @@ pub fn highlightWithState(
                 state.html_expect_tag_name = false;
             }
             color = .syntax_plain;
-        } else if (language == .html and rest[0] == '{') {
+        } else if (isHtmlFamily(language) and rest[0] == '{') {
             index += 1;
             state.html_expression_depth += 1;
             color = .syntax_plain;
-        } else if (language == .html and state.html_expression_depth > 0 and rest[0] == '}') {
+        } else if (isHtmlFamily(language) and state.html_expression_depth > 0 and rest[0] == '}') {
             index += 1;
             state.html_expression_depth -= 1;
             color = .syntax_plain;
         } else if (if (language == .rust) rustCharLiteralLength(rest) else null) |literal_len| {
             index += literal_len;
             color = .syntax_literal;
+        } else if (if (language == .yaml) yamlMappingKeyEnd(source, index) else null) |key_end| {
+            index = key_end;
+            color = .syntax_property;
+        } else if (language == .yaml and yamlDocumentMarkerLength(rest) != 0) {
+            index += yamlDocumentMarkerLength(rest);
+            color = .syntax_keyword;
+        } else if (language == .yaml and
+            (rest[0] == '&' or rest[0] == '*' or rest[0] == '!' or rest[0] == '%'))
+        {
+            index = yamlSymbolEnd(source, index);
+            color = .syntax_constant;
+        } else if (language == .yaml and rest[0] == '~') {
+            index += 1;
+            color = .syntax_literal;
+        } else if (language == .yaml and (rest[0] == '|' or rest[0] == '>')) {
+            index += 1;
+            color = .syntax_keyword;
         } else if (stringQuote(language, rest[0]) or
-            (language == .html and
+            (isHtmlFamily(language) and
                 (state.html_in_tag or state.html_expression_depth > 0) and
                 (rest[0] == '"' or rest[0] == '\'' or rest[0] == '`')))
         {
@@ -549,24 +686,30 @@ pub fn highlightWithState(
             index += 1;
             while (index < source.len and
                 (identifierContinue(source[index]) or
-                    ((language == .html or language == .css) and source[index] == '-')))
+                    ((language == .css or
+                        (isHtmlFamily(language) and state.html_in_tag)) and
+                        source[index] == '-')))
             {
                 index += 1;
             }
-            if (language == .html and state.html_in_tag) {
+            if (isHtmlFamily(language) and state.html_in_tag) {
                 if (state.html_expect_tag_name) {
                     color = .syntax_literal;
                     state.html_expect_tag_name = false;
-                } else if (state.html_expression_depth == 0) {
+                } else if (state.html_expression_depth == state.html_tag_expression_base) {
                     color = .syntax_function;
                 } else {
-                    color = wordColor(.typescript, source[start..index]) orelse
-                        identifierStructuralColor(.typescript, source, index) orelse
+                    const script_language = embeddedScriptLanguage(language);
+                    color = wordColor(script_language, source[start..index]) orelse
+                        identifierStructuralColor(script_language, source, index) orelse
                         .syntax_plain;
                 }
-            } else if (language == .html and state.html_expression_depth > 0) {
-                color = wordColor(.typescript, source[start..index]) orelse
-                    identifierStructuralColor(.typescript, source, index) orelse
+            } else if (isHtmlFamily(language) and
+                (state.html_expression_depth > 0 or language == .jsx or language == .tsx))
+            {
+                const script_language = embeddedScriptLanguage(language);
+                color = wordColor(script_language, source[start..index]) orelse
+                    identifierStructuralColor(script_language, source, index) orelse
                     .syntax_plain;
             } else {
                 color = wordColor(language, source[start..index]) orelse
@@ -577,7 +720,7 @@ pub fn highlightWithState(
             index += 1;
         }
 
-        if (language == .html) updateHtmlPreviousSignificant(state, source[start..index]);
+        if (isHtmlFamily(language)) updateHtmlPreviousSignificant(state, source[start..index]);
 
         // The last span already covers the entire plain-syntax remainder once
         // capacity fills, but keep scanning it so state handed to the next

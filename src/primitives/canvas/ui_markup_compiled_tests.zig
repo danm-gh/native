@@ -1120,6 +1120,18 @@ test "compiled code element matches the interpreter and Ui.code" {
     const wrapped = try wrapped_ui.finalize(CodeCompiled.build(&wrapped_ui, &model));
     try testing.expect(fixture.findByKind(wrapped.root, .scroll_view) == null);
     try testing.expect(fixture.findByText(wrapped.root, .text, "1") == null);
+
+    model.editable_code = true;
+    var editable_compiled_ui = CodeUi.init(arena);
+    const editable_compiled = try editable_compiled_ui.finalize(CodeCompiled.build(&editable_compiled_ui, &model));
+    var editable_interpreted_ui = CodeUi.init(arena);
+    const editable_interpreted = try editable_interpreted_ui.finalize(try view.build(&editable_interpreted_ui, &model));
+    var editable_hand_ui = CodeUi.init(arena);
+    const editable_hand = try editable_hand_ui.finalize(fixture.handCodeView(&editable_hand_ui, &model));
+    try expectSameTree(fixture.CodeMsg, editable_hand, editable_interpreted);
+    try expectSameTree(fixture.CodeMsg, editable_hand, editable_compiled);
+    try testing.expectEqual(canvas.WidgetKind.textarea, editable_compiled.root.kind);
+    try testing.expect(editable_compiled.root.code_editor);
 }
 
 // ------------------------------------------- template/use + style parity

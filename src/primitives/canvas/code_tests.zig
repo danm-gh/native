@@ -85,6 +85,21 @@ fn allTextSpansHaveColor(widget: canvas.Widget, color: canvas.TextSpanColor) boo
     return true;
 }
 
+fn expectCodeTabInsertion(source: []const u8, expected: []const u8) !void {
+    const edit = canvas.widgetCodeTabTextEditEvent(.{
+        .kind = .textarea,
+        .code_editor = true,
+        .text = source,
+    }, .{
+        .phase = .key_down,
+        .key = "tab",
+    }).?;
+    switch (edit) {
+        .insert_text => |text| try testing.expectEqualStrings(expected, text),
+        else => return error.TestExpectedEqual,
+    }
+}
+
 test "HTML and JSX highlighting distinguishes tags attributes expressions and strings" {
     const source =
         \\<Accordion defaultValue={["item-1"]}>
@@ -94,12 +109,64 @@ test "HTML and JSX highlighting distinguishes tags attributes expressions and st
     var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
     const spans = code_model.highlight(source, code_model.languageFromName("tsx"), &storage);
 
-    try testing.expectEqual(code_model.Language.html, code_model.languageFromName("jsx"));
+    try testing.expectEqual(code_model.Language.jsx, code_model.languageFromName("jsx"));
+    try testing.expectEqual(code_model.Language.tsx, code_model.languageFromName("tsx"));
+    try testing.expectEqual(code_model.Language.javascript, code_model.languageFromName("mjs"));
+    try testing.expectEqual(code_model.Language.yaml, code_model.languageFromName("yaml"));
+    try testing.expectEqual(code_model.Language.yaml, code_model.languageFromName("yml"));
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "Accordion").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "defaultValue").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "\"item-1\"").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "Accessible?").?.color.?);
+}
+
+test "YAML highlighting distinguishes mapping keys scalars symbols and comments" {
+    const source =
+        \\---
+        \\name: native
+        \\runs-on: macos-15
+        \\enabled: true
+        \\empty: ~
+        \\defaults: &defaults
+        \\command: "zig build test"
+        \\use: *defaults
+        \\url: https://example.test/#section # trailing comment
+    ;
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlight(source, .yaml, &storage);
+
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(spans, "---").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_property, spanWithFragment(spans, "name").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_property, spanWithFragment(spans, "runs-on").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "~").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_constant, spanWithFragment(spans, "&defaults").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_constant, spanWithFragment(spans, "*defaults").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "\"zig build test\"").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "#section").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_comment, spanWithFragment(spans, "# trailing comment").?.color.?);
+}
+
+test "TSX highlights top-level TypeScript and embedded JSX in one grammar" {
+    const source =
+        \\import type { Metadata } from "next";
+        \\export default function RootLayout() { return <html lang="en" />; }
+    ;
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlight(source, .tsx, &storage);
+
+    inline for (.{ "import", "type", "from", "export", "default", "function", "return" }) |keyword| {
+        try testing.expectEqual(
+            canvas.TextSpanColor.syntax_keyword,
+            spanWithFragment(spans, keyword).?.color.?,
+        );
+    }
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "\"next\"").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "RootLayout").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "html").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "lang").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "\"en\"").?.color.?);
 }
 
 test "JSX relational less-than preserves expression state and nested tags" {
@@ -273,15 +340,26 @@ test "token-dense fallback still updates lexer state" {
     try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(second, "const").?.color.?);
 }
 
-test "callables and object properties use Geist syntax roles" {
-    const source = "function render() { return { color: true }; }";
+test "callables and object keys use variable syntax roles" {
+    const source = "function render() { const variable = { color: true }; return variable; }";
     var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
     const spans = code_model.highlight(source, .javascript, &storage);
 
     try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(spans, "function").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "render").?.color.?);
-    try testing.expectEqual(canvas.TextSpanColor.syntax_property, spanWithFragment(spans, "color").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "variable").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "color").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
+
+    const typed_source = "const options: { enabled: boolean } = { enabled: true };";
+    var typed_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const typed_spans = code_model.highlight(typed_source, .typescript, &typed_storage);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(typed_spans, "options").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(typed_spans, "enabled").?.color.?);
+
+    var css_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const css_spans = code_model.highlight("body { color: red; }", .css, &css_storage);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_property, spanWithFragment(css_spans, "color").?.color.?);
 }
 
 test "both built-in packs use the Geist Code Block syntax palette" {
@@ -328,7 +406,11 @@ test "code wraps by default and no-wrap composes one horizontal scroller" {
     defer wrapped_arena.deinit();
     var wrapped_ui = Ui.init(wrapped_arena.allocator());
     const wrapped = try wrapped_ui.finalize(wrapped_ui.code(.{ .language = .zig }, "const answer: u32 = 42;"));
-    try testing.expectEqual(canvas.WidgetKind.panel, wrapped.root.kind);
+    try testing.expectEqual(canvas.WidgetKind.column, wrapped.root.kind);
+    try testing.expectEqual(geometry.InsetsF{}, wrapped.root.layout.padding);
+    try testing.expect(wrapped.root.style.background == null);
+    try testing.expect(wrapped.root.style.border == null);
+    try testing.expect(wrapped.root.style.radius == null);
     try testing.expect(findByKind(wrapped.root, .scroll_view) == null);
     const wrapped_text = findByKind(wrapped.root, .text).?;
     try testing.expect(!wrapped_text.text_no_wrap);
@@ -355,6 +437,71 @@ test "code wraps by default and no-wrap composes one horizontal scroller" {
         if (node.widget.kind == .text) text_width = node.frame.width;
     }
     try testing.expect(text_width > scroll_width);
+}
+
+test "editable code layout paints syntax-highlighted token runs" {
+    const source = "const answer: u32 = 42;";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .zig,
+        .editable = true,
+        .width = 320,
+        .height = 80,
+    }, source));
+
+    var nodes: [8]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        view.root,
+        geometry.RectF.init(0, 0, 320, 80),
+        &nodes,
+    );
+    const tokens = canvas.DesignTokens{};
+    var commands: [64]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetLayout(&builder, layout, tokens);
+
+    var saw_keyword = false;
+    var saw_type = false;
+    var saw_literal = false;
+    for (builder.displayList().commands) |command| {
+        switch (command) {
+            .draw_text => |draw| {
+                if (std.mem.eql(u8, draw.text, "const")) {
+                    try testing.expectEqual(tokens.colors.syntax_keyword, draw.color);
+                    saw_keyword = true;
+                } else if (std.mem.eql(u8, draw.text, "u32")) {
+                    try testing.expectEqual(tokens.colors.syntax_literal, draw.color);
+                    saw_type = true;
+                } else if (std.mem.eql(u8, draw.text, "42")) {
+                    try testing.expectEqual(tokens.colors.syntax_literal, draw.color);
+                    saw_literal = true;
+                }
+            },
+            else => {},
+        }
+    }
+    try testing.expect(saw_keyword);
+    try testing.expect(saw_type);
+    try testing.expect(saw_literal);
+
+    var selected_editor = view.root;
+    // Runtime-owned text storage can be distinct from the highlighted
+    // spans' source storage between an edit and the controlled rebuild.
+    selected_editor.text = try arena.allocator().dupe(u8, source);
+    selected_editor.text_selection = .{ .anchor = 2, .focus = 12 };
+    selected_editor.state.focused = false;
+    const selected_layout = try canvas.layoutWidgetTree(
+        selected_editor,
+        geometry.RectF.init(0, 0, 320, 80),
+        &nodes,
+    );
+    var selected_commands: [64]canvas.CanvasCommand = undefined;
+    var selected_builder = canvas.Builder.init(&selected_commands);
+    try canvas.emitWidgetLayout(&selected_builder, selected_layout, tokens);
+    var changes: [64]canvas.DiffChange = undefined;
+    _ = try canvas.DisplayList.diff(.{}, selected_builder.displayList(), &changes);
 }
 
 test "unwrapped multiline code hugs the height of every logical line" {
@@ -518,6 +665,235 @@ test "line numbers are opt-in and stay paired with logical source lines" {
     }, "// first\nconst second = true;"));
     const comment_text = findByText(comments.root, "// first\nconst second = true;").?;
     try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(comment_text.spans, "const").?.color.?);
+}
+
+test "editable line-number gutter masks horizontally scrolled source" {
+    const source = "const deliberately_long_identifier = another_deliberately_long_identifier;\n";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .zig,
+        .editable = true,
+        .line_numbers = true,
+        .wrap = false,
+        .height = 80,
+    }, source));
+    var editor = findByText(view.root, source).?;
+    editor.frame = geometry.RectF.init(0, 0, 220, 80);
+    editor.value_x = 48;
+
+    const tokens = canvas.DesignTokens{};
+    var commands: [128]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, tokens);
+
+    var source_index: ?usize = null;
+    var gutter_index: ?usize = null;
+    var marker_index: ?usize = null;
+    var gutter_rect: ?geometry.RectF = null;
+    for (builder.displayList().commands, 0..) |command, index| {
+        switch (command) {
+            .fill_rect => |fill| {
+                if (std.meta.eql(fill.fill.color, tokens.colors.background)) {
+                    gutter_index = index;
+                    gutter_rect = fill.rect;
+                }
+            },
+            .draw_text => |draw| {
+                if (std.mem.eql(u8, draw.text, "1")) {
+                    marker_index = index;
+                } else {
+                    source_index = index;
+                }
+            },
+            else => {},
+        }
+    }
+
+    try testing.expect(source_index != null);
+    try testing.expect(gutter_index != null);
+    try testing.expect(marker_index != null);
+    try testing.expect(source_index.? < gutter_index.?);
+    try testing.expect(gutter_index.? < marker_index.?);
+    try testing.expectEqual(editor.frame.x, gutter_rect.?.x);
+    try testing.expectEqual(editor.frame.y, gutter_rect.?.y);
+    try testing.expect(gutter_rect.?.width > 0);
+    try testing.expectEqual(editor.frame.height, gutter_rect.?.height);
+}
+
+test "numbered editable code does not invent trailing horizontal overflow" {
+    const source = "const concise = true;";
+    const tokens = canvas.DesignTokens{};
+    var editor = canvas.Widget{
+        .kind = .textarea,
+        .code_editor = true,
+        .code_line_number_digits = 2,
+        .text_no_wrap = true,
+        .text = source,
+        .frame = geometry.RectF.init(10, 12, 500, 80),
+    };
+
+    const broad_viewport = canvas.textInputViewportForWidget(editor, tokens).?;
+    const gutter = broad_viewport.x - editor.frame.x;
+    const text_width = canvas.measureTextWidthForFont(
+        tokens.text_measure,
+        tokens.typography.mono_font_id,
+        source,
+        tokens.typography.body_size,
+    );
+    // Exactly enough room for the gutter, source, and one-point caret.
+    editor.frame.width = gutter + text_width + 1;
+
+    const fitted_viewport = canvas.textInputViewportForWidget(editor, tokens).?;
+    try testing.expectApproxEqAbs(editor.frame.maxX(), fitted_viewport.maxX(), 0.001);
+    try testing.expectEqual(@as(f32, 0), canvas.textInputMaxHorizontalScrollOffsetForWidget(editor, tokens));
+    try testing.expectEqual(fitted_viewport.width, canvas.textInputContentWidthForWidget(editor, tokens));
+}
+
+test "editable code highlights the caret row but not a text selection" {
+    const source = "const first = 1;\nconst second = 2;\n";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .zig,
+        .editable = true,
+        .line_numbers = true,
+        .wrap = false,
+        .height = 80,
+    }, source));
+    var editor = findByText(view.root, source).?;
+    editor.frame = geometry.RectF.init(0, 0, 220, 80);
+    editor.state.focused = true;
+    editor.text_selection = canvas.TextSelection.collapsed(std.mem.indexOf(u8, source, "second").?);
+
+    var tokens = canvas.DesignTokens{};
+    tokens.colors.surface_subtle = canvas.Color.rgb8(19, 23, 29);
+    var commands: [128]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, tokens);
+
+    const caret = canvas.textGeometryForWidget(editor, tokens).caret_bounds.?;
+    var full_row_index: ?usize = null;
+    var source_index: ?usize = null;
+    var gutter_index: ?usize = null;
+    var gutter_row_index: ?usize = null;
+    var marker_index: ?usize = null;
+    var full_row: ?geometry.RectF = null;
+    var gutter_row: ?geometry.RectF = null;
+    for (builder.displayList().commands, 0..) |command, index| {
+        switch (command) {
+            .fill_rect => |fill| {
+                if (std.meta.eql(fill.fill.color, tokens.colors.surface_subtle)) {
+                    if (fill.rect.width == editor.frame.width) {
+                        full_row_index = index;
+                        full_row = fill.rect;
+                    } else {
+                        gutter_row_index = index;
+                        gutter_row = fill.rect;
+                    }
+                } else if (std.meta.eql(fill.fill.color, tokens.colors.background)) {
+                    gutter_index = index;
+                }
+            },
+            .draw_text => |draw| {
+                if (std.mem.eql(u8, draw.text, "2")) {
+                    marker_index = index;
+                } else if (!std.mem.eql(u8, draw.text, "1")) {
+                    source_index = index;
+                }
+            },
+            else => {},
+        }
+    }
+
+    try testing.expect(full_row_index != null);
+    try testing.expect(source_index != null);
+    try testing.expect(gutter_index != null);
+    try testing.expect(gutter_row_index != null);
+    try testing.expect(marker_index != null);
+    try testing.expect(full_row_index.? < source_index.?);
+    try testing.expect(source_index.? < gutter_index.?);
+    try testing.expect(gutter_index.? < gutter_row_index.?);
+    try testing.expect(gutter_row_index.? < marker_index.?);
+    try testing.expectEqual(editor.frame.x, full_row.?.x);
+    try testing.expectEqual(editor.frame.width, full_row.?.width);
+    try testing.expectEqual(caret.y, full_row.?.y);
+    try testing.expectEqual(caret.height, full_row.?.height);
+    try testing.expectEqual(full_row.?.y, gutter_row.?.y);
+    try testing.expectEqual(full_row.?.height, gutter_row.?.height);
+    try testing.expect(gutter_row.?.width < full_row.?.width);
+
+    editor.text_selection = .{ .anchor = 0, .focus = 5 };
+    var selected_commands: [128]canvas.CanvasCommand = undefined;
+    var selected_builder = canvas.Builder.init(&selected_commands);
+    try canvas.emitWidgetTree(&selected_builder, editor, tokens);
+    for (selected_builder.displayList().commands) |command| {
+        if (command == .fill_rect) {
+            try testing.expect(!std.meta.eql(command.fill_rect.fill.color, tokens.colors.surface_subtle));
+        }
+    }
+
+    editor.text_selection = canvas.TextSelection.collapsed(0);
+    editor.state.focused = false;
+    var blurred_commands: [128]canvas.CanvasCommand = undefined;
+    var blurred_builder = canvas.Builder.init(&blurred_commands);
+    try canvas.emitWidgetTree(&blurred_builder, editor, tokens);
+    for (blurred_builder.displayList().commands) |command| {
+        if (command == .fill_rect) {
+            try testing.expect(!std.meta.eql(command.fill_rect.fill.color, tokens.colors.surface_subtle));
+        }
+    }
+}
+
+test "editable code Tab infers the file indentation and falls back to two spaces" {
+    try expectCodeTabInsertion("const answer = 42;\n", "  ");
+    try expectCodeTabInsertion(
+        \\if (ready) {
+        \\  while (running) {
+        \\    tick();
+        \\  }
+        \\}
+    , "  ");
+    try expectCodeTabInsertion(
+        \\if (ready) {
+        \\    while (running) {
+        \\        tick();
+        \\    }
+        \\}
+    , "    ");
+    try expectCodeTabInsertion(
+        "if (ready) {\n\twhile (running) {\n\t\ttick();\n\t}\n}\n",
+        "\t",
+    );
+
+    const plain_textarea = canvas.Widget{
+        .kind = .textarea,
+        .text = "plain",
+    };
+    try testing.expect(canvas.widgetCodeTabTextEditEvent(plain_textarea, .{
+        .phase = .key_down,
+        .key = "tab",
+    }) == null);
+    try testing.expect(canvas.widgetCodeTabTextEditEvent(.{
+        .kind = .textarea,
+        .code_editor = true,
+        .text = "code",
+    }, .{
+        .phase = .key_down,
+        .key = "tab",
+        .modifiers = .{ .shift = true },
+    }) == null);
+    try testing.expect(canvas.widgetCodeTabTextEditEvent(.{
+        .kind = .textarea,
+        .code_editor = true,
+        .text = "code",
+    }, .{
+        .phase = .key_down,
+        .key = "tab",
+        .focus_moved = true,
+    }) == null);
 }
 
 test "empty code retains the exact source text" {
@@ -719,6 +1095,60 @@ test "direct tree code emission honors scroll viewports and later layout pages" 
         }
     }
     try testing.expect(visible_text_commands > 0);
+}
+
+test "editable code highlights the visible tail of a ten-thousand-line source" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    for (0..9_997) |_| {
+        try source.appendSlice(testing.allocator, ":root { --color: #fff; }\n");
+    }
+    try source.appendSlice(testing.allocator, "body {\n  color: red;\n}\n");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .css,
+        .editable = true,
+        .line_numbers = true,
+        .wrap = false,
+        .height = 100,
+    }, source.items));
+    var editor = findByText(view.root, source.items).?;
+    try testing.expect(editor.code_editor);
+    try testing.expectEqual(code_model.Language.css, editor.code_language);
+    try testing.expectEqual(@as(usize, 1), editor.spans.len);
+    try testing.expectEqual(@as(u8, 5), editor.code_line_number_digits);
+
+    const tokens = canvas.DesignTokens{};
+    const line_height = tokens.typography.body_size * 1.25;
+    editor.frame = geometry.RectF.init(0, 0, 500, 100);
+    editor.value = 9_997 * line_height;
+
+    var commands: [256]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, tokens);
+
+    var saw_body = false;
+    var saw_property = false;
+    var saw_late_line_number = false;
+    for (builder.displayList().commands) |command| {
+        if (command != .draw_text) continue;
+        const draw = command.draw_text;
+        if (std.mem.eql(u8, draw.text, "body")) {
+            saw_body = true;
+            try testing.expectEqual(tokens.colors.syntax_literal, draw.color);
+        }
+        if (std.mem.eql(u8, draw.text, "color")) {
+            saw_property = true;
+            try testing.expectEqual(tokens.colors.syntax_property, draw.color);
+        }
+        if (std.mem.eql(u8, draw.text, "9998")) saw_late_line_number = true;
+    }
+    try testing.expect(saw_body);
+    try testing.expect(saw_property);
+    try testing.expect(saw_late_line_number);
 }
 
 test "maximal one-line numbered code adds no retained gutter bytes" {

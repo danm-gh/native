@@ -1,0 +1,1 @@
+fix: **Stable editable-code repainting**: syntax-highlighted editors now keep unique retained command IDs while edited text and highlighted spans occupy different runtime storage, preventing a selected editor from crashing when the app deactivates.

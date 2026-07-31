@@ -980,23 +980,21 @@ const FacadeEmitter = struct {
                 }
             }
         }
-        // The authoring surface is ONE list resolved by name, so a name
-        // that is both a model field and a message arm cannot be marked
-        // on one side only — the sidecar's split lists carry more than
-        // the projection can say. Refuse the divergent case instead of
-        // silently marking the wrong declaration.
+        // The authoring surface is ONE list resolved with the compiler's
+        // Model-first precedence: fields, then helpers, then message arms.
+        // A model-side homonym therefore projects faithfully, but an
+        // unbound message arm shadowed by either model binding cannot be
+        // named by this list. Refuse that direction instead of silently
+        // marking the model binding and leaving the arm bound.
         for (self.sidecar.msg.unbound) |name| {
             const also_field = for (model.fields) |field| {
                 if (std.mem.eql(u8, field.name, name)) break true;
             } else false;
-            if (also_field and !nameListed(self.sidecar.model_unbound, name)) {
-                self.diags.flag("msg.unbound", "\"{s}\" is an unbound message arm AND a bound model field — the projection's single unbound list resolves by name and would mark both; rename one side in the core source", .{name});
-            }
-        }
-        for (field_unbound.items) |name| {
-            const also_arm = sidecar_mod.findArm(self.sidecar.msg, name) != null;
-            if (also_arm and !nameListed(self.sidecar.msg.unbound, name)) {
-                self.diags.flag("model_unbound", "\"{s}\" is an unbound model field AND a bound message arm — the projection's single unbound list resolves by name and would mark both; rename one side in the core source", .{name});
+            const also_helper = for (self.sidecar.model_helpers) |helper| {
+                if (std.mem.eql(u8, helper.name, name)) break true;
+            } else false;
+            if (also_field or also_helper) {
+                self.diags.flag("msg.unbound", "\"{s}\" is an unbound message arm shadowed by a homonymous Model field or exported helper — the compiler resolves Model fields and helpers before message arms, so the projection's single unbound list cannot mark this arm; rename one side in the core source", .{name});
             }
         }
         if (self.diags.hasErrors()) return;
@@ -1013,12 +1011,9 @@ const FacadeEmitter = struct {
             try self.print("  \"{s}\",\n", .{try tsString(self.arena, name)});
         }
         for (field_unbound.items) |name| {
-            // A name unbound on both sides rides once.
-            if (nameListed(self.sidecar.msg.unbound, name)) continue;
             try self.print("  \"{s}\",\n", .{try tsString(self.arena, name)});
         }
         for (helper_unbound.items) |name| {
-            if (nameListed(self.sidecar.msg.unbound, name)) continue;
             try self.print("  \"{s}\",\n", .{try tsString(self.arena, name)});
         }
         try self.raw("];\n");
@@ -3660,7 +3655,7 @@ test "a type in the facade's reserved nsc name space refuses" {
     try expectFacadeRefusal(arena, source, "reserved nsc name space");
 }
 
-test "an unbound name split across homonymous field and arm refuses" {
+test "an unbound message arm shadowed by a homonymous model field refuses" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -3672,7 +3667,38 @@ test "an unbound name split across homonymous field and arm refuses" {
         "{\"name\": \"count\", \"payload\": {\"kind\": \"void\"}}",
     );
     source = try std.mem.replaceOwned(u8, arena, source, "\"unbound\": [\"label_set\"]", "\"unbound\": [\"count\"]");
-    try expectFacadeRefusal(arena, source, "single unbound list resolves by name");
+    try expectFacadeRefusal(arena, source, "resolves Model fields and helpers before message arms");
+}
+
+test "an unbound model field may share a name with a bound message arm" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"count\", \"payload\": {\"kind\": \"void\"}}",
+    );
+    source = try std.mem.replaceOwned(u8, arena, source, "\"model_unbound\": []", "\"model_unbound\": [\"count\"]");
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "export const viewUnbound = [\n  \"label_set\",\n  \"count\",\n];") != null);
+}
+
+test "an unbound message arm shadowed by a homonymous helper refuses" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "\"model_helpers\": []",
+        "\"model_helpers\": [{\"name\": \"bump\", \"params\": [], \"returns\": {\"kind\": \"bool\"}, \"arena\": false}]",
+    );
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unbound\": [\"label_set\"]", "\"unbound\": [\"bump\"]");
+    try expectFacadeRefusal(arena, source, "resolves Model fields and helpers before message arms");
 }
 
 test "nested optionals refuse in the projection" {

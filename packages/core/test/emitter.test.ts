@@ -2364,6 +2364,25 @@ export function auditCount(model: Model): number { return model.count; }
   assert.ok(!zig.includes("viewUnbound"), "the config list itself never emits");
 });
 
+test("viewUnbound resolves field and helper homonyms before Msg kinds", () => {
+  const zig = emit(`
+export interface Model { readonly count: number; }
+export type Msg = { readonly kind: "count" } | { readonly kind: "probe" } | { readonly kind: "bump" };
+export const viewUnbound = ["count", "probe"] as const;
+export function initialModel(): Model { return { count: 0 }; }
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) {
+    case "count": return model;
+    case "probe": return model;
+    case "bump": return { count: model.count + 1 };
+  }
+}
+export function probe(model: Model): boolean { return model.count > 0; }
+`);
+  assert.match(zig, /pub const Model = struct \{[\s\S]*?pub const view_unbound = \.\{ "count", "probe" \};[\s\S]*?\};/);
+  assert.equal(zig.match(/pub const view_unbound/g)?.length, 1, "the homonymous Msg kinds remain bound");
+});
+
 test("R7B envMsgs emits the comptime tuple the wiring walks", () => {
   const zig = emit(`
 export interface Model { readonly base: Uint8Array; }

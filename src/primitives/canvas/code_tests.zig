@@ -995,6 +995,50 @@ test "wrapped editable code measures vertical extent with its monospace font" {
     try testing.expect(canvas.textInputMaxScrollOffsetForWidget(editor, tokens) > 0);
 }
 
+test "wrapped editable code paints the caret row from the interaction width" {
+    const source = "ab";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .plain,
+        .editable = true,
+        .wrap = true,
+    }, source));
+    var editor = findByText(view.root, source).?;
+
+    var measured = CodeWidthMeasure{};
+    const provider = canvas.TextMeasureProvider{
+        .context = &measured,
+        .measure_fn = CodeWidthMeasure.width,
+        .measure_advances_fn = CodeWidthMeasure.advances,
+    };
+    const tokens = canvas.DesignTokens{
+        .pixel_snap = .{ .geometry = true, .scale = 1 },
+        .text_measure = &provider,
+    };
+    const text_size = tokens.typography.body_size;
+    // The exact interaction width wraps the second glyph, while the static
+    // paragraph pixel hand-back would make both glyphs fit.
+    editor.frame = geometry.RectF.init(0, 0, text_size * 2 - 0.6, 80);
+    editor.state.focused = true;
+    editor.text_selection = canvas.TextSelection.collapsed(source.len);
+
+    var commands: [128]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, tokens);
+
+    var final_glyph_baseline: ?f32 = null;
+    for (builder.displayList().commands) |command| {
+        if (command == .draw_text and std.mem.indexOfScalar(u8, command.draw_text.text, 'b') != null) {
+            final_glyph_baseline = command.draw_text.origin.y;
+        }
+    }
+    const caret = canvas.textGeometryForWidget(editor, tokens).caret_bounds.?;
+    try testing.expect(final_glyph_baseline != null);
+    try testing.expectApproxEqAbs(caret.y + text_size, final_glyph_baseline.?, 0.001);
+}
+
 test "numbered editable code does not invent trailing horizontal overflow" {
     const source = "const concise = true;";
     const tokens = canvas.DesignTokens{};

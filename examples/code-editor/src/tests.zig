@@ -509,6 +509,37 @@ test "filesystem rename keeps directory descendants and open documents attached"
     try testing.expectEqualStrings("pub fn main() void {}\n", model.preview());
 }
 
+test "filesystem rename preserves a destination created after the folder scan" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "draft.zig", .data = "const draft = true;\n" });
+
+    var root_storage: [256]u8 = undefined;
+    const root_path = try std.fmt.bufPrint(&root_storage, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    var model = main.Model{};
+    defer model.deinit();
+    try main.scanFolder(&model, testing.io, testing.allocator, root_path);
+    const entry_index = model.findEntry("draft.zig").?;
+
+    // This file is absent from the scanned model, matching a destination
+    // created by another process after the editor last observed the folder.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "final.zig", .data = "const final = true;\n" });
+
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    main.update(&model, .{ .begin_rename = entry_index }, &fx);
+    model.rename_buffer.set("final.zig");
+    main.update(&model, .commit_rename, &fx);
+    main.performPendingRenameOnDisk(&model, testing.io);
+
+    var destination: [64]u8 = undefined;
+    const destination_contents = try tmp.dir.readFile(testing.io, "final.zig", &destination);
+    try testing.expectEqualStrings("const final = true;\n", destination_contents);
+    try tmp.dir.access(testing.io, "draft.zig", .{});
+    try testing.expectEqualStrings("An item named final.zig already exists.", model.status());
+}
+
 test "filesystem rename permits a case-only spelling change" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();

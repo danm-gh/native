@@ -1341,20 +1341,19 @@ pub fn performPendingRenameOnDisk(model: *Model, io: std.Io) void {
     };
 
     const cwd = std.Io.Dir.cwd();
-    if (cwd.access(io, new_full, .{})) |_| {
-        if (!caseOnlyRenameResolvesToSource(io, old_full, new_full, old_name, new_name)) {
+    const case_only_source_alias = caseOnlyRenameResolvesToSource(io, old_full, new_full, old_name, new_name);
+    const rename_result = if (case_only_source_alias)
+        // On a case-insensitive volume the destination is the source itself;
+        // the replacing primitive is the only spelling-only rename path.
+        cwd.rename(old_full, cwd, new_full, io)
+    else
+        renameWithoutReplace(cwd, old_full, cwd, new_full, io);
+    rename_result catch |err| {
+        if (err == error.PathAlreadyExists) {
             model.setStatus("An item named {s} already exists.", .{new_name});
-            return;
+        } else {
+            model.setStatus("Could not rename {s}: {s}", .{ old_name, @errorName(err) });
         }
-    } else |err| switch (err) {
-        error.FileNotFound => {},
-        else => {
-            model.setStatus("Could not check {s}: {s}", .{ new_name, @errorName(err) });
-            return;
-        },
-    }
-    cwd.rename(old_full, cwd, new_full, io) catch |err| {
-        model.setStatus("Could not rename {s}: {s}", .{ old_name, @errorName(err) });
         return;
     };
 
@@ -1367,6 +1366,69 @@ pub fn performPendingRenameOnDisk(model: *Model, io: std.Io) void {
     };
     model.renaming_entry = null;
     model.setStatus("Renamed {s} to {s}.", .{ old_name, new_name });
+}
+
+/// Atomically move a path without replacing an existing destination.
+/// Zig's non-Linux POSIX fallback uses hard-link-and-unlink, which cannot move
+/// directories. macOS provides the same no-replace guarantee for every path
+/// kind through `renameatx_np(RENAME_EXCL)`.
+fn renameWithoutReplace(
+    old_dir: std.Io.Dir,
+    old_path: []const u8,
+    new_dir: std.Io.Dir,
+    new_path: []const u8,
+    io: std.Io,
+) std.Io.Dir.RenamePreserveError!void {
+    if (builtin.os.tag != .macos) return old_dir.renamePreserve(old_path, new_dir, new_path, io);
+
+    const Darwin = struct {
+        extern "c" fn renameatx_np(
+            from_fd: std.posix.fd_t,
+            from: [*:0]const u8,
+            to_fd: std.posix.fd_t,
+            to: [*:0]const u8,
+            flags: c_uint,
+        ) c_int;
+    };
+    const rename_exclusive: c_uint = 0x00000004;
+    const old_path_z = try std.posix.toPosixPath(old_path);
+    const new_path_z = try std.posix.toPosixPath(new_path);
+
+    try io.checkCancel();
+    while (true) switch (std.c.errno(Darwin.renameatx_np(
+        old_dir.handle,
+        &old_path_z,
+        new_dir.handle,
+        &new_path_z,
+        rename_exclusive,
+    ))) {
+        .SUCCESS => return,
+        .INTR => {
+            try io.checkCancel();
+            continue;
+        },
+        .ACCES => return error.AccessDenied,
+        .PERM => return error.PermissionDenied,
+        .BUSY, .TXTBSY => return error.FileBusy,
+        .DQUOT => return error.DiskQuota,
+        .IO => return error.HardwareFailure,
+        .ISDIR => return error.IsDir,
+        .LOOP => return error.SymLinkLoop,
+        .MLINK => return error.LinkQuotaExceeded,
+        .NAMETOOLONG => return error.NameTooLong,
+        .NOENT => return error.FileNotFound,
+        .NOTDIR => return error.NotDir,
+        .NOMEM => return error.SystemResources,
+        .NOSPC => return error.NoSpaceLeft,
+        .EXIST, .NOTEMPTY => return error.PathAlreadyExists,
+        .OPNOTSUPP => return error.OperationUnsupported,
+        .ROFS => return error.ReadOnlyFileSystem,
+        .XDEV => return error.CrossDevice,
+        .NODEV => return error.NoDevice,
+        .CANCELED => return error.Canceled,
+        .ILSEQ => return error.BadPathName,
+        else => |err| return std.posix.unexpectedErrno(err),
+    };
 }
 
 /// Case-insensitive volumes report the source itself when probing a new
@@ -1732,7 +1794,10 @@ pub const CodeEditorApp = struct {
                 return;
             }
 
-            const selected_path = firstDialogPath(result.paths);
+            // Multiple selection is disabled, so the payload is one complete
+            // path rather than a newline-delimited list. Preserve it byte for
+            // byte: newlines are valid path bytes on macOS and Linux.
+            const selected_path = result.paths;
             scanFolder(&session.browser, self.io, self.allocator, selected_path) catch |err| {
                 session.browser.setStatus("Could not open that folder: {s}", .{@errorName(err)});
                 try self.ui_app.dispatch(runtime, window_id, .folder_loaded);
@@ -1834,11 +1899,6 @@ fn eventWindowId(event_value: native_sdk.Event) ?native_sdk.platform.WindowId {
         .automation_provenance => |event| event.window_id,
         else => null,
     };
-}
-
-fn firstDialogPath(paths: []const u8) []const u8 {
-    const end = std.mem.indexOfScalar(u8, paths, '\n') orelse paths.len;
-    return paths[0..end];
 }
 
 pub fn main(init: std.process.Init) !void {

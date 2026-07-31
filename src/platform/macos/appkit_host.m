@@ -7359,10 +7359,22 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
         NSWindow *referenceWindow = NSApp.keyWindow ?: self.window;
         if (!makeMain && referenceWindow) {
             NSRect referenceFrame = referenceWindow.frame;
-            [window setFrameTopLeftPoint:NSMakePoint(
-                NSMinX(referenceFrame) + 24.0,
-                NSMaxY(referenceFrame) - 24.0
-            )];
+            NSRect cascadedFrame = window.frame;
+            cascadedFrame.origin.x = NSMinX(referenceFrame) + 24.0;
+            cascadedFrame.origin.y = NSMaxY(referenceFrame) - 24.0 - NSHeight(cascadedFrame);
+
+            // A maximized or edge-positioned reference must not push the new
+            // window beyond the usable screen. Fit the complete frame when
+            // possible; an oversized window keeps its leading/bottom edge.
+            NSScreen *referenceScreen = referenceWindow.screen ?: window.screen ?: NSScreen.mainScreen;
+            if (referenceScreen) {
+                NSRect visibleFrame = referenceScreen.visibleFrame;
+                CGFloat maxOriginX = MAX(NSMinX(visibleFrame), NSMaxX(visibleFrame) - NSWidth(cascadedFrame));
+                CGFloat maxOriginY = MAX(NSMinY(visibleFrame), NSMaxY(visibleFrame) - NSHeight(cascadedFrame));
+                cascadedFrame.origin.x = MIN(MAX(NSMinX(cascadedFrame), NSMinX(visibleFrame)), maxOriginX);
+                cascadedFrame.origin.y = MIN(MAX(NSMinY(cascadedFrame), NSMinY(visibleFrame)), maxOriginY);
+            }
+            [window setFrame:cascadedFrame display:NO];
         }
     }
     if (makeMain) NativeSdkLaunchLap("window_chrome_ready");

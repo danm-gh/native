@@ -2471,12 +2471,16 @@ test "mac active implicit show activates before making the window key" {
     ) != null);
 }
 
-test "mac unrestored secondary windows cascade from the active window" {
+test "mac unrestored secondary windows cascade within the active screen" {
     for ([_][]const u8{ @embedFile("appkit_host.m"), @embedFile("cef_host.mm") }) |host_source| {
         try std.testing.expect(std.mem.indexOf(u8, host_source, "NSWindow *referenceWindow = NSApp.keyWindow ?: self.window;") != null);
         try std.testing.expect(std.mem.indexOf(u8, host_source, "NSMinX(referenceFrame) + 24.0") != null);
         try std.testing.expect(std.mem.indexOf(u8, host_source, "NSMaxY(referenceFrame) - 24.0") != null);
         try std.testing.expect(std.mem.indexOf(u8, host_source, "if (!makeMain && referenceWindow)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, host_source, "NSRect visibleFrame = referenceScreen.visibleFrame;") != null);
+        try std.testing.expect(std.mem.indexOf(u8, host_source, "NSMaxX(visibleFrame) - NSWidth(cascadedFrame)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, host_source, "NSMaxY(visibleFrame) - NSHeight(cascadedFrame)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, host_source, "[window setFrame:cascadedFrame display:NO]") != null);
     }
 }
 

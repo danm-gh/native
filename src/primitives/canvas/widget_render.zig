@@ -1621,7 +1621,10 @@ fn emitVisibleWrappedEditableCodeLines(
     const layout_options = widget_metrics.widgetTextSpanLayoutOptions(
         widget,
         tokens,
-        textWrapMaxWidth(tokens, content.width),
+        // Interactive glyphs must wrap on the exact same width as caret,
+        // selection, composition, and hit-test geometry. The pixel-snap
+        // hand-back is safe only for non-interactive paragraph painting.
+        content.width,
     );
     const line_height = text_spans_model.textSpanLineHeight(widget.spans, layout_options);
     if (line_height <= 0 or !std.math.isFinite(line_height)) return;

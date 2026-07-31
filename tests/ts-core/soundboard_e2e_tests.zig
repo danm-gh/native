@@ -766,6 +766,12 @@ test "dispatch at the rendered-clock cadence stays far under the frame budget" {
     // reconcile), without the runtime pipeline around it - the cost the
     // transpiled tier adds per tick.
     const fx = &h.app_state.effects;
+    // The core-only budget describes ONE core's dispatch. Under the
+    // paired-lanes module every dispatch runs the transpiled core AND the
+    // compiled archive and byte-compares them at each seam, so that
+    // configuration gets half the frame budget instead; the single-lane
+    // run of this suite keeps the strict microseconds-class pin.
+    const core_budget_ns: u64 = if (@hasDecl(core, "paired_lanes")) 8_000_000 else 1_000_000;
     var per_core_dispatch_ns: u64 = std.math.maxInt(u64);
     for (0..perf_attempts) |_| {
         const core_start_ns = runtime_ns.monotonicNanoseconds();
@@ -774,7 +780,7 @@ test "dispatch at the rendered-clock cadence stays far under the frame budget" {
         }
         const core_elapsed_ns = runtime_ns.monotonicNanoseconds() - core_start_ns;
         per_core_dispatch_ns = @min(per_core_dispatch_ns, core_elapsed_ns / iterations);
-        if (per_core_dispatch_ns < 1_000_000) break;
+        if (per_core_dispatch_ns < core_budget_ns) break;
     }
     h.app_state.model = Bridge.model().*;
 
@@ -783,11 +789,11 @@ test "dispatch at the rendered-clock cadence stays far under the frame budget" {
     // Debug build on loaded CI hardware; the core alone must be
     // microseconds. Measured on an M-class laptop (Debug): ~3.3ms whole
     // pipeline, ~450ns core-only.
-    if (per_dispatch_ns >= 16_000_000 or per_core_dispatch_ns >= 1_000_000) {
-        std.debug.print("dispatch budget exceeded: whole-pipeline {d}ns (budget 16000000), core-only {d}ns (budget 1000000), best of {d} attempts\n", .{ per_dispatch_ns, per_core_dispatch_ns, perf_attempts });
+    if (per_dispatch_ns >= 16_000_000 or per_core_dispatch_ns >= core_budget_ns) {
+        std.debug.print("dispatch budget exceeded: whole-pipeline {d}ns (budget 16000000), core-only {d}ns (budget {d}), best of {d} attempts\n", .{ per_dispatch_ns, per_core_dispatch_ns, core_budget_ns, perf_attempts });
     }
     try std.testing.expect(per_dispatch_ns < 16_000_000);
-    try std.testing.expect(per_core_dispatch_ns < 1_000_000);
+    try std.testing.expect(per_core_dispatch_ns < core_budget_ns);
 }
 
 // -------------------------------------------- round 7B: parity closure

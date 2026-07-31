@@ -37,6 +37,11 @@ pub fn PairedCore(comptime ts_lane: type, comptime shim_lane: type) type {
     return struct {
         const abi = core_abi.Bindings("nsc_core_");
 
+        /// Every dispatch through this module runs BOTH lanes and
+        /// byte-compares them at each seam; perf pins that budget a single
+        /// core's dispatch cost can read this to scale their expectations.
+        pub const paired_lanes = true;
+
         pub const Model = ts_lane.Model;
         pub const Msg = ts_lane.Msg;
 

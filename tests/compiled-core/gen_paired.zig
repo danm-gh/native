@@ -45,6 +45,7 @@ pub fn pairedSource(comptime core: type) []const u8 {
             \\const impl = @import("paired_core.zig").PairedCore(ts_lane, @import("shim_lane"));
             \\
             \\pub const rt = impl.rt;
+            \\pub const paired_lanes = impl.paired_lanes;
             \\pub const initialModel = impl.initialModel;
             \\pub const update = impl.update;
             \\pub const commitModelRoot = impl.commitModelRoot;

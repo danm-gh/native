@@ -58,12 +58,19 @@ fn integerLowerBound(class: IntegerClass) []const u8 {
 
 /// The scroll-state field vocabulary (the mirror's routing twin in
 /// emit.zig): a record arm carrying exactly these eight numeric fields
-/// also answers the dedicated scroll entry.
-const scroll_state_fields = [_][]const u8{
+/// in either the TypeScript or canvas spelling also answers the dedicated
+/// scroll entry. The ABI parameters use the TypeScript spellings.
+const scroll_state_fields_ts = [_][]const u8{
     "offsetX",         "offsetY",
     "velocityX",       "velocityY",
     "viewportExtentX", "viewportExtentY",
     "contentExtentX",  "contentExtentY",
+};
+const scroll_state_fields_canvas = [_][]const u8{
+    "offset_x",          "offset_y",
+    "velocity_x",        "velocity_y",
+    "viewport_extent_x", "viewport_extent_y",
+    "content_extent_x",  "content_extent_y",
 };
 
 pub fn emitFacade(arena: std.mem.Allocator, sidecar: Sidecar, diags: *sidecar_mod.Diagnostics) Error![]const u8 {
@@ -194,6 +201,11 @@ const FacadeEmitter = struct {
 
     /// Note a named type the generated code spells in type position.
     fn reference(self: *FacadeEmitter, name: []const u8) Error!void {
+        // Current sidecars leave generated-only table names originless.
+        // They either flatten at their sole reference site or validation
+        // refuses them, so importing one would always name a nonexistent
+        // authored export (generic monomorphizations are the common case).
+        if (self.isGeneratedOnlyType(name)) return;
         if (nameListed(self.referenced.items, name)) return;
         try self.referenced.append(self.arena, name);
     }
@@ -225,6 +237,34 @@ const FacadeEmitter = struct {
 
     fn entryBasename(self: *FacadeEmitter) []const u8 {
         return std.fs.path.basenamePosix(self.sidecar.entry);
+    }
+
+    /// Whether this is a current provenance-carrying sidecar. Legacy
+    /// sidecars predate origins entirely, so their null origins cannot
+    /// distinguish authored declarations from generated table names.
+    fn hasOriginFacts(self: *FacadeEmitter) bool {
+        for (self.sidecar.types.structs) |entry| if (entry.origin != null) return true;
+        for (self.sidecar.types.enums) |entry| if (entry.origin != null) return true;
+        for (self.sidecar.types.unions) |entry| if (entry.origin != null) return true;
+        return false;
+    }
+
+    /// A table name synthesized by the transpiler rather than declared in
+    /// an authored module. These names flatten at their one legal reference
+    /// site or refuse; they are never imports or re-exports.
+    fn isGeneratedOnlyType(self: *FacadeEmitter, name: []const u8) bool {
+        if (!self.hasOriginFacts()) return false;
+        if (std.mem.eql(u8, name, self.sidecar.model) or std.mem.eql(u8, name, self.sidecar.msg.name)) return false;
+        for (self.sidecar.types.structs) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return entry.origin == null;
+        }
+        for (self.sidecar.types.enums) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return entry.origin == null;
+        }
+        for (self.sidecar.types.unions) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return entry.origin == null;
+        }
+        return false;
     }
 
     fn slotClassAt(self: *FacadeEmitter, path: []const u8) ?IntegerClass {
@@ -436,6 +476,29 @@ const FacadeEmitter = struct {
         for (self.sidecar.types.enums) |entry| try self.fenceDecl(entry.name);
         for (self.sidecar.types.unions) |entry| try self.fenceDecl(entry.name);
         try self.fenceDecl(self.sidecar.msg.name);
+
+        // An originless table name in a current sidecar is compiler-created,
+        // not a TypeScript export the facade can import. Single-use inline
+        // records disappear back into their arm literals; every other such
+        // name (most notably a monomorphized generic like `Box__Item`) would
+        // make the facade invalid, and the external library compiler cannot
+        // project the authored generic contract surface either. Refuse at the
+        // generator boundary instead of emitting a downstream failure.
+        for (self.sidecar.types.structs) |entry| {
+            if (self.isGeneratedOnlyType(entry.name) and !nameListed(self.flattened, entry.name)) {
+                self.diags.flag("types", "compiler-generated table type \"{s}\" has no authored TypeScript declaration the facade can name — generic instantiations cannot cross the compiled-core contract surface yet; replace the contract-facing generic with an authored concrete record", .{entry.name});
+            }
+        }
+        for (self.sidecar.types.enums) |entry| {
+            if (self.isGeneratedOnlyType(entry.name)) {
+                self.diags.flag("types", "compiler-generated table type \"{s}\" has no authored TypeScript declaration the facade can name — generic instantiations cannot cross the compiled-core contract surface yet; replace the contract-facing generic with an authored concrete type", .{entry.name});
+            }
+        }
+        for (self.sidecar.types.unions) |entry| {
+            if (self.isGeneratedOnlyType(entry.name)) {
+                self.diags.flag("types", "compiler-generated table type \"{s}\" has no authored TypeScript declaration the facade can name — generic instantiations cannot cross the compiled-core contract surface yet; replace the contract-facing generic with an authored concrete union", .{entry.name});
+            }
+        }
 
         // Declaration form spells storage ONCE per record, so a record
         // referenced both by node and by value has no projection — one
@@ -710,12 +773,15 @@ const FacadeEmitter = struct {
         try ordered.append(self.arena, self.sidecar.msg.name);
         for (self.sidecar.types.structs) |entry| {
             if (nameListed(self.inlined, entry.name)) continue;
+            if (self.isGeneratedOnlyType(entry.name)) continue;
             if (!nameListed(ordered.items, entry.name)) try ordered.append(self.arena, entry.name);
         }
         for (self.sidecar.types.enums) |entry| {
+            if (self.isGeneratedOnlyType(entry.name)) continue;
             if (!nameListed(ordered.items, entry.name)) try ordered.append(self.arena, entry.name);
         }
         for (self.sidecar.types.unions) |entry| {
+            if (self.isGeneratedOnlyType(entry.name)) continue;
             if (!nameListed(ordered.items, entry.name)) try ordered.append(self.arena, entry.name);
         }
         var groups: std.ArrayListUnmanaged(struct { origin: []const u8, names: std.ArrayListUnmanaged([]const u8) }) = .empty;
@@ -1273,7 +1339,13 @@ const FacadeEmitter = struct {
                         if (index > 0) try fields_text.appendSlice(self.arena, ", ");
                         try fields_text.appendSlice(self.arena, try std.fmt.allocPrint(self.arena, "{s}: {s}", .{ try tsProp(self.arena, field.name), value }));
                     }
-                    const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: {{ {s} }} }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), fields_text.items });
+                    const object = if (self.synthesizedRecordOf(recordPayloadRef(arm.payload), self.sidecar.msg.name, arm.name) != null)
+                        // Inline message-arm records have no authored payload
+                        // member: their fields sit beside `kind`, exactly as
+                        // the generic record dispatch constructs them.
+                        try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s} }}", .{ try tsString(self.arena, arm.name), fields_text.items })
+                    else
+                        try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: {{ {s} }} }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), fields_text.items });
                     if (guards.items.len == 0) {
                         try self.print("  if (tag === NSCF_TAG_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
                     } else {
@@ -1299,14 +1371,42 @@ const FacadeEmitter = struct {
     fn scrollShapedRecord(self: *FacadeEmitter, name: []const u8) ?*const sidecar_mod.Struct {
         const entry = sidecar_mod.findStruct(self.sidecar.types, name) orelse return null;
         if (entry.fields.len != 8) return null;
-        outer: for (scroll_state_fields) |expected| {
-            for (entry.fields) |field| {
-                const numeric = field.type == .f64 or field.type == .i64;
-                if (std.mem.eql(u8, field.name, expected) and numeric) continue :outer;
+        const spellings = [_][8][]const u8{ scroll_state_fields_ts, scroll_state_fields_canvas };
+        for (spellings) |names| {
+            var all_found = true;
+            for (names) |expected| {
+                for (entry.fields) |field| {
+                    const numeric = field.type == .f64 or field.type == .i64;
+                    if (std.mem.eql(u8, field.name, expected) and numeric) break;
+                } else {
+                    all_found = false;
+                    break;
+                }
             }
-            return null;
+            if (all_found) return entry;
         }
-        return entry;
+        return null;
+    }
+
+    /// The selection payload shape accepted by the mirror and markup
+    /// reflection: a by-value record whose only fields are numeric anchor
+    /// and focus offsets. The record's authored name is deliberately not
+    /// part of the protocol.
+    fn isSelectionRecord(self: *FacadeEmitter, ref: TypeRef) bool {
+        const name = switch (ref) {
+            .value => |value| value,
+            else => return false,
+        };
+        const record = sidecar_mod.findStruct(self.sidecar.types, name) orelse return false;
+        if (record.fields.len != 2) return false;
+        var anchor_ok = false;
+        var focus_ok = false;
+        for (record.fields) |field| {
+            const numeric = field.type == .f64 or field.type == .i64;
+            if (std.mem.eql(u8, field.name, "anchor")) anchor_ok = numeric;
+            if (std.mem.eql(u8, field.name, "focus")) focus_ok = numeric;
+        }
+        return anchor_ok and focus_ok;
     }
 
     // ------------------------------------------------- channel entries
@@ -1820,7 +1920,16 @@ const FacadeEmitter = struct {
             if (arm.payload == .void) {
                 try self.print("    nscfAssertConsumed(bytes, 1);\n    return {{ kind: \"{s}\" }};\n", .{kind});
             } else {
-                var decode = RecordDecode{ .emitter = self, .buf = "bytes", .indent = 2, .start = "1" };
+                var decode = RecordDecode{
+                    .emitter = self,
+                    .buf = "bytes",
+                    .indent = 2,
+                    .start = "1",
+                    // Selection is a structural protocol role, not a
+                    // declaration-name convention. The host's select-all
+                    // sentinel must saturate for any matching record name.
+                    .saturating_selection = std.mem.eql(u8, arm.name, "set_selection") and self.isSelectionRecord(arm.payload),
+                };
                 var construction: []const u8 = undefined;
                 if (self.synthesizedRecordOf(arm.payload, entry.name, arm.name)) |record| {
                     try decode.run(record);
@@ -2551,6 +2660,9 @@ const RecordDecode = struct {
     buf: []const u8,
     indent: usize,
     start: []const u8 = "0",
+    /// True while decoding the structurally recognized set_selection
+    /// record whose host wire may carry the maxInt select-all sentinel.
+    saturating_selection: bool = false,
     local_count: usize = 0,
     offset_fixed: usize = 0,
     offset_dynamic: std.ArrayListUnmanaged(u8) = .empty,
@@ -2626,7 +2738,8 @@ const RecordDecode = struct {
                 const class = em.slotClass(container, member) orelse .i64;
                 // The one saturating exception: selection offsets, where
                 // the host's select-all synthesizes the maxInt sentinel.
-                const saturating = class == .i64 and std.mem.eql(u8, container, "TextSelection");
+                const selection_field = std.mem.eql(u8, field.name, "anchor") or std.mem.eql(u8, field.name, "focus");
+                const saturating = class == .i64 and self.saturating_selection and selection_field;
                 em.use(if (saturating) .read_i64_saturating else .read_i64);
                 const local = try self.nextLocal();
                 try self.line("const {s} = {s}({s}, {s});\n", .{ local, if (saturating) "nscfReadI64Saturating" else "nscfReadI64", self.buf, self.offsetText() });
@@ -2746,8 +2859,8 @@ const RecordDecode = struct {
 
 /// The scroll entry's parameter feeding an authored scroll field.
 fn scrollParamFor(field_name: []const u8) ?[]const u8 {
-    for (scroll_state_fields) |candidate| {
-        if (std.mem.eql(u8, candidate, field_name)) return candidate;
+    for (scroll_state_fields_ts, 0..) |candidate, index| {
+        if (std.mem.eql(u8, candidate, field_name) or std.mem.eql(u8, scroll_state_fields_canvas[index], field_name)) return candidate;
     }
     return null;
 }
@@ -3032,6 +3145,38 @@ test "origin facts group re-exports by declaring module" {
     try testing.expect(std.mem.indexOf(u8, generated, "function nscfWriteTurn(sink: NscfSink, value: Turn): void {") != null);
 }
 
+test "generated generic table names refuse before emitting invalid imports" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "{\"name\": \"Model\", \"fields\": [",
+        "{\"name\": \"Model\", \"origin\": \"core.ts\", \"fields\": [",
+    );
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "\"structs\": [",
+        "\"structs\": [\n      {\"name\": \"Item\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"value\", \"type\": {\"kind\": \"f64\"}}]},\n      {\"name\": \"Box__Item\", \"fields\": [{\"name\": \"item\", \"type\": {\"kind\": \"node\", \"name\": \"Item\"}}]},",
+    );
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"box\", \"type\": {\"kind\": \"node\", \"name\": \"Box__Item\"}}",
+    );
+    // The monomorphized name is not an authored export, and the external
+    // library compiler cannot project the generic contract field either.
+    // Refuse here instead of generating `import type { Box__Item }` and
+    // deferring failure to the TypeScript/compiler boundary.
+    try expectFacadeRefusal(arena, source, "generic instantiations cannot cross the compiled-core contract surface yet");
+}
+
 test "helpers wrap in declaration order with classed-return proofs" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -3236,12 +3381,12 @@ test "a record referenced by node and value at once refuses" {
     try expectFacadeRefusal(arena, source, "storage once per declaration");
 }
 
-test "text-input-shaped unions decode with saturating selection reads" {
+test "set_selection arms decode structurally named selections with saturating reads" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"TextSelection\", \"fields\": [{\"name\": \"anchor\", \"type\": {\"kind\": \"i64\"}}, {\"name\": \"focus\", \"type\": {\"kind\": \"i64\"}}]},");
-    source = try std.mem.replaceOwned(u8, arena, source, "\"unions\": []", "\"unions\": [{\"name\": \"Edit\", \"arms\": [{\"name\": \"clear\", \"payload\": {\"kind\": \"void\"}}, {\"name\": \"set_selection\", \"member\": \"selection\", \"payload\": {\"kind\": \"value\", \"name\": \"TextSelection\"}}]}]");
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"CaretRange\", \"fields\": [{\"name\": \"anchor\", \"type\": {\"kind\": \"i64\"}}, {\"name\": \"focus\", \"type\": {\"kind\": \"i64\"}}]},");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unions\": []", "\"unions\": [{\"name\": \"Edit\", \"arms\": [{\"name\": \"clear\", \"payload\": {\"kind\": \"void\"}}, {\"name\": \"set_selection\", \"member\": \"selection\", \"payload\": {\"kind\": \"value\", \"name\": \"CaretRange\"}}]}]");
     source = try std.mem.replaceOwned(
         u8,
         arena,
@@ -3249,7 +3394,7 @@ test "text-input-shaped unions decode with saturating selection reads" {
         "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
         "{\"name\": \"edited\", \"member\": \"edit\", \"payload\": {\"kind\": \"union\", \"name\": \"Edit\"}}",
     );
-    source = try std.mem.replaceOwned(u8, arena, source, "{\"slot\": \"Model.count\", \"class\": \"i64\"}", "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"TextSelection.anchor\", \"class\": \"i64\"}, {\"slot\": \"TextSelection.focus\", \"class\": \"i64\"}");
+    source = try std.mem.replaceOwned(u8, arena, source, "{\"slot\": \"Model.count\", \"class\": \"i64\"}", "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"CaretRange.anchor\", \"class\": \"i64\"}, {\"slot\": \"CaretRange.focus\", \"class\": \"i64\"}");
     const generated = try facadeFromJson(arena, source);
     // The union decodes standalone on the record and text-input entries.
     try testing.expect(std.mem.indexOf(u8, generated, "function nscfDecodeEdit(bytes: Uint8Array): Edit {") != null);
@@ -3284,4 +3429,23 @@ test "scroll-shaped record arms answer the dedicated scroll entry" {
     const integer_generated = try facadeFromJson(arena, integer_source);
     try testing.expect(std.mem.indexOf(u8, integer_generated, "offsetX >= 0 && offsetX <= 9007199254740991 && offsetY >= -9007199254740991 && offsetY <= 9007199254740991") != null);
     try testing.expect(std.mem.indexOf(u8, integer_generated, "offsetX: Math.trunc(offsetX), offsetY: Math.trunc(offsetY)") != null);
+
+    // The canvas snake_case vocabulary routes through the same ABI entry,
+    // with each authored field fed by its corresponding camelCase ABI param.
+    var snake_source = source;
+    for (scroll_state_fields_ts, scroll_state_fields_canvas) |ts_name, canvas_name| {
+        snake_source = try std.mem.replaceOwned(u8, arena, snake_source, ts_name, canvas_name);
+    }
+    const snake_generated = try facadeFromJson(arena, snake_source);
+    try testing.expect(std.mem.indexOf(u8, snake_generated, "offset_x: offsetX, offset_y: offsetY, velocity_x: velocityX, velocity_y: velocityY") != null);
+
+    // A current sidecar's originless pattern-named arm record is the
+    // compiler's inline shape: scroll construction flattens beside kind
+    // rather than inventing a `value` payload member.
+    var inline_source = try std.mem.replaceOwned(u8, arena, source, "{\"name\": \"Model\", \"fields\": [", "{\"name\": \"Model\", \"origin\": \"core.ts\", \"fields\": [");
+    inline_source = try std.mem.replaceOwned(u8, arena, inline_source, "ScrollState", "Msg_scrolled");
+    inline_source = try std.mem.replaceOwned(u8, arena, inline_source, "\"member\": \"scroll\", ", "");
+    const inline_generated = try facadeFromJson(arena, inline_source);
+    try testing.expect(std.mem.indexOf(u8, inline_generated, "{ kind: \"scrolled\", offsetX: offsetX, offsetY: offsetY") != null);
+    try testing.expect(std.mem.indexOf(u8, inline_generated, "{ kind: \"scrolled\", value:") == null);
 }

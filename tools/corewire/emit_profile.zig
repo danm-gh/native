@@ -40,7 +40,7 @@ pub const default_entry = "core_facade.ts";
 const ExportSignature = struct {
     suffix: []const u8,
     /// The facade's exported function name when it differs from the
-    /// suffix (the channel entries).
+    /// suffix (the subscription and channel ABI entries).
     export_name: ?[]const u8 = null,
     params: []const []const u8,
     returns: []const u8,
@@ -64,7 +64,7 @@ const export_signatures = [_]ExportSignature{
     // The two-axis scroll record crosses as direct scalars: one
     // offset/velocity/viewport/content quartet per axis.
     .{ .suffix = "dispatch_scroll_state", .params = &.{ "u8", "f64", "f64", "f64", "f64", "f64", "f64", "f64", "f64" }, .returns = "bytes" },
-    .{ .suffix = "subscriptions", .params = &.{}, .returns = "bytes" },
+    .{ .suffix = "subscriptions", .export_name = "abi_subscriptions", .params = &.{}, .returns = "bytes" },
     .{ .suffix = "model_snapshot", .params = &.{}, .returns = "bytes" },
     .{ .suffix = "helper_call", .params = &.{ "u32", "bytes" }, .returns = "bytes" },
     // The wire-shaped conditional channel entries (present exactly when
@@ -380,6 +380,12 @@ test "profile emission is deterministic and carries the library-mode surface" {
     try testing.expect(std.mem.indexOf(u8, first, "{ \"export\": \"dispatch_number\", \"symbol\": \"nsc_core_dispatch_number\", \"params\": [\"u8\", \"f64\"], \"returns\": \"bytes\" }") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"init\"") == null);
     try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"build_id\"") == null);
+    // The fixed ABI entry must not take the author-facing
+    // `subscriptions` spelling: the sidecar emitter treats an export under
+    // that name as a real subscription declaration even when the profile
+    // deliberately carries no subscriptions_export designation.
+    try testing.expect(std.mem.indexOf(u8, first, "{ \"export\": \"abi_subscriptions\", \"symbol\": \"nsc_core_subscriptions\", \"params\": [], \"returns\": \"bytes\" }") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"subscriptions\"") == null);
     // The sidecar section echoes the contract's generations and
     // declares the SDK's emission path, identity-getter symbols, the
     // facade's designated entries, and the integer-slot declarations.

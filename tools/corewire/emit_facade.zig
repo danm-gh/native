@@ -25,7 +25,7 @@
 //!   subscribing contract — coreSubscriptions), whose return shapes
 //!   restate init_returns_cmd/update_returns_cmd/has_subscriptions;
 //! - the ABI dispatch surface (boot_cmd, the nine dispatch entries, the
-//!   wired channel entries, subscriptions, model_snapshot, helper_call),
+//!   wired channel entries, abi_subscriptions, model_snapshot, helper_call),
 //!   decoding inbound payloads with the generated wire codec below and
 //!   encoding results byte-identically to the transpiler lane;
 //! - provable ingress everywhere a wire value crosses into an
@@ -106,12 +106,12 @@ const ts_reserved_words = [_][]const u8{
 /// The value-space names this module itself exports; an authored helper
 /// or type may not take one.
 const fixed_exports = [_][]const u8{
-    "init",                  "coreUpdate",     "coreSubscriptions", "boot_cmd",
-    "dispatch_void",         "dispatch_bytes", "dispatch_number",   "dispatch_number_bytes",
-    "dispatch_bool",         "dispatch_enum",  "dispatch_record",   "dispatch_text_input",
-    "dispatch_scroll_state", "subscriptions",  "model_snapshot",    "helper_call",
-    "abi_command_msg",       "abi_frame_msg",  "abi_key_msg",       "abi_pinch_msg",
-    "appearanceMsg",         "chromeMsg",      "envMsgs",           "viewUnbound",
+    "init",                  "coreUpdate",        "coreSubscriptions", "boot_cmd",
+    "dispatch_void",         "dispatch_bytes",    "dispatch_number",   "dispatch_number_bytes",
+    "dispatch_bool",         "dispatch_enum",     "dispatch_record",   "dispatch_text_input",
+    "dispatch_scroll_state", "abi_subscriptions", "model_snapshot",    "helper_call",
+    "abi_command_msg",       "abi_frame_msg",     "abi_key_msg",       "abi_pinch_msg",
+    "appearanceMsg",         "chromeMsg",         "envMsgs",           "viewUnbound",
 };
 
 /// Ambient VALUE bindings generated code calls directly. A model helper is
@@ -1711,7 +1711,7 @@ const FacadeEmitter = struct {
         if (self.sidecar.has_subscriptions) {
             try self.raw(
                 \\
-                \\export function subscriptions(): Uint8Array {
+                \\export function abi_subscriptions(): Uint8Array {
                 \\  return coreSubscriptions(nscfCommitted);
                 \\}
                 \\
@@ -1719,7 +1719,7 @@ const FacadeEmitter = struct {
         } else {
             try self.raw(
                 \\
-                \\export function subscriptions(): Uint8Array {
+                \\export function abi_subscriptions(): Uint8Array {
                 \\  // has_subscriptions is false for this contract: always empty.
                 \\  return new Uint8Array(0);
                 \\}
@@ -3307,6 +3307,8 @@ test "facade emission is deterministic and carries the adapter surface" {
     // Post-cycle: the snapshot rides the generated model writer with
     // the attested integer class.
     try testing.expect(std.mem.indexOf(u8, first, "nscfWI64(sink, value.count);") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "export function abi_subscriptions(): Uint8Array {") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "export function subscriptions(): Uint8Array {") == null);
     try testing.expect(std.mem.indexOf(u8, first, "export function model_snapshot(): Uint8Array {") != null);
     // The unbound list restates the author's markings.
     try testing.expect(std.mem.indexOf(u8, first, "export const viewUnbound = [\n  \"label_set\",\n];") != null);

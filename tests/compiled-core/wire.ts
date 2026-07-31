@@ -240,11 +240,15 @@ export function decodeTextInputEvent(bytes: Uint8Array): TextInputEvent {
       const present = readBool(bytes, at);
       at = at + 1;
       if (present) {
-        // The cursor is an i64-classed optional slot: the present arm
-        // carries the i64 encoding of a whole byte offset.
+        // The cursor is an i64-classed optional slot: range-guard the
+        // decoded value (an ordered comparison excludes NaN) and state
+        // wholeness with Math.trunc at the write.
         const cursor = readI64(bytes, at);
         assertConsumed(bytes, at + 8);
-        return { kind: "set_composition", text: text, cursor: cursor };
+        if (cursor >= -9007199254740991 && cursor <= 9007199254740991) {
+          return { kind: "set_composition", text: text, cursor: Math.trunc(cursor) };
+        }
+        trap("a composition cursor is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
       }
       assertConsumed(bytes, at);
       return { kind: "set_composition", text: text, cursor: null };

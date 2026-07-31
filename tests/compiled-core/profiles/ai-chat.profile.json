@@ -36,7 +36,6 @@
     "msg": "Msg",
     "init_export": "init",
     "update_export": "coreUpdate",
-    "subscriptions_export": "coreSubscriptions",
     "integer_slots": [
       { "slot": "Model.nextId", "class": "i64" },
       { "slot": "Turn.id", "class": "i64" },

@@ -253,6 +253,54 @@ pub fn restoreCanvasWidgetLayoutScrollOffsets(
     }
 }
 
+fn previousLayoutHasSelectedTab(previous: canvas.WidgetLayoutTree, id: canvas.ObjectId) bool {
+    for (previous.nodes) |node| {
+        if (node.widget.id == id) return node.widget.semantics.role == .tab and node.widget.state.selected;
+    }
+    return false;
+}
+
+/// A tab activation reveals only the pixels outside its standing horizontal
+/// viewport. This runs after retained scroll restoration, against final layout
+/// frames, so an already-visible tab preserves the exact offset and a newly
+/// mounted native scroll driver never paints a speculative leading-edge jump.
+fn revealNewlySelectedTabs(previous: canvas.WidgetLayoutTree, nodes: []canvas.WidgetLayoutNode) void {
+    for (nodes, 0..) |tab_node, tab_index| {
+        const tab = tab_node.widget;
+        if (tab.semantics.role != .tab or !tab.state.selected) continue;
+        if (tab.id != 0 and previousLayoutHasSelectedTab(previous, tab.id)) continue;
+
+        var ancestor = tab_node.parent_index;
+        while (ancestor) |index| {
+            if (index >= nodes.len) break;
+            const scroll_node = nodes[index];
+            if (scroll_node.widget.kind == .scroll_view and
+                canvas.widgetScrollsAxis(scroll_node.widget, .horizontal) and
+                !scroll_node.widget.layout.virtualized)
+            {
+                const viewport = scroll_node.frame.inset(scroll_node.widget.layout.padding).normalized();
+                const tab_frame = nodes[tab_index].frame.normalized();
+                if (viewport.isEmpty() or tab_frame.isEmpty()) break;
+
+                const delta = if (tab_frame.x < viewport.x)
+                    tab_frame.x - viewport.x
+                else if (tab_frame.maxX() > viewport.maxX())
+                    tab_frame.maxX() - viewport.maxX()
+                else
+                    0;
+                if (delta == 0) break;
+                const current = scroll_node.widget.value_x;
+                const next = @max(0, current + delta);
+                if (next == current) break;
+                nodes[index].widget.value_x = next;
+                translateCanvasWidgetLayoutScrollDescendants(nodes, index, .{ .dx = -(next - current) });
+                break;
+            }
+            ancestor = scroll_node.parent_index;
+        }
+    }
+}
+
 pub const CanvasWidgetSourceTextEntry = struct {
     id: canvas.ObjectId = 0,
     kind: canvas.WidgetKind = .text_field,
@@ -985,6 +1033,7 @@ pub fn canvasWidgetLayoutTreeWithRuntimeReconcileState(
     // the caller AFTER native scroll drivers are stamped — a rebuild
     // mid-rubber-band must not clamp an offset the OS scroller owns.
     restoreCanvasWidgetLayoutScrollOffsets(staged_nodes, previous_runtime_offsets, previous_source_scroll_entries);
+    revealNewlySelectedTabs(previous, staged_nodes);
 
     const index_scratch = canvas_widget_reconcile_index_scratch.get();
     index_scratch.controls.build(previous_control_states);

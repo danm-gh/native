@@ -162,6 +162,23 @@ test "yaml and yml files use YAML syntax highlighting" {
     }
 }
 
+test "Markdown files use Markdown syntax highlighting" {
+    var model = try fixtureModel();
+    defer model.deinit();
+    const selected_index = model.findEntry("README.md").?;
+    seedActiveDocument(&model, selected_index, "# Fixture\n\n- highlighted\n");
+    try testing.expectEqual(native_sdk.code.Language.markdown, model.previewLanguage());
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const compiled = try buildTree(arena_state.allocator(), &model);
+    try testing.expectEqual(native_sdk.code.Language.markdown, findByKind(compiled.root, .textarea).?.code_language);
+
+    _ = arena_state.reset(.retain_capacity);
+    const interpreted = try interpretTree(arena_state.allocator(), &model);
+    try testing.expectEqual(native_sdk.code.Language.markdown, findByKind(interpreted.root, .textarea).?.code_language);
+}
+
 test "folder scanning builds a sorted, bounded tree without descending generated directories" {
     var model = try fixtureModel();
     defer model.deinit();
@@ -639,7 +656,6 @@ test "single-click previews replace each other while double-click pins persisten
     _ = arena_state.reset(.retain_capacity);
     tree = try buildTree(arena, &model);
     const active_preview = findByRoleAndLabel(tree.root, .tab, "README.md").?;
-    try testing.expectEqual(main.editor_tab_width, model.tabScrollX());
     try testing.expect(findByLabel(active_preview, "Close tab") != null);
     const inactive_util = findByRoleAndLabel(tree.root, .tab, "util.zig").?;
     try testing.expect(findByLabel(inactive_util, "Close tab") == null);
@@ -690,7 +706,6 @@ test "single-click previews replace each other while double-click pins persisten
     try testing.expect(model.hovered_tab == null);
 
     main.update(&model, .{ .activate_tab = util_index }, &fx);
-    try testing.expectEqual(@as(f32, 0), model.tabScrollX());
     _ = arena_state.reset(.retain_capacity);
     tabs = model.openTabs(arena);
     try testing.expect(tabs[0].selected);
@@ -729,7 +744,7 @@ test "switching tabs keeps pinned file reads alive" {
     try testing.expectEqualStrings("pub fn main() void {}\n", model.documents[0].editor.text());
 }
 
-test "selected tab offset reveals an overflowing tab in the horizontal strip" {
+test "tab strip keeps a stable runtime-owned horizontal offset" {
     var model = try fixtureModel();
     defer model.deinit();
     const main_path = try std.fs.path.join(testing.allocator, &.{ "src", "main.zig" });
@@ -750,19 +765,17 @@ test "selected tab offset reveals an overflowing tab in the horizontal strip" {
     defer arena_state.deinit();
     const tree = try buildTree(arena_state.allocator(), &model);
     const strip = findByLabel(tree.root, "Open file tabs").?;
-    const selected_tab = findByRoleAndLabel(tree.root, .tab, "README.md").?;
-    try testing.expectEqual(2 * main.editor_tab_width, strip.value_x);
+    try testing.expectEqual(@as(f32, 0), strip.value_x);
 
-    var nodes: [256]canvas.WidgetLayoutNode = undefined;
-    const layout = try canvas.layoutWidgetTree(
-        tree.root,
-        native_sdk.geometry.RectF.init(0, 0, 600, main.window_height),
-        &nodes,
-    );
-    const strip_frame = layout.findById(strip.id).?.frame;
-    const selected_frame = layout.findById(selected_tab.id).?.frame;
-    try testing.expect(selected_frame.x >= strip_frame.x);
-    try testing.expect(selected_frame.maxX() <= strip_frame.maxX());
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    main.update(&model, .{ .activate_tab = util_index }, &fx);
+    _ = arena_state.reset(.retain_capacity);
+    const switched = try buildTree(arena_state.allocator(), &model);
+    const switched_strip = findByLabel(switched.root, "Open file tabs").?;
+    try testing.expectEqual(strip.id, switched_strip.id);
+    try testing.expectEqual(@as(f32, 0), switched_strip.value_x);
 }
 
 test "previous and next tab commands cycle the open tab order with wrapping" {
@@ -791,13 +804,10 @@ test "previous and next tab commands cycle the open tab order with wrapping" {
 
     main.update(&model, .next_tab, &fx);
     try testing.expectEqual(readme_index, model.selected_entry.?);
-    try testing.expectEqual(2 * main.editor_tab_width, model.tabScrollX());
     main.update(&model, .next_tab, &fx);
     try testing.expectEqual(main_index, model.selected_entry.?);
-    try testing.expectEqual(@as(f32, 0), model.tabScrollX());
     main.update(&model, .previous_tab, &fx);
     try testing.expectEqual(readme_index, model.selected_entry.?);
-    try testing.expectEqual(2 * main.editor_tab_width, model.tabScrollX());
 
     model.selected_entry = null;
     main.update(&model, .next_tab, &fx);

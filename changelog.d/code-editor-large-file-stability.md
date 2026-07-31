@@ -3,6 +3,6 @@ fix: **Reliable large-code editing**: editable code now repaints only visible se
 - **Unsaved-edit protection**: opening another folder or closing a secondary editor window now refuses while that window still has dirty documents.
 - **Steady editor tabs**: active and inactive tabs now share the same background and label alignment, so filenames no longer shift when selection changes.
 - **Familiar file opening**: Command+Down Arrow now opens the selected tree file as a persistent tab; Command+Enter remains available to the focused control.
-- **Visible active tabs**: inactive tabs retain their bottom divider, and opening, clicking, or keyboard-cycling to a tab now scrolls it into view horizontally.
+- **Visible active tabs**: inactive tabs retain their bottom divider, and opening, clicking, or keyboard-cycling to a tab now minimally scrolls it into view horizontally without shifting an already visible tab.
 - **Distinct new windows**: Command+N now opens each editor window slightly down and to the right of the active window so the new window is immediately apparent.
 - **Clear empty-window title**: editor windows now show “Code Explorer” in the title bar until a folder is opened.

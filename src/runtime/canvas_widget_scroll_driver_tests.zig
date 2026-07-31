@@ -37,6 +37,21 @@ fn scrollFixtureLayout(nodes: []canvas.WidgetLayoutNode, offset: f32) !canvas.Wi
     return canvas.layoutWidgetTree(scroll, geometry.RectF.init(0, 0, 180, 72), nodes);
 }
 
+fn horizontalTabFixtureLayout(nodes: []canvas.WidgetLayoutNode, selected_id: canvas.ObjectId) !canvas.WidgetLayoutTree {
+    const tabs = [_]canvas.Widget{
+        .{ .id = 2, .kind = .stack, .frame = geometry.RectF.init(0, 0, 180, 37), .state = .{ .selected = selected_id == 2 }, .semantics = .{ .role = .tab, .label = "One" } },
+        .{ .id = 3, .kind = .stack, .frame = geometry.RectF.init(180, 0, 180, 37), .state = .{ .selected = selected_id == 3 }, .semantics = .{ .role = .tab, .label = "Two" } },
+        .{ .id = 4, .kind = .stack, .frame = geometry.RectF.init(360, 0, 180, 37), .state = .{ .selected = selected_id == 4 }, .semantics = .{ .role = .tab, .label = "Three" } },
+    };
+    const strip = canvas.Widget{
+        .id = 1,
+        .kind = .scroll_view,
+        .scroll_axes = .horizontal,
+        .children = &tabs,
+    };
+    return canvas.layoutWidgetTree(strip, geometry.RectF.init(0, 0, 360, 37), nodes);
+}
+
 test "layout install publishes native scroll drivers and suppresses engine scrollbars" {
     const harness = try TestHarness().create(std.testing.allocator, .{});
     defer harness.destroy(std.testing.allocator);
@@ -643,6 +658,50 @@ test "a two-axis region's driver carries both content dimensions and follows off
     try std.testing.expectEqual(@as(f32, 60), retained.findById(1).?.widget.value_x);
     try std.testing.expectEqual(@as(f32, 30), retained.findById(1).?.widget.value);
     try std.testing.expectEqualDeep(geometry.RectF.init(-60, -30, 140, 120), retained.findById(2).?.frame);
+}
+
+test "activating a tab minimally reveals it without shifting an already visible tab" {
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    harness.null_platform.gpu_surface_scroll_drivers = true;
+    var app_state: PassiveApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(10, 20, 360, 37),
+    });
+    var initial_nodes: [4]canvas.WidgetLayoutNode = undefined;
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", try horizontalTabFixtureLayout(&initial_nodes, 2));
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_scroll_driver = .{
+        .window_id = 1,
+        .label = "canvas",
+        .driver_id = 1,
+        .offset_x = 60,
+        .timestamp_ns = 1_000_000_000,
+    } });
+
+    // Tab Two occupies content x=180..360, already wholly inside the
+    // standing 60..420 viewport. Activating it preserves the offset exactly.
+    var visible_nodes: [4]canvas.WidgetLayoutNode = undefined;
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", try horizontalTabFixtureLayout(&visible_nodes, 3));
+    var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(@as(f32, 60), retained.findById(1).?.widget.value_x);
+    try std.testing.expectEqualDeep(geometry.RectF.init(120, 0, 180, 37), retained.findById(3).?.frame);
+
+    // Tab Three ends at x=540, 120 points past that viewport. The reveal
+    // moves by only those 120 points instead of snapping it to the leading edge.
+    var hidden_nodes: [4]canvas.WidgetLayoutNode = undefined;
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", try horizontalTabFixtureLayout(&hidden_nodes, 4));
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(@as(f32, 180), retained.findById(1).?.widget.value_x);
+    try std.testing.expectEqualDeep(geometry.RectF.init(180, 0, 180, 37), retained.findById(4).?.frame);
+    try std.testing.expectEqual(@as(f32, 180), harness.null_platform.scrollDrivers()[0].offset_x);
 }
 
 test "a horizontal-only region's driver pins its vertical range" {

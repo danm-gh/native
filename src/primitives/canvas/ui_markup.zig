@@ -1869,7 +1869,7 @@ pub const markdown_details_expanded_message = "details-expanded takes one {bindi
 pub const code_source_message = "code requires a source attribute with one {binding} naming the source text (a []const u8 field or fn - arena fns work)";
 pub const code_children_message = "code takes no children or text content - the source binding provides the code";
 pub const code_attr_message = "unknown attribute for code - it takes source, language, editable, on-input, line-numbers, wrap, width, height, min-width, grow, key, global-key, and label";
-pub const code_language_message = "language takes a literal lexer name: plain, zig, javascript/js/mjs, typescript/ts, jsx/tsx, json, yaml/yml, shell/sh/bash/zsh, python/py, rust/rs, c/cpp/c++/csharp/java/kotlin/swift, go, html/xml/svg, css/scss/less, or sql";
+pub const code_language_message = "language takes a literal lexer name: plain, zig, javascript/js/mjs, typescript/ts, jsx/tsx, json, yaml/yml, shell/sh/bash/zsh, python/py, rust/rs, c/cpp/c++/csharp/java/kotlin/swift, go, html/xml/svg, css/scss/less, sql, or markdown/md";
 pub const stepper_active_message = "stepper requires an active attribute (a number or one {binding}) naming the active step index";
 pub const stepper_attr_message = "unknown attribute for stepper - it takes active, key, global-key, and label";
 pub const stepper_children_message = "stepper takes only step children (each step is a text leaf: <step>Work</step>)";
@@ -2225,7 +2225,7 @@ fn codeLanguageName(name: []const u8) bool {
     // code.isLanguageName. ui_markup is also compiled as a standalone CLI
     // module, where importing the complete canvas lexer graph would make its
     // source files belong to multiple Zig modules.
-    const names = "plain text zig js javascript mjs jsx ts typescript tsx json jsonc yaml yml sh bash zsh shell py python rs rust c h cc cpp c++ cs csharp java kotlin swift go golang html xml svg css scss less sql";
+    const names = "plain text zig js javascript mjs jsx ts typescript tsx json jsonc yaml yml sh bash zsh shell py python rs rust c h cc cpp c++ cs csharp java kotlin swift go golang html xml svg css scss less sql md markdown";
     var known = std.mem.tokenizeScalar(u8, names, ' ');
     while (known.next()) |candidate| {
         if (std.ascii.eqlIgnoreCase(name, candidate)) return true;

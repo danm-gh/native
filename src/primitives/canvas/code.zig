@@ -29,6 +29,7 @@ pub const Language = enum {
     sql,
     jsx,
     tsx,
+    markdown,
 };
 
 /// Lexer state carried between bounded source chunks by `Ui.code`.
@@ -58,6 +59,10 @@ pub const HighlightState = struct {
     line_comment: bool = false,
     preprocessor_line: bool = false,
     string_quote: ?u8 = null,
+    markdown_line_start: bool = true,
+    markdown_fence_byte: u8 = 0,
+    markdown_fence_len: u8 = 0,
+    markdown_inline_code_len: u8 = 0,
 };
 
 fn pushHtmlTagContext(state: *HighlightState) void {
@@ -106,6 +111,7 @@ pub fn languageFromName(name_raw: []const u8) Language {
     if (std.ascii.eqlIgnoreCase(name, "html") or std.ascii.eqlIgnoreCase(name, "xml") or std.ascii.eqlIgnoreCase(name, "svg")) return .html;
     if (std.ascii.eqlIgnoreCase(name, "css") or std.ascii.eqlIgnoreCase(name, "scss") or std.ascii.eqlIgnoreCase(name, "less")) return .css;
     if (std.ascii.eqlIgnoreCase(name, "sql")) return .sql;
+    if (std.ascii.eqlIgnoreCase(name, "md") or std.ascii.eqlIgnoreCase(name, "markdown")) return .markdown;
     return .plain;
 }
 
@@ -191,6 +197,7 @@ fn wordColor(language: Language, word: []const u8) ?text_spans.TextSpanColor {
         .html => "",
         .css => "and important inherit initial none not only or revert unset",
         .sql => "add all alter and any as asc begin between by case check column commit constraint create cross database default delete desc distinct drop else end exists foreign from full grant group having in index inner insert intersect into is join key left like limit not null on or order outer primary references right rollback row select set table then union unique update values view when where with",
+        .markdown => "",
     };
     if (wordInList(word, keywords, language == .sql)) return .syntax_keyword;
 
@@ -340,9 +347,9 @@ fn embeddedScriptLanguage(language: Language) Language {
 /// Inside a JSX expression, the preceding token must also leave room for an
 /// expression operand; `count < limit` is relational, while
 /// `ok && <Badge />` starts nested JSX.
-fn htmlLessThanStartsTag(source: []const u8, index: usize, state: HighlightState) bool {
+fn htmlLessThanStartsTag(source: []const u8, index: usize, language: Language, state: HighlightState) bool {
     if (index + 1 >= source.len or !htmlTagOpenerByte(source[index + 1])) return false;
-    if (state.html_expression_depth == 0) return true;
+    if (language == .html and state.html_expression_depth == 0) return true;
 
     var cursor = index;
     while (cursor > 0) {
@@ -372,7 +379,7 @@ fn updateHtmlPreviousSignificant(state: *HighlightState, source: []const u8) voi
 
 fn stringQuote(language: Language, byte: u8) bool {
     return switch (language) {
-        .plain, .html => false,
+        .plain, .html, .markdown => false,
         .json => byte == '"',
         // A Rust apostrophe begins a character only when a closing quote
         // follows one scalar or escape; otherwise it introduces a lifetime
@@ -491,6 +498,243 @@ fn appendSpan(
     return true;
 }
 
+fn appendMarkdownSpan(
+    storage: *[text_spans.max_text_spans_per_paragraph]TextSpan,
+    len: *usize,
+    source: []const u8,
+    start: usize,
+    end: usize,
+    color: text_spans.TextSpanColor,
+    styling_full: *bool,
+) void {
+    if (styling_full.*) return;
+    if (!appendSpan(storage, len, source, start, end, color)) styling_full.* = true;
+}
+
+fn markdownDelimiterRun(source: []const u8, start: usize, byte: u8) usize {
+    var end = start;
+    while (end < source.len and source[end] == byte) end += 1;
+    return end - start;
+}
+
+fn markdownFenceLine(
+    source: []const u8,
+    start: usize,
+    state: HighlightState,
+) ?struct { marker_start: usize, marker_end: usize, line_end: usize, closes: bool } {
+    var marker_start = start;
+    var indent: usize = 0;
+    while (marker_start < source.len and indent < 3 and source[marker_start] == ' ') : (indent += 1) marker_start += 1;
+    if (marker_start >= source.len) return null;
+    const byte = source[marker_start];
+    if (byte != '`' and byte != '~') return null;
+    const run = markdownDelimiterRun(source, marker_start, byte);
+    if (run < 3) return null;
+
+    const line_break = std.mem.indexOfScalarPos(u8, source, marker_start + run, '\n');
+    const line_end = if (line_break) |newline| newline + 1 else source.len;
+    if (state.markdown_fence_byte == 0) {
+        return .{ .marker_start = marker_start, .marker_end = marker_start + run, .line_end = line_end, .closes = false };
+    }
+    if (byte != state.markdown_fence_byte or run < state.markdown_fence_len) return null;
+    const suffix_end = if (line_break) |newline| newline else source.len;
+    if (std.mem.trim(u8, source[marker_start + run .. suffix_end], " \t\r").len != 0) return null;
+    return .{ .marker_start = marker_start, .marker_end = marker_start + run, .line_end = line_end, .closes = true };
+}
+
+fn markdownListMarkerEnd(source: []const u8, start: usize) ?usize {
+    if (start >= source.len) return null;
+    if ((source[start] == '-' or source[start] == '+' or source[start] == '*') and
+        start + 1 < source.len and (source[start + 1] == ' ' or source[start + 1] == '\t'))
+    {
+        return start + 1;
+    }
+    if (!std.ascii.isDigit(source[start])) return null;
+    var end = start + 1;
+    while (end < source.len and std.ascii.isDigit(source[end])) end += 1;
+    if (end >= source.len or (source[end] != '.' and source[end] != ')')) return null;
+    if (end + 1 >= source.len or (source[end + 1] != ' ' and source[end + 1] != '\t')) return null;
+    return end + 1;
+}
+
+fn markdownInlineCodeEnd(source: []const u8, start: usize, delimiter_len: usize) ?usize {
+    var cursor = start;
+    while (cursor < source.len) {
+        if (source[cursor] == '`') {
+            const run = markdownDelimiterRun(source, cursor, '`');
+            if (run == delimiter_len) return cursor + run;
+            cursor += run;
+            continue;
+        }
+        cursor += 1;
+    }
+    return null;
+}
+
+fn highlightMarkdownWithState(
+    source: []const u8,
+    storage: *[text_spans.max_text_spans_per_paragraph]TextSpan,
+    state: *HighlightState,
+) []const TextSpan {
+    var len: usize = 0;
+    var styling_full = false;
+    var index: usize = 0;
+    while (index < source.len) {
+        if (state.markdown_line_start) {
+            if (markdownFenceLine(source, index, state.*)) |fence| {
+                appendMarkdownSpan(storage, &len, source, index, fence.marker_start, .syntax_plain, &styling_full);
+                appendMarkdownSpan(storage, &len, source, fence.marker_start, fence.marker_end, .syntax_keyword, &styling_full);
+                appendMarkdownSpan(storage, &len, source, fence.marker_end, fence.line_end, if (fence.closes) .syntax_plain else .syntax_constant, &styling_full);
+                if (fence.closes) {
+                    state.markdown_fence_byte = 0;
+                    state.markdown_fence_len = 0;
+                } else {
+                    state.markdown_fence_byte = source[fence.marker_start];
+                    state.markdown_fence_len = @intCast(@min(fence.marker_end - fence.marker_start, std.math.maxInt(u8)));
+                }
+                state.markdown_line_start = fence.line_end > fence.marker_end and source[fence.line_end - 1] == '\n';
+                index = fence.line_end;
+                continue;
+            }
+            if (state.markdown_fence_byte != 0) {
+                const newline = std.mem.indexOfScalarPos(u8, source, index, '\n');
+                const end = if (newline) |line_break| line_break + 1 else source.len;
+                appendMarkdownSpan(storage, &len, source, index, end, .syntax_literal, &styling_full);
+                state.markdown_line_start = newline != null;
+                index = end;
+                continue;
+            }
+
+            var content = index;
+            var indent: usize = 0;
+            while (content < source.len and indent < 3 and source[content] == ' ') : (indent += 1) content += 1;
+            appendMarkdownSpan(storage, &len, source, index, content, .syntax_plain, &styling_full);
+            if (content < source.len and source[content] == '#') {
+                const run = markdownDelimiterRun(source, content, '#');
+                if (run <= 6 and content + run < source.len and (source[content + run] == ' ' or source[content + run] == '\t')) {
+                    appendMarkdownSpan(storage, &len, source, content, content + run, .syntax_keyword, &styling_full);
+                    index = content + run;
+                    state.markdown_line_start = false;
+                    continue;
+                }
+            }
+            if (content < source.len and source[content] == '>') {
+                appendMarkdownSpan(storage, &len, source, content, content + 1, .syntax_keyword, &styling_full);
+                index = content + 1;
+                state.markdown_line_start = false;
+                continue;
+            }
+            if (markdownListMarkerEnd(source, content)) |marker_end| {
+                appendMarkdownSpan(storage, &len, source, content, marker_end, .syntax_keyword, &styling_full);
+                index = marker_end;
+                state.markdown_line_start = false;
+                continue;
+            }
+            index = content;
+            state.markdown_line_start = false;
+            if (index >= source.len) break;
+        }
+
+        if (source[index] == '\n') {
+            appendMarkdownSpan(storage, &len, source, index, index + 1, .syntax_plain, &styling_full);
+            index += 1;
+            state.markdown_line_start = true;
+            continue;
+        }
+        if (state.html_comment) {
+            const closing = std.mem.indexOfPos(u8, source, index, "-->");
+            const end = if (closing) |close| close + 3 else source.len;
+            appendMarkdownSpan(storage, &len, source, index, end, .syntax_comment, &styling_full);
+            state.html_comment = closing == null;
+            index = end;
+            continue;
+        }
+        if (std.mem.startsWith(u8, source[index..], "<!--")) {
+            const closing = std.mem.indexOfPos(u8, source, index + 4, "-->");
+            const end = if (closing) |close| close + 3 else source.len;
+            appendMarkdownSpan(storage, &len, source, index, end, .syntax_comment, &styling_full);
+            state.html_comment = closing == null;
+            index = end;
+            continue;
+        }
+        if (state.markdown_inline_code_len != 0) {
+            const delimiter_len = state.markdown_inline_code_len;
+            if (markdownInlineCodeEnd(source, index, delimiter_len)) |end| {
+                appendMarkdownSpan(storage, &len, source, index, end, .syntax_literal, &styling_full);
+                state.markdown_inline_code_len = 0;
+                index = end;
+            } else {
+                appendMarkdownSpan(storage, &len, source, index, source.len, .syntax_literal, &styling_full);
+                index = source.len;
+            }
+            continue;
+        }
+        if (source[index] == '`') {
+            const delimiter_len = markdownDelimiterRun(source, index, '`');
+            const content_start = index + delimiter_len;
+            if (markdownInlineCodeEnd(source, content_start, delimiter_len)) |end| {
+                appendMarkdownSpan(storage, &len, source, index, end, .syntax_literal, &styling_full);
+                state.markdown_inline_code_len = 0;
+                index = end;
+            } else {
+                appendMarkdownSpan(storage, &len, source, index, source.len, .syntax_literal, &styling_full);
+                state.markdown_inline_code_len = @intCast(@min(delimiter_len, std.math.maxInt(u8)));
+                index = source.len;
+            }
+            continue;
+        }
+        if (source[index] == '\\' and index + 1 < source.len) {
+            appendMarkdownSpan(storage, &len, source, index, index + 2, .syntax_constant, &styling_full);
+            index += 2;
+            continue;
+        }
+        if (std.mem.startsWith(u8, source[index..], "![")) {
+            appendMarkdownSpan(storage, &len, source, index, index + 2, .syntax_keyword, &styling_full);
+            index += 2;
+            continue;
+        }
+        if (source[index] == '[' or source[index] == ']') {
+            appendMarkdownSpan(storage, &len, source, index, index + 1, .syntax_property, &styling_full);
+            index += 1;
+            continue;
+        }
+        if (source[index] == '(' and index > 0 and source[index - 1] == ']') {
+            const close = std.mem.indexOfScalarPos(u8, source, index + 1, ')');
+            const end = if (close) |value| value + 1 else source.len;
+            appendMarkdownSpan(storage, &len, source, index, end, .syntax_literal, &styling_full);
+            index = end;
+            continue;
+        }
+        if (source[index] == '<' and
+            (std.mem.startsWith(u8, source[index..], "<http://") or std.mem.startsWith(u8, source[index..], "<https://")))
+        {
+            const close = std.mem.indexOfScalarPos(u8, source, index + 1, '>');
+            const end = if (close) |value| value + 1 else source.len;
+            appendMarkdownSpan(storage, &len, source, index, end, .syntax_literal, &styling_full);
+            index = end;
+            continue;
+        }
+        if (source[index] == '*' or source[index] == '_' or source[index] == '~') {
+            const run = @min(markdownDelimiterRun(source, index, source[index]), 2);
+            appendMarkdownSpan(storage, &len, source, index, index + run, .syntax_keyword, &styling_full);
+            index += run;
+            continue;
+        }
+
+        const start = index;
+        while (index < source.len and
+            source[index] != '\n' and source[index] != '`' and source[index] != '\\' and
+            source[index] != '[' and source[index] != ']' and source[index] != '(' and
+            source[index] != '<' and source[index] != '*' and source[index] != '_' and source[index] != '~')
+        {
+            index += 1;
+        }
+        if (index == start) index += 1;
+        appendMarkdownSpan(storage, &len, source, start, index, .syntax_plain, &styling_full);
+    }
+    return storage[0..len];
+}
+
 /// Tokenize `source` into theme-colored monospace spans.
 pub fn highlight(
     source: []const u8,
@@ -515,6 +759,7 @@ pub fn highlightWithState(
         storage[0] = .{ .text = source, .monospace = true, .color = .syntax_plain };
         return storage[0..1];
     }
+    if (language == .markdown) return highlightMarkdownWithState(source, storage, state);
 
     var len: usize = 0;
     var styling_full = false;
@@ -601,7 +846,7 @@ pub fn highlightWithState(
             color = .syntax_constant;
         } else if (isHtmlFamily(language) and
             rest[0] == '<' and
-            htmlLessThanStartsTag(source, index, state.*))
+            htmlLessThanStartsTag(source, index, language, state.*))
         {
             index += 1;
             if (index < source.len and source[index] == '/') index += 1;

@@ -385,26 +385,6 @@ pub const Model = struct {
         return out[0..count];
     }
 
-    /// Programmatic horizontal offset that places the selected tab at the
-    /// leading edge. The scroll element is keyed by the selected path, so a
-    /// newly opened preview reapplies this value even when it replaces the
-    /// previous preview in the same ordinal slot.
-    pub fn tabScrollX(model: *const Model) f32 {
-        const selected_index = model.selected_entry orelse return 0;
-        var position: usize = 0;
-        for (model.pinned_entries[0..model.pinned_count]) |index| {
-            if (index >= model.entry_count or model.entries[index].kind != .file) continue;
-            if (index == selected_index) return @as(f32, @floatFromInt(position)) * editor_tab_width;
-            position += 1;
-        }
-        if (model.preview_entry) |index| {
-            if (index == selected_index and index < model.entry_count and model.entries[index].kind == .file and !model.isPinned(index)) {
-                return @as(f32, @floatFromInt(position)) * editor_tab_width;
-            }
-        }
-        return 0;
-    }
-
     fn openTab(model: *const Model, index: u16, preview_tab: bool) OpenTab {
         const entry = &model.entries[index];
         const active = model.selected_entry != null and model.selected_entry.? == index;

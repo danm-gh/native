@@ -66,9 +66,10 @@
                   <spacer height="36" />
                   <separator />
                 </column>
-                <!-- The selected-path key reapplies the model offset when a
-                     new preview replaces another tab in the same slot. -->
-                <scroll key="{selectedPath}" grow="1" axis="horizontal" value-x="{tabScrollX}" overscroll="none" label="Open file tabs">
+                <!-- The runtime minimally reveals a newly selected tab. A
+                     stable scroll identity preserves the standing offset when
+                     the active tab is already fully visible. -->
+                <scroll grow="1" axis="horizontal" overscroll="none" label="Open file tabs">
                   <row height="37">
                     <for each="openTabs" key="relative_path" as="tab">
                       <if test="{tab.selected}">
@@ -184,6 +185,9 @@
                     </if>
                     <if test="{previewLanguage == 'sql'}">
                       <code source="{preview}" language="sql" editable="{codeEditable}" on-input="edit_code" line-numbers="true" wrap="false" grow="1" label="{selectedPath}" />
+                    </if>
+                    <if test="{previewLanguage == 'markdown'}">
+                      <code source="{preview}" language="markdown" editable="{codeEditable}" on-input="edit_code" line-numbers="true" wrap="false" grow="1" label="{selectedPath}" />
                     </if>
                     <if test="{previewLanguage == 'plain'}">
                       <code source="{preview}" language="plain" editable="{codeEditable}" on-input="edit_code" line-numbers="true" wrap="false" grow="1" label="{selectedPath}" />

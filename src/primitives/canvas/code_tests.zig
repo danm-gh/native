@@ -4,6 +4,7 @@ const geometry = @import("geometry");
 const canvas = @import("root.zig");
 const text_spans = @import("text_spans.zig");
 const ui_model = @import("ui.zig");
+const widget_metrics = @import("widget_metrics.zig");
 
 const testing = std.testing;
 const Ui = ui_model.Ui(enum { noop });
@@ -140,6 +141,7 @@ test "HTML and JSX highlighting distinguishes tags attributes expressions and st
     try testing.expectEqual(code_model.Language.javascript, code_model.languageFromName("mjs"));
     try testing.expectEqual(code_model.Language.yaml, code_model.languageFromName("yaml"));
     try testing.expectEqual(code_model.Language.yaml, code_model.languageFromName("yml"));
+    try testing.expectEqual(code_model.Language.markdown, code_model.languageFromName("md"));
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "Accordion").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_function, spanWithFragment(spans, "defaultValue").?.color.?);
     try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "\"item-1\"").?.color.?);
@@ -215,6 +217,49 @@ test "JSX relational less-than preserves expression state and nested tags" {
     try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(second, "limit").?.color.?);
     try testing.expectEqual(@as(usize, 0), chunked_state.html_expression_depth);
     try testing.expect(!chunked_state.html_in_tag);
+}
+
+test "TSX relational less-than at top level does not open a tag" {
+    const source = "const ok=count<limit; const later=true;";
+    var state: code_model.HighlightState = .{};
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlightWithState(source, .tsx, &storage, &state);
+
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(spans, "limit").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(spans, "const").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
+    try testing.expect(!state.html_in_tag);
+
+    var chunked_state: code_model.HighlightState = .{};
+    var first_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    _ = code_model.highlightWithState("const ok=count", .tsx, &first_storage, &chunked_state);
+    var second_storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const second = code_model.highlightWithState("<limit; const later=true;", .tsx, &second_storage, &chunked_state);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(second, "limit").?.color.?);
+    try testing.expect(!chunked_state.html_in_tag);
+}
+
+test "Markdown highlighting distinguishes structure links code and comments" {
+    const source =
+        \\# Heading
+        \\- [Native](https://native.dev) uses `code` and **emphasis**.
+        \\<!-- note -->
+        \\```zig
+        \\const value = true;
+        \\```
+    ;
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlight(source, .markdown, &storage);
+
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(spans, "#").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(spans, "-").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_property, spanWithFragment(spans, "[").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "https://native.dev").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "`code`").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(spans, "**").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_comment, spanWithFragment(spans, "<!-- note -->").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_constant, spanWithFragment(spans, "zig").?.color.?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "const value").?.color.?);
 }
 
 test "nested JSX attribute tags restore the enclosing opening tag" {
@@ -693,6 +738,23 @@ test "line numbers are opt-in and stay paired with logical source lines" {
     try testing.expectEqual(canvas.TextSpanColor.syntax_keyword, spanWithFragment(comment_text.spans, "const").?.color.?);
 }
 
+test "line number gutter reserves at least three marker columns" {
+    const tokens = canvas.DesignTokens{};
+    var numbered = canvas.Widget{
+        .kind = .textarea,
+        .code_editor = true,
+        .code_line_number_digits = 1,
+    };
+    const one_digit_width = widget_metrics.widgetCodeLineNumberGutterWidth(numbered, tokens);
+    numbered.code_line_number_digits = 3;
+    const three_digit_width = widget_metrics.widgetCodeLineNumberGutterWidth(numbered, tokens);
+    numbered.code_line_number_digits = 4;
+    const four_digit_width = widget_metrics.widgetCodeLineNumberGutterWidth(numbered, tokens);
+
+    try testing.expectEqual(three_digit_width, one_digit_width);
+    try testing.expect(four_digit_width > three_digit_width);
+}
+
 test "editable line-number gutter masks horizontally scrolled source" {
     const source = "const deliberately_long_identifier = another_deliberately_long_identifier;\n";
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -776,6 +838,33 @@ test "wrapped numbered editable code emits one retained gutter" {
 
     var changes: [256]canvas.DiffChange = undefined;
     _ = try canvas.DisplayList.diff(.{}, builder.displayList(), &changes);
+}
+
+test "wrapped editable code re-highlights runtime-owned text" {
+    const source = "const stale = true;";
+    const edited = "fn fresh() void {}";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .zig,
+        .editable = true,
+        .wrap = true,
+    }, source));
+    var editor = findByText(view.root, source).?;
+    editor.text = edited;
+    editor.frame = geometry.RectF.init(0, 0, 300, 80);
+
+    var commands: [256]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, .{});
+
+    var rendered: std.ArrayListUnmanaged(u8) = .empty;
+    defer rendered.deinit(testing.allocator);
+    for (builder.displayList().commands) |command| {
+        if (command == .draw_text) try rendered.appendSlice(testing.allocator, command.draw_text.text);
+    }
+    try testing.expectEqualStrings(edited, rendered.items);
 }
 
 test "wrapped editable code measures vertical extent with its monospace font" {

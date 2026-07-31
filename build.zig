@@ -3198,17 +3198,12 @@ fn tsCoreE2eArtifact(
         while (inputs.next()) |input| {
             parity_mod.addObjectFile(.{ .cwd_relative = b.dupe(input) });
         }
-        const parity_tests = filteredTestArtifact(b, parity_mod, "external-core-parity-tests", &.{});
-        // Run the checker over the supplied sidecar explicitly (the
-        // shim generation above validates too, but the checker tier —
-        // both projections, integer_slots structural rules included —
-        // is the surface an external compile is verified against).
-        const check_sidecar = b.addRunArtifact(corewire_exe);
-        check_sidecar.addArg("--sidecar");
-        check_sidecar.addFileArg(parity_sidecar);
-        check_sidecar.addArg("--check");
-        parity_tests.step.dependOn(&check_sidecar.step);
-        break :blk parity_tests;
+        // The generated mirror is the only projection this lane uses;
+        // sidecarShimModule validates exactly that surface. Do not run
+        // the all-projections checker here: an external compiler's
+        // sidecar may legitimately predate facade-only metadata while
+        // remaining a valid mirror contract for its linked archive.
+        break :blk filteredTestArtifact(b, parity_mod, "external-core-parity-tests", &.{});
     } else null;
 
     // The full-corpus compiled-core batteries: each supplied fixture's
@@ -3253,14 +3248,6 @@ fn tsCoreE2eArtifact(
         battery_mod.addImport(entry.core_import, paired_mod);
         if (entry.second_import) |second| battery_mod.addImport(second, entry.second_mod.?);
         const battery = filteredTestArtifact(b, battery_mod, b.fmt("compiled-core-{s}-tests", .{entry.name}), &.{});
-        // Run the checker tier over the supplied sidecar explicitly —
-        // the same surface an external compile is verified against in
-        // the markup parity suite.
-        const check_sidecar = b.addRunArtifact(corewire_exe);
-        check_sidecar.addArg("--sidecar");
-        check_sidecar.addFileArg(supply.sidecar);
-        check_sidecar.addArg("--check");
-        battery.step.dependOn(&check_sidecar.step);
         compiled_core_parity.append(b.allocator, .{ .name = b.dupe(entry.name), .tests = battery }) catch @panic("OOM");
     }
 

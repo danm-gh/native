@@ -44,21 +44,15 @@ const corewire_rt = @import("corewire_rt");
 
 const ts_markup = @import("ts_markup_core");
 const shim_markup = @import("shim_markup_core");
-const facade_markup = @import("facade_markup_core");
 const shim_integer = @import("shim_integer_core");
-const facade_integer = @import("facade_integer_core");
 const ts_host = @import("ts_host_core");
 const shim_host = @import("shim_host_core");
-const facade_host = @import("facade_host_core");
 const ts_soundboard = @import("ts_soundboard_core");
 const shim_soundboard = @import("shim_soundboard_core");
-const facade_soundboard = @import("facade_soundboard_core");
 const ts_monitor = @import("ts_monitor_core");
 const shim_monitor = @import("shim_monitor_core");
-const facade_monitor = @import("facade_monitor_core");
 const ts_ai_chat = @import("ts_ai_chat_core");
 const shim_ai_chat = @import("shim_ai_chat_core");
-const facade_ai_chat = @import("facade_ai_chat_core");
 
 const testing = std.testing;
 
@@ -236,231 +230,16 @@ test "ai-chat: helper methods keep the exported call surface" {
 // compiled core exists yet (the ABI is a draft), so these paths are
 // compile- and link-proven here, not executed.
 
-// ------------------------------------------------ facade parity axis
-//
-// The third comparison: the sidecar's TypeScript projection
-// (core_facade.ts), compiled through the shipped transpiler (the
-// compile IS the subset-acceptance proof), must produce the exact
-// canonical bytes the host's decoder expects. The facade encodes its
-// deterministic sample and zero models in compiled subset arithmetic;
-// the reference bytes come from the shared canonical encoder
-// (corewire_rt.encodeAlloc) over the SHIM module's mirror type — the
-// sidecar-classed layout — after a by-name value conversion (the
-// facade compile's own number classes are inference-decided and may
-// legally differ; the bytes must not).
-
-/// Mirror-value conversion by name (tests/sidecar/mirror_value.zig),
-/// shared with the compiled-core behavior-parity suite.
-const convertValue = @import("mirror_value.zig").convertValue;
-
-/// The facade's compiled snapshot encoder must byte-match the canonical
-/// encoder over the sidecar-classed mirror layout, for both the zero
-/// model and the deterministic sample.
-fn expectSnapshotParity(comptime facade: type, comptime shim: type) !void {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    facade.rt.resetAll();
-    // The facade's boot stub carries the contract's declared shape: a
-    // cmd-returning init compiles to the InitResult pair, a bare one to
-    // the model pointer — unwrap either to the boot model.
-    const boot = facade.initialModel();
-    const boot_model = if (@TypeOf(boot) == *const facade.Model) boot else boot.model;
-    const models = [_]*const facade.Model{ boot_model, facade.nsc_core_sample_model() };
-    for (models) |model| {
-        const facade_bytes = facade.nsc_core_model_snapshot(1, model);
-        const converted = try convertValue(shim.Model, model, arena);
-        const canonical = corewire_rt.encodeAlloc(shim.Model, converted, arena);
-        try testing.expectEqualSlices(u8, canonical, facade_bytes);
-    }
-    facade.rt.resetAll();
-}
-
-fn expectScalarProbeParity(comptime facade: type) !void {
-    const f64_values = [_]f64{
-        0.0,     -0.0,                    1.0,                    -1.0,               0.5,                 -2.75,
-        0.1,     1.5625,                  1e300,                  -1e300,             1e-300,              5e-324,
-        -5e-324, 2.2250738585072014e-308, 1.7976931348623157e308, 9007199254740991.0, -9007199254740991.0, 3.141592653589793,
-    };
-    for (f64_values) |value| {
-        facade.rt.frameReset();
-        const encoded = facade.nsc_core_probe_f64(value);
-        var expected: [8]u8 = undefined;
-        std.mem.writeInt(u64, &expected, @bitCast(value), .little);
-        try testing.expectEqualSlices(u8, &expected, encoded);
-    }
-    // The infinities and the canonical quiet NaN.
-    const specials = [_]f64{ std.math.inf(f64), -std.math.inf(f64), std.math.nan(f64) };
-    for (specials) |value| {
-        facade.rt.frameReset();
-        const encoded = facade.nsc_core_probe_f64(value);
-        var expected: [8]u8 = undefined;
-        std.mem.writeInt(u64, &expected, @bitCast(value), .little);
-        try testing.expectEqualSlices(u8, &expected, encoded);
-    }
-    // Non-canonical NaNs (sign, payload bits) canonicalize to the one
-    // quiet pattern in BOTH encoders — payload bits are not values.
-    const canonical_nan = [_]u8{ 0, 0, 0, 0, 0, 0, 0xf8, 0x7f };
-    const odd_nans = [_]f64{ -std.math.nan(f64), @bitCast(@as(u64, 0x7ff800000000beef)) };
-    for (odd_nans) |value| {
-        facade.rt.frameReset();
-        try testing.expectEqualSlices(u8, &canonical_nan, facade.nsc_core_probe_f64(value));
-        var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-        defer arena_state.deinit();
-        try testing.expectEqualSlices(u8, &canonical_nan, corewire_rt.encodeAlloc(f64, value, arena_state.allocator()));
-    }
-    const i64_values = [_]i64{ 0, 1, -1, 255, 256, -256, 65535, -65536, 42424242, -1234567890123, 9007199254740991, -9007199254740991 };
-    for (i64_values) |value| {
-        facade.rt.frameReset();
-        const encoded = facade.nsc_core_probe_i64(@floatFromInt(value));
-        var expected: [8]u8 = undefined;
-        std.mem.writeInt(u64, &expected, @bitCast(value), .little);
-        try testing.expectEqualSlices(u8, &expected, encoded);
-    }
-    facade.rt.frameReset();
-}
-
-test "markup fixture: facade scalar encodings match native bit patterns" {
-    try expectScalarProbeParity(facade_markup);
-}
-
-test "markup fixture: facade snapshots byte-match the canonical encoder" {
-    try expectSnapshotParity(facade_markup, shim_markup);
-}
-
-test "markup fixture: facade wire constructors carry declaration-order tags" {
-    // The constructor family is the dispatch-table projection: the arm
-    // a constructor builds must sit at its wire tag in the facade's own
-    // compiled union.
-    const add = facade_markup.nsc_core_msg_add();
-    try testing.expectEqual(@as(usize, 0), @intFromEnum(std.meta.activeTag(add)));
-    const zoomed = facade_markup.nsc_core_msg_zoomed(1.5, 7, true);
-    // zoomed sits at tag 11: the hover containment pair (hover_row,
-    // hover_off) declares ahead of it in the fixture's Msg union.
-    try testing.expectEqual(@as(usize, 11), @intFromEnum(std.meta.activeTag(zoomed)));
-    try testing.expectEqual(@as(f64, 1.5), zoomed.zoomed.factor);
-    try testing.expect(zoomed.zoomed.fromBoard);
-    try testing.expectEqual(@as(usize, 0), facade_markup.nsc_core_tag_add);
-    try testing.expectEqual(@as(usize, 11), facade_markup.nsc_core_tag_zoomed);
-}
-
-test "host fixture: facade scalar encodings match native bit patterns" {
-    try expectScalarProbeParity(facade_host);
-}
-
-test "host fixture: facade snapshots byte-match the canonical encoder" {
-    try expectSnapshotParity(facade_host, shim_host);
-}
-
-test "soundboard: facade snapshots byte-match the canonical encoder" {
-    try expectSnapshotParity(facade_soundboard, shim_soundboard);
-}
-
-test "system monitor: facade snapshots byte-match the canonical encoder" {
-    try expectSnapshotParity(facade_monitor, shim_monitor);
-}
-
-test "ai-chat: facade snapshots byte-match the canonical encoder" {
-    try expectSnapshotParity(facade_ai_chat, shim_ai_chat);
-}
-
 // ------------------------------------------- channel envelope axis
 //
 // The channel bytes envelope ([produced u8][tag u8][payload…]): a
 // channel entry's whole result rides one bytes return, the compiled
-// facade packs it, the generated shim unpacks it. Two executable
-// proofs, one per side:
-//
-//   - the facade's packed envelope is [1] ++ the canonical union
-//     encoding of the produced message (the envelope tail IS that
-//     encoding: tag byte = declaration-order arm index, payload = the
-//     arm's canonical bytes) — compared against the host's canonical
-//     encoder over the shim's mirror union;
-//   - the generated shim's channel entries, driven against the stub
-//     core's test-settable envelope, gate on the produced flag and
-//     decode the payload back into the mirror value.
-
-test "markup fixture: facade channel envelopes carry the canonical message bytes" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    facade_markup.rt.resetAll();
-    defer facade_markup.rt.resetAll();
-
-    // Nothing produced: exactly the two header bytes.
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_pack_msg(null));
-
-    // Produced arms across the payload families the fixture carries: a
-    // bare arm, an integer-classed number, bytes, a flattened record,
-    // and a flattened record with an enum member.
-    {
-        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_add());
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .add, arena), envelope[1..]);
-    }
-    {
-        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_toggle(2));
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .{ .toggle = 2 }, arena), envelope[1..]);
-    }
-    {
-        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_banner_set("parity"));
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .{ .banner_set = "parity" }, arena), envelope[1..]);
-    }
-    {
-        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_zoomed(1.25, 7, true));
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .{ .zoomed = .{ .factor = 1.25, .windowId = 7, .fromBoard = true } }, arena), envelope[1..]);
-    }
-    {
-        const envelope = facade_markup.nsc_core_pack_msg(facade_markup.nsc_core_msg_appearance_changed(.dark, false, true));
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_markup.Msg, .{ .appearance_changed = .{ .colorScheme = .dark, .reduceMotion = false, .highContrast = true } }, arena), envelope[1..]);
-    }
-}
-
-test "markup fixture: wire-shaped channel entries take host-event params and pack" {
-    facade_markup.rt.resetAll();
-    defer facade_markup.rt.resetAll();
-
-    // The wire-shaped entries mirror the C declarations: bytes ride
-    // buffer params, the modifier booleans u8 0-or-1, the pinch phase
-    // its declaration-order member index. Each runs the facade's
-    // channel-function gate (null until compile-mode wiring lands the
-    // author's code) and hands the result to the packer, so the null
-    // route returns exactly the two-byte nothing-produced envelope.
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_key_msg("space", 0, 0, 0, 0));
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_key_msg("c", 1, 0, 1, 0));
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_frame_msg(800, 600, 16, 16));
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_markup.nsc_core_pinch_msg(7, "board", 1, 0.25, 1, 2));
-
-    // The unwired command channel stays out of the facade surface
-    // entirely.
-    try testing.expect(!@hasDecl(facade_markup, "nsc_core_command_msg"));
-}
-
-test "soundboard: facade channel envelopes carry the canonical message bytes" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    facade_soundboard.rt.resetAll();
-    defer facade_soundboard.rt.resetAll();
-
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_soundboard.nsc_core_pack_msg(null));
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_soundboard.nsc_core_frame_msg(640, 480, 16, 16));
-    {
-        const envelope = facade_soundboard.nsc_core_pack_msg(facade_soundboard.nsc_core_msg_toggle_play());
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_soundboard.Msg, .toggle_play, arena), envelope[1..]);
-    }
-    {
-        const envelope = facade_soundboard.nsc_core_pack_msg(facade_soundboard.nsc_core_msg_canvas_resized(640));
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_soundboard.Msg, .{ .canvas_resized = 640 }, arena), envelope[1..]);
-    }
-}
+// core packs it, the generated shim unpacks it. The packing side is
+// proven at full behavioral depth by the compiled-core parity
+// batteries (the generated facade IS the compiled core's entry); the
+// unpacking side is executable here, driven against the stub core's
+// test-settable envelope: the shim's channel entries gate on the
+// produced flag and decode the payload back into the mirror value.
 
 test "markup fixture: generated channel entries unpack the stub core's envelope" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
@@ -577,39 +356,6 @@ test "integer fixture: dispatch payloads encode byte-exactly against hand-comput
         &.{ 4, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x00, 2, 0, 0, 0, 'i', 'd' },
         corewire_rt.encodeAlloc(shim_integer.Msg, .{ .sized = .{ .size = 9007199254740991, .label = "id" } }, arena),
     );
-}
-
-test "integer fixture: facade snapshots byte-match the canonical encoder" {
-    // The compiled facade routes u64-attested slots through its
-    // unsigned encoder; both the zero and sample models must land on
-    // the exact bytes the mirror's decoder expects.
-    try expectSnapshotParity(facade_integer, shim_integer);
-}
-
-test "integer fixture: facade channel envelopes carry mixed-class message bytes" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    facade_integer.rt.resetAll();
-    defer facade_integer.rt.resetAll();
-
-    // The signed and unsigned arms encode per their own attestations,
-    // byte-identical to the canonical encoding of the mirror value.
-    {
-        const envelope = facade_integer.nsc_core_pack_msg(facade_integer.nsc_core_msg_count_set(-42));
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_integer.Msg, .{ .count_set = -42 }, arena), envelope[1..]);
-    }
-    {
-        const envelope = facade_integer.nsc_core_pack_msg(facade_integer.nsc_core_msg_id_set(9007199254740991));
-        try testing.expectEqual(@as(u8, 1), envelope[0]);
-        try testing.expectEqualSlices(u8, corewire_rt.encodeAlloc(shim_integer.Msg, .{ .id_set = 9007199254740991 }, arena), envelope[1..]);
-    }
-
-    // The wire-shaped key entry runs the channel-function gate (null
-    // until compile-mode wiring lands the author's code): the two-byte
-    // nothing-produced envelope.
-    try testing.expectEqualSlices(u8, &.{ 0, 0 }, facade_integer.nsc_core_key_msg("space", 0, 0, 0, 0));
 }
 
 test "integer fixture: model snapshots decode per-slot classes from raw bytes" {

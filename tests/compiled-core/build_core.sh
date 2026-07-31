@@ -12,11 +12,11 @@
 # The stage carries: the AUTHOR'S core sources verbatim except for
 # import-specifier resolution (the "@native-sdk/core*" bare specifiers
 # rewrite to the staged ./sdk/ copies of the same files — the toolchain
-# compiles its module graph from files, not package resolution), the
-# hand-authored adapter entry + shared wire codec, and the fixture's
-# core profile. The extracted contract under zig-out/core-contracts/
-# (`zig build stage-core-contracts`) is the reference for authoring a
-# fixture's adapter, not a compile input.
+# compiles its module graph from files, not package resolution), and the
+# GENERATED compile entry + compiler profile from the staged contract
+# artifacts (`zig build stage-core-contracts` emits both from the
+# fixture's extracted contract sidecar — corewire's --facade and
+# --profile projections).
 #
 # Outputs in <workdir>: lib<name>.a, core.contract.json, and a
 # build-times line (cold/warm wall clock) on stdout.
@@ -31,29 +31,35 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 case "$fixture" in
   ai-chat)
     sources="examples/ai-chat-ts/src/core.ts examples/ai-chat-ts/src/api.ts"
-    adapter="ai_chat_adapter.ts"
+    contract="ai-chat"
     ;;
   soundboard)
     sources="examples/soundboard-ts/src/core.ts examples/soundboard-ts/src/library.ts examples/soundboard-ts/src/player.ts"
-    adapter="soundboard_adapter.ts"
+    contract="soundboard"
     ;;
   system-monitor)
     sources="examples/system-monitor-ts/src/core.ts examples/system-monitor-ts/src/parsers.ts examples/system-monitor-ts/src/table.ts"
-    adapter="system_monitor_adapter.ts"
+    contract="system-monitor"
     ;;
   host-fixture)
     sources="tests/ts-core/fixture.ts"
-    adapter="host_fixture_adapter.ts"
+    contract="host-fixture"
     ;;
   markup)
     sources="tests/ts-core/markup_fixture.ts"
-    adapter="markup_adapter.ts"
+    contract="markup-fixture"
     ;;
   *)
     echo "unknown fixture \"$fixture\" (ai-chat | soundboard | system-monitor | host-fixture | markup)" >&2
     exit 2
     ;;
 esac
+
+staged="$repo/zig-out/core-contracts/$contract"
+if [ ! -f "$staged/core_facade.ts" ] || [ ! -f "$staged/core_profile.json" ]; then
+  echo "no staged contract artifacts for $fixture — run \`zig build stage-core-contracts\` first (it emits the generated entry module and compiler profile under zig-out/core-contracts/$contract)" >&2
+  exit 2
+fi
 
 rm -rf "$work"
 mkdir -p "$work/sdk"
@@ -137,9 +143,11 @@ awk -v names="$author_aliases" '
   }
 ' "$work/sdk/core.ts" > "$work/sdk/core.deduped.ts"
 mv "$work/sdk/core.deduped.ts" "$work/sdk/core.ts"
-cp "$repo/tests/compiled-core/wire.ts" "$work/wire.ts"
-cp "$repo/tests/compiled-core/adapters/$adapter" "$work/core_adapter.ts"
-cp "$repo/tests/compiled-core/profiles/$fixture.profile.json" "$work/profile.json"
+# The generated compile entry and its profile, from the staged contract
+# artifacts (one corewire invocation emits both, so the profile's entry
+# spelling and the facade's file name can never skew).
+cp "$staged/core_facade.ts" "$work/core_facade.ts"
+cp "$staged/core_profile.json" "$work/profile.json"
 
 name="$(printf '%s' "$fixture" | tr '-' '_')_core"
 

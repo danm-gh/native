@@ -8,12 +8,12 @@
   "build_id": "b11d1d0000000001",
   "types": {
     "structs": [
-      {"name": "Task", "fields": [
+      {"name": "Task", "origin": "markup_fixture.ts", "fields": [
         {"name": "id", "type": {"kind": "i64"}},
         {"name": "title", "type": {"kind": "bytes"}},
         {"name": "done", "type": {"kind": "bool"}}
       ]},
-      {"name": "Model", "fields": [
+      {"name": "Model", "origin": "markup_fixture.ts", "fields": [
         {"name": "filter", "type": {"kind": "enum", "name": "Filter"}},
         {"name": "nextId", "type": {"kind": "i64"}},
         {"name": "doneCount", "type": {"kind": "i64"}},
@@ -31,11 +31,11 @@
         {"name": "previewSurface", "type": {"kind": "i64"}},
         {"name": "hoveredId", "type": {"kind": "f64"}}
       ]},
-      {"name": "TextCaretMove", "fields": [
+      {"name": "TextCaretMove", "origin": "sdk/text.ts", "fields": [
         {"name": "direction", "type": {"kind": "enum", "name": "TextCaretDirection"}},
         {"name": "extend", "type": {"kind": "bool"}}
       ]},
-      {"name": "TextSelection", "fields": [
+      {"name": "TextSelection", "origin": "sdk/text.ts", "fields": [
         {"name": "anchor", "type": {"kind": "i64"}},
         {"name": "focus", "type": {"kind": "i64"}}
       ]},
@@ -53,13 +53,13 @@
         {"name": "reduceMotion", "type": {"kind": "bool"}},
         {"name": "highContrast", "type": {"kind": "bool"}}
       ]},
-      {"name": "ChromeInsets", "fields": [
+      {"name": "ChromeInsets", "origin": "sdk/events.ts", "fields": [
         {"name": "top", "type": {"kind": "f64"}},
         {"name": "right", "type": {"kind": "f64"}},
         {"name": "bottom", "type": {"kind": "f64"}},
         {"name": "left", "type": {"kind": "f64"}}
       ]},
-      {"name": "ChromeButtons", "fields": [
+      {"name": "ChromeButtons", "origin": "sdk/events.ts", "fields": [
         {"name": "x", "type": {"kind": "f64"}},
         {"name": "y", "type": {"kind": "f64"}},
         {"name": "width", "type": {"kind": "f64"}},
@@ -72,20 +72,20 @@
       ]}
     ],
     "enums": [
-      {"name": "Filter", "members": ["all", "open", "done"]},
-      {"name": "TextCaretDirection", "members": ["previous", "next", "previous_word", "next_word", "start", "end"]},
-      {"name": "ColorScheme", "members": ["light", "dark"]}
+      {"name": "Filter", "origin": "markup_fixture.ts", "members": ["all", "open", "done"]},
+      {"name": "TextCaretDirection", "origin": "sdk/text.ts", "members": ["previous", "next", "previous_word", "next_word", "start", "end"]},
+      {"name": "ColorScheme", "origin": "sdk/events.ts", "members": ["light", "dark"]}
     ],
     "unions": [
-      {"name": "TextInputEvent", "arms": [
-        {"name": "insert_text", "payload": {"kind": "bytes"}},
+      {"name": "TextInputEvent", "origin": "sdk/text.ts", "arms": [
+        {"name": "insert_text", "member": "text", "payload": {"kind": "bytes"}},
         {"name": "delete_backward", "payload": {"kind": "void"}},
         {"name": "delete_forward", "payload": {"kind": "void"}},
         {"name": "delete_word_backward", "payload": {"kind": "void"}},
         {"name": "delete_word_forward", "payload": {"kind": "void"}},
         {"name": "clear", "payload": {"kind": "void"}},
-        {"name": "move_caret", "payload": {"kind": "value", "name": "TextCaretMove"}},
-        {"name": "set_selection", "payload": {"kind": "value", "name": "TextSelection"}},
+        {"name": "move_caret", "member": "move", "payload": {"kind": "value", "name": "TextCaretMove"}},
+        {"name": "set_selection", "member": "selection", "payload": {"kind": "value", "name": "TextSelection"}},
         {"name": "set_composition", "payload": {"kind": "value", "name": "TextInputEvent_set_composition"}},
         {"name": "commit_composition", "payload": {"kind": "void"}},
         {"name": "cancel_composition", "payload": {"kind": "void"}}
@@ -99,20 +99,20 @@
     "name": "Msg",
     "arms": [
       {"name": "add", "payload": {"kind": "void"}},
-      {"name": "toggle", "payload": {"kind": "number", "class": "i64"}},
-      {"name": "pick", "payload": {"kind": "number", "class": "f64"}},
+      {"name": "toggle", "member": "taskId", "payload": {"kind": "number", "class": "i64"}},
+      {"name": "pick", "member": "id", "payload": {"kind": "number", "class": "f64"}},
       {"name": "cycle", "payload": {"kind": "void"}},
       {"name": "clear", "payload": {"kind": "void"}},
       {"name": "stamp", "payload": {"kind": "void"}},
-      {"name": "stamped", "payload": {"kind": "number", "class": "f64"}},
-      {"name": "hover_row", "payload": {"kind": "number", "class": "f64"}},
-      {"name": "hover_off", "payload": {"kind": "number", "class": "f64"}},
-      {"name": "draft_edit", "payload": {"kind": "union", "name": "TextInputEvent"}},
-      {"name": "canvas_resized", "payload": {"kind": "number", "class": "i64"}},
+      {"name": "stamped", "member": "at", "payload": {"kind": "number", "class": "f64"}},
+      {"name": "hover_row", "member": "id", "payload": {"kind": "number", "class": "f64"}},
+      {"name": "hover_off", "member": "id", "payload": {"kind": "number", "class": "f64"}},
+      {"name": "draft_edit", "member": "edit", "payload": {"kind": "union", "name": "TextInputEvent"}},
+      {"name": "canvas_resized", "member": "width", "payload": {"kind": "number", "class": "i64"}},
       {"name": "zoomed", "payload": {"kind": "record", "name": "Msg_zoomed"}},
       {"name": "appearance_changed", "payload": {"kind": "record", "name": "Msg_appearance_changed"}},
       {"name": "chrome_changed", "payload": {"kind": "record", "name": "Msg_chrome_changed"}},
-      {"name": "banner_set", "payload": {"kind": "bytes"}}
+      {"name": "banner_set", "member": "value", "payload": {"kind": "bytes"}}
     ],
     "unbound": []
   },

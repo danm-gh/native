@@ -114,6 +114,14 @@ const fixed_exports = [_][]const u8{
     "appearanceMsg",         "chromeMsg",      "envMsgs",           "viewUnbound",
 };
 
+/// Ambient VALUE bindings generated code calls directly. A model helper is
+/// re-declared as an exported function in this module, so taking one of these
+/// names would shadow the ambient and turn `Math.trunc`, `Buffer.from`, etc.
+/// into member accesses on the wrapper itself.
+const ambient_value_names = [_][]const u8{
+    "Math", "Buffer", "Uint8Array", "Error", "String",
+};
+
 /// The wire-codec snippets, emitted exactly when generated code reaches
 /// them (an unused module function is noise a strict compiler may
 /// refuse). `use` marks dependencies transitively.
@@ -123,6 +131,7 @@ const Codec = enum {
     read_f64,
     read_i64,
     read_i64_saturating,
+    read_u64_saturating,
     read_bool,
     read_bytes_body,
     assert_consumed,
@@ -183,7 +192,7 @@ const FacadeEmitter = struct {
         // Dependency closure: every snippet marks what its own body
         // calls, so the emitted set is always self-contained.
         const deps: []const Codec = switch (id) {
-            .read_i64, .read_i64_saturating => &.{.read_u32},
+            .read_i64, .read_i64_saturating, .read_u64_saturating => &.{.read_u32},
             .read_u32, .read_f64, .read_bool, .read_bytes_body, .assert_consumed => &.{.trap},
             .w_u32 => &.{.sink},
             .w_u8, .w_f64, .w_bool => &.{.sink},
@@ -212,16 +221,17 @@ const FacadeEmitter = struct {
 
     // ----------------------------------------------------- fact lookup
 
-    /// The authored member name of a single-payload arm; the erased
-    /// contract carried none before the member fact landed, and the one
-    /// authored spelling that erases to the same contract is `value`.
+    /// The authored member name of a single-payload arm. Validation requires
+    /// the fact everywhere emission consumes it; `value` remains only as an
+    /// unreachable-safe spelling for bare/multi-field branches that compute
+    /// this local before switching on their payload shape.
     fn memberOf(_: *FacadeEmitter, member: ?[]const u8) []const u8 {
         return member orelse "value";
     }
 
-    /// The declaring module of a table type: the sidecar's origin fact,
-    /// defaulting to the entry module (older sidecars carry no fact and
-    /// predate multi-module cores).
+    /// The declaring module of a table type. Facade validation requires an
+    /// origin for every authored table; the entry fallback is only for Msg,
+    /// whose root designation is not duplicated in the type tables.
     fn originOf(self: *FacadeEmitter, name: []const u8) []const u8 {
         for (self.sidecar.types.structs) |entry| {
             if (std.mem.eql(u8, entry.name, name)) return entry.origin orelse self.entryBasename();
@@ -239,21 +249,10 @@ const FacadeEmitter = struct {
         return std.fs.path.basenamePosix(self.sidecar.entry);
     }
 
-    /// Whether this is a current provenance-carrying sidecar. Legacy
-    /// sidecars predate origins entirely, so their null origins cannot
-    /// distinguish authored declarations from generated table names.
-    fn hasOriginFacts(self: *FacadeEmitter) bool {
-        for (self.sidecar.types.structs) |entry| if (entry.origin != null) return true;
-        for (self.sidecar.types.enums) |entry| if (entry.origin != null) return true;
-        for (self.sidecar.types.unions) |entry| if (entry.origin != null) return true;
-        return false;
-    }
-
     /// A table name synthesized by the transpiler rather than declared in
     /// an authored module. These names flatten at their one legal reference
     /// site or refuse; they are never imports or re-exports.
     fn isGeneratedOnlyType(self: *FacadeEmitter, name: []const u8) bool {
-        if (!self.hasOriginFacts()) return false;
         if (std.mem.eql(u8, name, self.sidecar.model) or std.mem.eql(u8, name, self.sidecar.msg.name)) return false;
         for (self.sidecar.types.structs) |entry| {
             if (std.mem.eql(u8, entry.name, name)) return entry.origin == null;
@@ -303,6 +302,7 @@ const FacadeEmitter = struct {
         self.inlined = try emit_mod.inlinedTableNames(self.arena, self.sidecar);
         self.flattened = try self.flattenedTableNames();
         self.node_stored = try self.nodeStoredTableNames();
+        self.validateFacadeFacts();
         try self.validateNames();
         self.validateOptionalDepth();
         if (self.diags.hasErrors()) return;
@@ -340,6 +340,39 @@ const FacadeEmitter = struct {
     }
 
     // ------------------------------------------------------- fencing
+
+    /// Facade/profile emission needs facts that format-1 readers keep
+    /// optional for backward-compatible MIRROR generation. An older sidecar
+    /// still generates core_shim.zig, but it cannot truthfully reconstruct
+    /// authored module paths or payload property names; refuse instead of
+    /// guessing an entry-module origin or a `value` member.
+    fn validateFacadeFacts(self: *FacadeEmitter) void {
+        const model = sidecar_mod.findStruct(self.sidecar.types, self.sidecar.model);
+        if (model == null or model.?.origin == null) {
+            self.diags.flag("types", "the model declaration carries no authored type-origin fact — this sidecar predates facade metadata; regenerate it with the current compiler before requesting --facade, --profile, or --check", .{});
+        }
+        for (self.sidecar.msg.arms) |arm| {
+            if (self.msgArmNeedsMember(arm) and arm.member == null) {
+                self.diags.flag("msg.arms", "arm \"{s}\" carries one payload but no authored member-name fact — this sidecar predates facade metadata; regenerate it with the current compiler", .{arm.name});
+            }
+        }
+        for (self.sidecar.types.unions) |entry| {
+            for (entry.arms) |arm| {
+                if (arm.payload == .void or self.synthesizedRecordOf(arm.payload, entry.name, arm.name) != null) continue;
+                if (arm.member == null) {
+                    self.diags.flag("types.unions", "arm \"{s}\" of \"{s}\" carries one payload but no authored member-name fact — this sidecar predates facade metadata; regenerate it with the current compiler", .{ arm.name, entry.name });
+                }
+            }
+        }
+    }
+
+    fn msgArmNeedsMember(self: *FacadeEmitter, arm: sidecar_mod.MsgArm) bool {
+        return switch (arm.payload) {
+            .void, .number_bytes => false,
+            .record => self.synthesizedRecordOf(recordPayloadRef(arm.payload), self.sidecar.msg.name, arm.name) == null,
+            else => true,
+        };
+    }
 
     fn validateNames(self: *FacadeEmitter) Error!void {
         // Declaration names (type-table entries and the message union)
@@ -466,6 +499,11 @@ const FacadeEmitter = struct {
             for (fixed_exports) |fixed| {
                 if (std.mem.eql(u8, helper.name, fixed)) {
                     self.diags.flag("model_helpers", "helper \"{s}\" collides with a declaration the generated facade itself must export; rename it in the core source", .{helper.name});
+                }
+            }
+            for (ambient_value_names) |ambient| {
+                if (std.mem.eql(u8, helper.name, ambient)) {
+                    self.diags.flag("model_helpers", "helper \"{s}\" shadows an ambient value the generated facade calls; rename it in the core source", .{helper.name});
                 }
             }
             if (helper.params.len > 0) {
@@ -746,11 +784,11 @@ const FacadeEmitter = struct {
         const needs_cmd = body.used_codec.contains(.cmd_encoder);
         const needs_sub = body.used_codec.contains(.sub_encoder);
         if (needs_cmd and needs_sub) {
-            try self.raw("import type { Cmd, Sub } from \"./sdk/core.ts\";\n");
+            try self.raw("import type { Cmd as nscfCmd, Sub as nscfSub } from \"./sdk/core.ts\";\n");
         } else if (needs_cmd) {
-            try self.raw("import type { Cmd } from \"./sdk/core.ts\";\n");
+            try self.raw("import type { Cmd as nscfCmd } from \"./sdk/core.ts\";\n");
         } else if (needs_sub) {
-            try self.raw("import type { Sub } from \"./sdk/core.ts\";\n");
+            try self.raw("import type { Sub as nscfSub } from \"./sdk/core.ts\";\n");
         }
         // The pinch channel's SDK vocabulary (declared in the SDK's
         // events module, outside the contract tables).
@@ -999,7 +1037,7 @@ const FacadeEmitter = struct {
         }
         try self.raw("];\n\n");
         for (self.sidecar.msg.arms, 0..) |arm, tag| {
-            try self.print("const NSCF_TAG_{s} = {d};\n", .{ arm.name, tag });
+            try self.print("const nscfTag_{s} = {d};\n", .{ arm.name, tag });
         }
         self.use(.trap);
         try self.raw(
@@ -1125,7 +1163,7 @@ const FacadeEmitter = struct {
         try self.raw("\nexport function dispatch_void(tag: number): Uint8Array {\n");
         for (self.sidecar.msg.arms) |arm| {
             if (arm.payload != .void) continue;
-            try self.print("  if (tag === NSCF_TAG_{s}) {s}\n", .{ arm.name, try self.commitLine(try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\" }}", .{try tsString(self.arena, arm.name)})) });
+            try self.print("  if (tag === nscfTag_{s}) {s}\n", .{ arm.name, try self.commitLine(try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\" }}", .{try tsString(self.arena, arm.name)})) });
         }
         try self.raw("  nscfUnknownTag(\"bare\", tag);\n}\n");
     }
@@ -1135,7 +1173,7 @@ const FacadeEmitter = struct {
         for (self.sidecar.msg.arms) |arm| {
             if (arm.payload != .bytes) continue;
             const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: payload }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
-            try self.print("  if (tag === NSCF_TAG_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
+            try self.print("  if (tag === nscfTag_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
         }
         try self.raw("  nscfUnknownTag(\"bytes\", tag);\n}\n");
     }
@@ -1158,7 +1196,7 @@ const FacadeEmitter = struct {
                     .number => |class| {
                         if (class != .f64) continue;
                         const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: value }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
-                        try self.print("  if (tag === NSCF_TAG_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
+                        try self.print("  if (tag === nscfTag_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
                     },
                     else => {},
                 }
@@ -1174,7 +1212,7 @@ const FacadeEmitter = struct {
                         \\  // This integer-classed arm proves in place: its attestation
                         \\  // selects the signed or unsigned lower bound, the ordered
                         \\  // comparisons exclude NaN, and Math.trunc states wholeness.
-                        \\  if (tag === NSCF_TAG_{s}) {{
+                        \\  if (tag === nscfTag_{s}) {{
                         \\    if (value >= {s} && value <= {s}) {{
                         \\      const whole = Math.trunc(value);
                         \\      return nscfCommit(coreUpdate(nscfCommitted, {s}));
@@ -1201,7 +1239,7 @@ const FacadeEmitter = struct {
                     if (desc.number_class == .i64) {
                         const class = self.nestedSlotClass(self.sidecar.msg.name, arm.name, desc.number_field) orelse .i64;
                         try self.print(
-                            \\  if (tag === NSCF_TAG_{s}) {{
+                            \\  if (tag === nscfTag_{s}) {{
                             \\    // The number field is i64-classed: range-guard the raw f64 (an
                             \\    // ordered comparison excludes NaN) and state wholeness with
                             \\    // Math.trunc at the write.
@@ -1213,7 +1251,7 @@ const FacadeEmitter = struct {
                             \\
                         , .{ arm.name, integerLowerBound(class), max_safe, kind, number_prop, bytes_prop });
                     } else {
-                        try self.print("  if (tag === NSCF_TAG_{s}) return nscfCommit(coreUpdate(nscfCommitted, {{ kind: \"{s}\", {s}: value, {s}: payload }}));\n", .{ arm.name, kind, number_prop, bytes_prop });
+                        try self.print("  if (tag === nscfTag_{s}) return nscfCommit(coreUpdate(nscfCommitted, {{ kind: \"{s}\", {s}: value, {s}: payload }}));\n", .{ arm.name, kind, number_prop, bytes_prop });
                     }
                 },
                 else => {},
@@ -1229,7 +1267,7 @@ const FacadeEmitter = struct {
                 .scalar => |ref| {
                     if (ref != .bool) continue;
                     const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: value !== 0 }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
-                    try self.print("  if (tag === NSCF_TAG_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
+                    try self.print("  if (tag === nscfTag_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
                 },
                 else => {},
             }
@@ -1245,7 +1283,7 @@ const FacadeEmitter = struct {
                     try self.needEnumTable(name);
                     const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: nscfMembers{s}[member]! }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), name });
                     try self.print(
-                        \\  if (tag === NSCF_TAG_{s}) {{
+                        \\  if (tag === nscfTag_{s}) {{
                         \\    if (member >= nscfMembers{s}.length) nscfMember("{s}", member);
                         \\    {s}
                         \\  }}
@@ -1265,7 +1303,7 @@ const FacadeEmitter = struct {
             switch (arm.payload) {
                 .record => |name| {
                     const record = sidecar_mod.findStruct(self.sidecar.types, name) orelse continue;
-                    try self.print("  if (tag === NSCF_TAG_{s}) {{\n", .{arm.name});
+                    try self.print("  if (tag === nscfTag_{s}) {{\n", .{arm.name});
                     if (self.synthesizedRecordOf(recordPayloadRef(arm.payload), self.sidecar.msg.name, arm.name) != null) {
                         try self.recordDecodeCommit(record, arm.name, null);
                     } else {
@@ -1280,7 +1318,7 @@ const FacadeEmitter = struct {
                     // the canonical union encoding is the same either
                     // way.
                     try self.needUnionDecoder(name);
-                    try self.print("  if (tag === NSCF_TAG_{s}) return nscfCommit(coreUpdate(nscfCommitted, {{ kind: \"{s}\", {s}: nscfDecode{s}(fields) }}));\n", .{ arm.name, try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), name });
+                    try self.print("  if (tag === nscfTag_{s}) return nscfCommit(coreUpdate(nscfCommitted, {{ kind: \"{s}\", {s}: nscfDecode{s}(fields) }}));\n", .{ arm.name, try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), name });
                 },
                 else => {},
             }
@@ -1294,7 +1332,7 @@ const FacadeEmitter = struct {
             switch (arm.payload) {
                 .union_ref => |name| {
                     try self.needUnionDecoder(name);
-                    try self.print("  if (tag === NSCF_TAG_{s}) return nscfCommit(coreUpdate(nscfCommitted, {{ kind: \"{s}\", {s}: nscfDecode{s}(event) }}));\n", .{ arm.name, try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), name });
+                    try self.print("  if (tag === nscfTag_{s}) return nscfCommit(coreUpdate(nscfCommitted, {{ kind: \"{s}\", {s}: nscfDecode{s}(event) }}));\n", .{ arm.name, try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), name });
                 },
                 else => {},
             }
@@ -1347,10 +1385,10 @@ const FacadeEmitter = struct {
                     else
                         try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: {{ {s} }} }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), fields_text.items });
                     if (guards.items.len == 0) {
-                        try self.print("  if (tag === NSCF_TAG_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
+                        try self.print("  if (tag === nscfTag_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
                     } else {
                         try self.print(
-                            \\  if (tag === NSCF_TAG_{s}) {{
+                            \\  if (tag === nscfTag_{s}) {{
                             \\    if ({s}) return nscfCommit(coreUpdate(nscfCommitted, {s}));
                             \\    nscfTrap("a scroll dispatch value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
                             \\  }}
@@ -1386,27 +1424,6 @@ const FacadeEmitter = struct {
             if (all_found) return entry;
         }
         return null;
-    }
-
-    /// The selection payload shape accepted by the mirror and markup
-    /// reflection: a by-value record whose only fields are numeric anchor
-    /// and focus offsets. The record's authored name is deliberately not
-    /// part of the protocol.
-    fn isSelectionRecord(self: *FacadeEmitter, ref: TypeRef) bool {
-        const name = switch (ref) {
-            .value => |value| value,
-            else => return false,
-        };
-        const record = sidecar_mod.findStruct(self.sidecar.types, name) orelse return false;
-        if (record.fields.len != 2) return false;
-        var anchor_ok = false;
-        var focus_ok = false;
-        for (record.fields) |field| {
-            const numeric = field.type == .f64 or field.type == .i64;
-            if (std.mem.eql(u8, field.name, "anchor")) anchor_ok = numeric;
-            if (std.mem.eql(u8, field.name, "focus")) focus_ok = numeric;
-        }
-        return anchor_ok and focus_ok;
     }
 
     // ------------------------------------------------- channel entries
@@ -1522,7 +1539,7 @@ const FacadeEmitter = struct {
     /// arm's mirror payload type, so field order and number classes
     /// follow the sidecar exactly.
     fn msgPayloadWriter(self: *FacadeEmitter) Error!void {
-        try self.print("\nfunction nscfMsgPayload(sink: NscfSink, value: {s}): void {{\n", .{self.sidecar.msg.name});
+        try self.print("\nfunction nscfMsgPayload(sink: nscfSink, value: {s}): void {{\n", .{self.sidecar.msg.name});
         for (self.sidecar.msg.arms) |arm| {
             try self.print("  if (value.kind === \"{s}\") {{\n", .{try tsString(self.arena, arm.name)});
             const member = self.memberOf(arm.member);
@@ -1841,7 +1858,7 @@ const FacadeEmitter = struct {
         const entry = sidecar_mod.findStruct(self.sidecar.types, name).?;
         self.use(.sink);
         self.temp_counter = 0;
-        try self.print("\nfunction nscfWrite{s}(sink: NscfSink, value: {s}): void {{\n", .{ name, name });
+        try self.print("\nfunction nscfWrite{s}(sink: nscfSink, value: {s}): void {{\n", .{ name, name });
         for (entry.fields) |field| {
             try self.fieldWriteStatements(field.type, try tsAccess(self.arena, "value", field.name), name, field.name, 1);
         }
@@ -1854,7 +1871,7 @@ const FacadeEmitter = struct {
         self.use(.w_u8);
         self.use(.trap);
         self.temp_counter = 0;
-        try self.print("\nfunction nscfWrite{s}(sink: NscfSink, value: {s}): void {{\n", .{ name, name });
+        try self.print("\nfunction nscfWrite{s}(sink: nscfSink, value: {s}): void {{\n", .{ name, name });
         for (entry.arms, 0..) |arm, index| {
             try self.print("  if (value.kind === \"{s}\") {{\n    nscfWU8(sink, {d});\n", .{ try tsString(self.arena, arm.name), index });
             if (arm.payload != .void) {
@@ -1925,10 +1942,11 @@ const FacadeEmitter = struct {
                     .buf = "bytes",
                     .indent = 2,
                     .start = "1",
-                    // Selection is a structural protocol role, not a
-                    // declaration-name convention. The host's select-all
-                    // sentinel must saturate for any matching record name.
-                    .saturating_selection = std.mem.eql(u8, arm.name, "set_selection") and self.isSelectionRecord(arm.payload),
+                    // Selection is a role of the COMPLETE text-input
+                    // protocol, not an arm-name convention. Ordinary unions
+                    // with a homonymous arm retain the normal exact-integer
+                    // refusal instead of silently clamping their payload.
+                    .saturating_selection = emit_mod.isTextInputUnion(self.sidecar, name) and std.mem.eql(u8, arm.name, "set_selection"),
                 };
                 var construction: []const u8 = undefined;
                 if (self.synthesizedRecordOf(arm.payload, entry.name, arm.name)) |record| {
@@ -2040,6 +2058,21 @@ const FacadeEmitter = struct {
                 \\
             );
         }
+        if (self.used_codec.contains(.read_u64_saturating)) {
+            try self.raw(
+                \\
+                \\// A u64 payload saturated into the nonnegative f64-exact window.
+                \\// Selection offsets use this twin when their sidecar slot is
+                \\// unsigned: maxInt(usize) is all-one bits, not signed -1.
+                \\function nscfReadU64Saturating(bytes: Uint8Array, at: number): number {
+                \\  const lo = nscfReadU32(bytes, at);
+                \\  const hi = nscfReadU32(bytes, at + 4);
+                \\  if (hi > 2097151) return 9007199254740991;
+                \\  return hi * 4294967296 + lo;
+                \\}
+                \\
+            );
+        }
         if (self.used_codec.contains(.read_bool)) {
             try self.raw(
                 \\
@@ -2098,13 +2131,13 @@ const FacadeEmitter = struct {
             try self.raw(
                 \\
                 \\// A sink is a plain byte accumulator; nscfFinish snapshots it.
-                \\type NscfSink = number[];
+                \\type nscfSink = number[];
                 \\
-                \\function nscfNewSink(): NscfSink {
+                \\function nscfNewSink(): nscfSink {
                 \\  return [];
                 \\}
                 \\
-                \\function nscfFinish(sink: NscfSink): Uint8Array {
+                \\function nscfFinish(sink: nscfSink): Uint8Array {
                 \\  const out = new Uint8Array(sink.length);
                 \\  for (let i = 0; i < sink.length; i++) {
                 \\    out[i] = sink[i]!;
@@ -2117,7 +2150,7 @@ const FacadeEmitter = struct {
         if (self.used_codec.contains(.w_u8)) {
             try self.raw(
                 \\
-                \\function nscfWU8(sink: NscfSink, value: number): void {
+                \\function nscfWU8(sink: nscfSink, value: number): void {
                 \\  sink.push(value);
                 \\}
                 \\
@@ -2126,7 +2159,7 @@ const FacadeEmitter = struct {
         if (self.used_codec.contains(.w_u32)) {
             try self.raw(
                 \\
-                \\function nscfWU32(sink: NscfSink, value: number): void {
+                \\function nscfWU32(sink: nscfSink, value: number): void {
                 \\  sink.push(value % 256);
                 \\  sink.push(Math.floor(value / 256) % 256);
                 \\  sink.push(Math.floor(value / 65536) % 256);
@@ -2138,7 +2171,7 @@ const FacadeEmitter = struct {
         if (self.used_codec.contains(.w_f64)) {
             try self.raw(
                 \\
-                \\function nscfWF64(sink: NscfSink, value: number): void {
+                \\function nscfWF64(sink: nscfSink, value: number): void {
                 \\  const buf = Buffer.alloc(8);
                 \\  buf.writeDoubleLE(value, 0);
                 \\  for (let i = 0; i < 8; i++) {
@@ -2152,7 +2185,7 @@ const FacadeEmitter = struct {
             try self.raw(
                 \\
                 \\// Two's-complement i64, exact for every integer within +-(2^53 - 1).
-                \\function nscfWI64(sink: NscfSink, value: number): void {
+                \\function nscfWI64(sink: nscfSink, value: number): void {
                 \\  if (value > 9007199254740991 || value < -9007199254740991 || value !== nscfTruncTowardZero(value)) {
                 \\    nscfTrap("an integer slot carries a non-integer or out-of-range value — the i64 encoding has no honest bytes for it");
                 \\  }
@@ -2171,7 +2204,7 @@ const FacadeEmitter = struct {
                 \\// The unsigned twin for u64-attested slots: 8-byte unsigned LE,
                 \\// refusing negatives (a negative value has no honest unsigned
                 \\// bytes).
-                \\function nscfWU64(sink: NscfSink, value: number): void {
+                \\function nscfWU64(sink: nscfSink, value: number): void {
                 \\  if (value > 9007199254740991 || value < 0 || value !== nscfTruncTowardZero(value)) {
                 \\    nscfTrap("an unsigned integer slot carries a non-integer, negative, or out-of-range value — the u64 encoding has no honest bytes for it");
                 \\  }
@@ -2186,7 +2219,7 @@ const FacadeEmitter = struct {
         if (self.used_codec.contains(.w_bool)) {
             try self.raw(
                 \\
-                \\function nscfWBool(sink: NscfSink, value: boolean): void {
+                \\function nscfWBool(sink: nscfSink, value: boolean): void {
                 \\  sink.push(value ? 1 : 0);
                 \\}
                 \\
@@ -2197,7 +2230,7 @@ const FacadeEmitter = struct {
                 \\
                 \\// A u32-length-prefixed bytes value (the canonical bytes encoding,
                 \\// and the wire format's long-bytes field).
-                \\function nscfWBytes(sink: NscfSink, bytes: Uint8Array): void {
+                \\function nscfWBytes(sink: nscfSink, bytes: Uint8Array): void {
                 \\  nscfWU32(sink, bytes.length);
                 \\  for (let i = 0; i < bytes.length; i++) {
                 \\    sink.push(bytes[i]!);
@@ -2218,7 +2251,7 @@ const FacadeEmitter = struct {
                 \\}
                 \\
                 \\// A u8-length-prefixed short text field (names, keys, labels).
-                \\function nscfWShortText(sink: NscfSink, text: string): void {
+                \\function nscfWShortText(sink: nscfSink, text: string): void {
                 \\  const bytes = nscfTextBytes(text);
                 \\  if (bytes.length > 255) {
                 \\    nscfTrap("a command name or key is over 255 bytes — the wire's short-text fields cannot carry it");
@@ -2278,7 +2311,7 @@ const FacadeEmitter = struct {
             \\const nscfAudioVerbs = ["pause", "resume", "stop", "seek", "volume"];
             \\const nscfVideoVerbs = ["play", "pause", "stop", "seek", "volume", "muted", "loop"];
             \\
-            \\function nscfEncodeCmd(sink: NscfSink, cmd: Cmd<{s}>): void {{
+            \\function nscfEncodeCmd(sink: nscfSink, cmd: nscfCmd<{s}>): void {{
             \\
         , .{msg});
         try self.raw(
@@ -2501,7 +2534,7 @@ const FacadeEmitter = struct {
         );
         try self.print(
             \\
-            \\function nscfCmdBytes(cmd: Cmd<{s}>): Uint8Array {{
+            \\function nscfCmdBytes(cmd: nscfCmd<{s}>): Uint8Array {{
             \\  const sink = nscfNewSink();
             \\  nscfEncodeCmd(sink, cmd);
             \\  return nscfFinish(sink);
@@ -2515,7 +2548,7 @@ const FacadeEmitter = struct {
         try self.print(
             \\
             \\// The v3 subscription wire (timer subscriptions).
-            \\function nscfEncodeSub(sink: NscfSink, sub: Sub<{s}>): void {{
+            \\function nscfEncodeSub(sink: nscfSink, sub: nscfSub<{s}>): void {{
             \\  switch (sub.op) {{
             \\    case "none":
             \\      return;
@@ -2533,7 +2566,7 @@ const FacadeEmitter = struct {
             \\  }}
             \\}}
             \\
-            \\function nscfSubBytes(sub: Sub<{s}>): Uint8Array {{
+            \\function nscfSubBytes(sub: nscfSub<{s}>): Uint8Array {{
             \\  const sink = nscfNewSink();
             \\  nscfEncodeSub(sink, sub);
             \\  return nscfFinish(sink);
@@ -2739,10 +2772,19 @@ const RecordDecode = struct {
                 // The one saturating exception: selection offsets, where
                 // the host's select-all synthesizes the maxInt sentinel.
                 const selection_field = std.mem.eql(u8, field.name, "anchor") or std.mem.eql(u8, field.name, "focus");
-                const saturating = class == .i64 and self.saturating_selection and selection_field;
-                em.use(if (saturating) .read_i64_saturating else .read_i64);
+                const reader: Codec = if (self.saturating_selection and selection_field)
+                    if (class == .u64) .read_u64_saturating else .read_i64_saturating
+                else
+                    .read_i64;
+                em.use(reader);
                 const local = try self.nextLocal();
-                try self.line("const {s} = {s}({s}, {s});\n", .{ local, if (saturating) "nscfReadI64Saturating" else "nscfReadI64", self.buf, self.offsetText() });
+                const reader_name = switch (reader) {
+                    .read_i64 => "nscfReadI64",
+                    .read_i64_saturating => "nscfReadI64Saturating",
+                    .read_u64_saturating => "nscfReadU64Saturating",
+                    else => unreachable,
+                };
+                try self.line("const {s} = {s}({s}, {s});\n", .{ local, reader_name, self.buf, self.offsetText() });
                 self.advance(8);
                 try self.addGuard(local, class);
                 try self.exprs.append(self.arena(), .{ .name = field.name, .text = try std.fmt.allocPrint(self.arena(), "Math.trunc({s})", .{local}) });
@@ -3032,9 +3074,26 @@ fn isTsIdentifier(name: []const u8) bool {
 
 const testing = std.testing;
 
+/// Most facade tests perturb sidecar_mod's deliberately LEGACY minimal
+/// fixture. Upgrade its two authored facts here so unrelated refusal tests
+/// exercise the current facade boundary; the dedicated legacy test below
+/// calls emitFacade directly on the untouched fixture.
+fn withCurrentFacadeFacts(arena: std.mem.Allocator, json: []const u8) ![]const u8 {
+    var current = json;
+    const model = "{\"name\": \"Model\", \"fields\":";
+    if (std.mem.indexOf(u8, current, model) != null) {
+        current = try std.mem.replaceOwned(u8, arena, current, model, "{\"name\": \"Model\", \"origin\": \"core.ts\", \"fields\":");
+    }
+    const label_arm = "{\"name\": \"label_set\", \"payload\": {\"kind\": \"bytes\"}}";
+    if (std.mem.indexOf(u8, current, label_arm) != null) {
+        current = try std.mem.replaceOwned(u8, arena, current, label_arm, "{\"name\": \"label_set\", \"member\": \"value\", \"payload\": {\"kind\": \"bytes\"}}");
+    }
+    return current;
+}
+
 fn facadeFromJson(arena: std.mem.Allocator, json: []const u8) ![]const u8 {
     var diags = sidecar_mod.Diagnostics{ .arena = arena };
-    const parsed = sidecar_mod.read(arena, json, &diags) catch |err| {
+    const parsed = sidecar_mod.read(arena, try withCurrentFacadeFacts(arena, json), &diags) catch |err| {
         for (diags.list.items) |item| {
             std.debug.print("  [{s}] {s}: {s}\n", .{ @tagName(item.severity), item.path, item.message });
         }
@@ -3050,7 +3109,7 @@ fn facadeFromJson(arena: std.mem.Allocator, json: []const u8) ![]const u8 {
 
 fn expectFacadeRefusal(arena: std.mem.Allocator, json: []const u8, fragment: []const u8) !void {
     var diags = sidecar_mod.Diagnostics{ .arena = arena };
-    const parsed = try sidecar_mod.read(arena, json, &diags);
+    const parsed = try sidecar_mod.read(arena, try withCurrentFacadeFacts(arena, json), &diags);
     try testing.expectError(error.Refused, emitFacade(arena, parsed, &diags));
     for (diags.list.items) |item| {
         if (item.severity == .@"error" and std.mem.indexOf(u8, item.message, fragment) != null) return;
@@ -3060,6 +3119,23 @@ fn expectFacadeRefusal(arena: std.mem.Allocator, json: []const u8, fragment: []c
         std.debug.print("  [{s}] {s}: {s}\n", .{ @tagName(item.severity), item.path, item.message });
     }
     return error.TestExpectedRefusal;
+}
+
+test "legacy sidecars remain mirror-readable but refuse facade projection" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diags = sidecar_mod.Diagnostics{ .arena = arena };
+    const parsed = try sidecar_mod.read(arena, sidecar_mod.minimal_valid_json, &diags);
+    try testing.expectError(error.Refused, emitFacade(arena, parsed, &diags));
+    var taught_origin = false;
+    var taught_member = false;
+    for (diags.list.items) |item| {
+        if (std.mem.indexOf(u8, item.message, "type-origin fact") != null) taught_origin = true;
+        if (std.mem.indexOf(u8, item.message, "member-name fact") != null) taught_member = true;
+    }
+    try testing.expect(taught_origin);
+    try testing.expect(taught_member);
 }
 
 test "facade emission is deterministic and carries the adapter surface" {
@@ -3081,9 +3157,9 @@ test "facade emission is deterministic and carries the adapter surface" {
     try testing.expect(std.mem.indexOf(u8, first, "coreSubscriptions") == null);
     // The dispatch surface: committed state, tag table, arm routing.
     try testing.expect(std.mem.indexOf(u8, first, "let nscfCommitted: Model = nscfInitialModel();") != null);
-    try testing.expect(std.mem.indexOf(u8, first, "const NSCF_TAG_bump = 0;") != null);
-    try testing.expect(std.mem.indexOf(u8, first, "if (tag === NSCF_TAG_bump) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"bump\" }));") != null);
-    try testing.expect(std.mem.indexOf(u8, first, "if (tag === NSCF_TAG_label_set) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"label_set\", value: payload }));") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "const nscfTag_bump = 0;") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "if (tag === nscfTag_bump) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"bump\" }));") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "if (tag === nscfTag_label_set) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"label_set\", value: payload }));") != null);
     // Post-cycle: the snapshot rides the generated model writer with
     // the attested integer class.
     try testing.expect(std.mem.indexOf(u8, first, "nscfWI64(sink, value.count);") != null);
@@ -3093,6 +3169,13 @@ test "facade emission is deterministic and carries the adapter surface" {
     // Unwired channels stay out of the module.
     try testing.expect(std.mem.indexOf(u8, first, "abi_frame_msg") == null);
     try testing.expect(std.mem.indexOf(u8, first, "nscfPackMsg") == null);
+    // Facade-only types, tag constants, and SDK effect imports all live in
+    // the lowercase reserved namespace, so authored capitalized names cannot
+    // collide with them.
+    try testing.expect(std.mem.indexOf(u8, first, "type nscfSink = number[];") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "import type { Cmd as nscfCmd }") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "NscfSink") == null);
+    try testing.expect(std.mem.indexOf(u8, first, "NSCF_TAG_") == null);
 }
 
 test "member facts spell the author's payload property names" {
@@ -3113,8 +3196,7 @@ test "member facts spell the author's payload property names" {
     try testing.expect(std.mem.indexOf(u8, generated, "if (value >= -9007199254740991 && value <= 9007199254740991) {") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "const whole = Math.trunc(value);") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "{ kind: \"toggle\", taskId: whole }") != null);
-    // Without the fact, the one spelling that erases identically is
-    // `value` (label_set carries no member here).
+    // The baseline's own member fact remains authoritative too.
     try testing.expect(std.mem.indexOf(u8, generated, "{ kind: \"label_set\", value: payload }") != null);
 }
 
@@ -3127,7 +3209,7 @@ test "origin facts group re-exports by declaring module" {
         arena,
         sidecar_mod.minimal_valid_json,
         "\"structs\": [",
-        "\"structs\": [\n      {\"name\": \"Turn\", \"origin\": \"api.ts\", \"fields\": [{\"name\": \"id\", \"type\": {\"kind\": \"f64\"}}]},",
+        "\"structs\": [\n      {\"name\": \"Turn\", \"origin\": \"domain/api.ts\", \"fields\": [{\"name\": \"id\", \"type\": {\"kind\": \"f64\"}}]},",
     );
     const with_field = try std.mem.replaceOwned(
         u8,
@@ -3137,12 +3219,12 @@ test "origin facts group re-exports by declaring module" {
         "{\"name\": \"label\", \"type\": {\"kind\": \"node\", \"name\": \"Turn\"}}",
     );
     const generated = try facadeFromJson(arena, with_field);
-    try testing.expect(std.mem.indexOf(u8, generated, "export type { Turn } from \"./api.ts\";") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "export type { Turn } from \"./domain/api.ts\";") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "export type { Model, Msg } from \"./core.ts\";") != null);
     // The generated snapshot writer reaches the record through its
     // named writer, importing the type from its own module.
-    try testing.expect(std.mem.indexOf(u8, generated, "import type { Turn } from \"./api.ts\";") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "function nscfWriteTurn(sink: NscfSink, value: Turn): void {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "import type { Turn } from \"./domain/api.ts\";") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "function nscfWriteTurn(sink: nscfSink, value: Turn): void {") != null);
 }
 
 test "generated generic table names refuse before emitting invalid imports" {
@@ -3222,7 +3304,7 @@ test "wired channels emit abi entries and the generic payload packer" {
     // The envelope: [produced u8][tag u8][canonical payload].
     try testing.expect(std.mem.indexOf(u8, generated, "if (produced === null) return new Uint8Array(2);") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "out[1] = nscfTagOf(produced.kind);") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "function nscfMsgPayload(sink: NscfSink, value: Msg): void {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "function nscfMsgPayload(sink: nscfSink, value: Msg): void {") != null);
     // The unwired channels stay out.
     try testing.expect(std.mem.indexOf(u8, generated, "abi_pinch_msg") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "abi_command_msg") == null);
@@ -3241,7 +3323,7 @@ test "u64-attested slots ride the unsigned writer" {
     );
     const generated = try facadeFromJson(arena, source);
     try testing.expect(std.mem.indexOf(u8, generated, "nscfWU64(sink, value.count);") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "function nscfWU64(sink: NscfSink, value: number): void {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "function nscfWU64(sink: nscfSink, value: number): void {") != null);
     const signed = try facadeFromJson(arena, sidecar_mod.minimal_valid_json);
     try testing.expect(std.mem.indexOf(u8, signed, "nscfWU64") == null);
 }
@@ -3269,8 +3351,8 @@ test "u64 attestations set nonnegative proofs on every ingress shape" {
         "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"Msg.id_set\", \"class\": \"u64\"}, {\"slot\": \"Msg.sized.size\", \"class\": \"u64\"}, {\"slot\": \"Payload.id\", \"class\": \"u64\"}, {\"slot\": \"helpers.nextId.return\", \"class\": \"u64\"}",
     );
     const generated = try facadeFromJson(arena, source);
-    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === NSCF_TAG_id_set) {\n    if (value >= 0 && value <= 9007199254740991) {") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === NSCF_TAG_sized) {\n    // The number field is i64-classed") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === nscfTag_id_set) {\n    if (value >= 0 && value <= 9007199254740991) {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === nscfTag_sized) {\n    // The number field is i64-classed") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "if (value >= 0 && value <= 9007199254740991) {\n      return nscfCommit(coreUpdate(nscfCommitted, { kind: \"sized\"") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "if (nscfValue >= 0 && nscfValue <= 9007199254740991) return Math.trunc(nscfValue);") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "if (nscfV0 >= 0 && nscfV0 <= 9007199254740991) {") != null);
@@ -3306,6 +3388,53 @@ test "a helper taking a fixed export's name refuses" {
         "\"model_helpers\": [{\"name\": \"dispatch_void\", \"params\": [], \"returns\": {\"kind\": \"bytes\"}, \"arena\": false}]",
     );
     try expectFacadeRefusal(arena, source, "collides with a declaration the generated facade itself must export");
+}
+
+test "capitalized authored names no longer collide with facade internals" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "\"structs\": [",
+        "\"structs\": [\n      {\"name\": \"NscfSink\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"id\", \"type\": {\"kind\": \"f64\"}}]},\n      {\"name\": \"Cmd\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"id\", \"type\": {\"kind\": \"f64\"}}]},",
+    );
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"sinkValue\", \"type\": {\"kind\": \"node\", \"name\": \"NscfSink\"}}, {\"name\": \"commandValue\", \"type\": {\"kind\": \"node\", \"name\": \"Cmd\"}}",
+    );
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "\"model_helpers\": []",
+        "\"model_helpers\": [{\"name\": \"NSCF_TAG_bump\", \"params\": [], \"returns\": {\"kind\": \"bytes\"}, \"arena\": false}]",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "import type { Model, Msg, NscfSink, Cmd } from \"./core.ts\";") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "import type { Cmd as nscfCmd } from \"./sdk/core.ts\";") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "export function NSCF_TAG_bump(model: Model): Uint8Array {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "const nscfTag_bump = 0;") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "type nscfSink = number[];") != null);
+}
+
+test "a helper may not shadow an ambient facade value" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "\"model_helpers\": []",
+        "\"model_helpers\": [{\"name\": \"Math\", \"params\": [], \"returns\": {\"kind\": \"bytes\"}, \"arena\": false}]",
+    );
+    try expectFacadeRefusal(arena, source, "shadows an ambient value");
 }
 
 test "a payload member spelled kind refuses against the discriminator" {
@@ -3381,12 +3510,12 @@ test "a record referenced by node and value at once refuses" {
     try expectFacadeRefusal(arena, source, "storage once per declaration");
 }
 
-test "set_selection arms decode structurally named selections with saturating reads" {
+test "ordinary set_selection arms keep exact integer decoding" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"CaretRange\", \"fields\": [{\"name\": \"anchor\", \"type\": {\"kind\": \"i64\"}}, {\"name\": \"focus\", \"type\": {\"kind\": \"i64\"}}]},");
-    source = try std.mem.replaceOwned(u8, arena, source, "\"unions\": []", "\"unions\": [{\"name\": \"Edit\", \"arms\": [{\"name\": \"clear\", \"payload\": {\"kind\": \"void\"}}, {\"name\": \"set_selection\", \"member\": \"selection\", \"payload\": {\"kind\": \"value\", \"name\": \"CaretRange\"}}]}]");
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"CaretRange\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"anchor\", \"type\": {\"kind\": \"i64\"}}, {\"name\": \"focus\", \"type\": {\"kind\": \"i64\"}}]},");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unions\": []", "\"unions\": [{\"name\": \"Edit\", \"origin\": \"core.ts\", \"arms\": [{\"name\": \"clear\", \"payload\": {\"kind\": \"void\"}}, {\"name\": \"set_selection\", \"member\": \"selection\", \"payload\": {\"kind\": \"value\", \"name\": \"CaretRange\"}}]}]");
     source = try std.mem.replaceOwned(
         u8,
         arena,
@@ -3400,17 +3529,70 @@ test "set_selection arms decode structurally named selections with saturating re
     try testing.expect(std.mem.indexOf(u8, generated, "function nscfDecodeEdit(bytes: Uint8Array): Edit {") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "{ kind: \"edited\", edit: nscfDecodeEdit(fields) }") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "{ kind: \"edited\", edit: nscfDecodeEdit(event) }") != null);
-    // Selection offsets ride the saturating reader (the host's
-    // select-all sentinel), then the guard-and-trunc proof.
-    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64Saturating(bytes, 1)") != null);
+    // This is not the complete text-input protocol, so a homonymous arm
+    // retains the ordinary exact reader and rejects out-of-window integers.
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64(bytes, 1)") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64Saturating") == null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadU64Saturating") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "anchor: Math.trunc(") != null);
+}
+
+test "text-input selection saturates signed and unsigned select-all sentinels" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const records =
+        \\      {"name": "Move", "origin": "core.ts", "fields": [
+        \\        {"name": "direction", "type": {"kind": "enum", "name": "Dir"}},
+        \\        {"name": "extend", "type": {"kind": "bool"}}
+        \\      ]},
+        \\      {"name": "Sel", "origin": "core.ts", "fields": [
+        \\        {"name": "anchor", "type": {"kind": "i64"}},
+        \\        {"name": "focus", "type": {"kind": "i64"}}
+        \\      ]},
+        \\      {"name": "Comp", "origin": "core.ts", "fields": [
+        \\        {"name": "text", "type": {"kind": "bytes"}},
+        \\        {"name": "cursor", "type": {"kind": "optional", "inner": {"kind": "i64"}}}
+        \\      ]},
+    ;
+    const union_entry =
+        \\"unions": [{"name": "Edit", "origin": "core.ts", "arms": [
+        \\      {"name": "insert_text", "member": "text", "payload": {"kind": "bytes"}},
+        \\      {"name": "delete_backward", "payload": {"kind": "void"}},
+        \\      {"name": "delete_forward", "payload": {"kind": "void"}},
+        \\      {"name": "delete_word_backward", "payload": {"kind": "void"}},
+        \\      {"name": "delete_word_forward", "payload": {"kind": "void"}},
+        \\      {"name": "clear", "payload": {"kind": "void"}},
+        \\      {"name": "move_caret", "member": "move", "payload": {"kind": "value", "name": "Move"}},
+        \\      {"name": "set_selection", "member": "selection", "payload": {"kind": "value", "name": "Sel"}},
+        \\      {"name": "set_composition", "member": "composition", "payload": {"kind": "value", "name": "Comp"}},
+        \\      {"name": "commit_composition", "payload": {"kind": "void"}},
+        \\      {"name": "cancel_composition", "payload": {"kind": "void"}}
+        \\    ]}]
+    ;
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [\n", try std.fmt.allocPrint(arena, "\"structs\": [\n{s}\n", .{records}));
+    source = try std.mem.replaceOwned(u8, arena, source, "\"enums\": []", "\"enums\": [{\"name\": \"Dir\", \"origin\": \"core.ts\", \"members\": [\"previous\", \"next\", \"previous_word\", \"next_word\", \"start\", \"end\"]}]");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unions\": []", union_entry);
+    source = try std.mem.replaceOwned(u8, arena, source, "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}", "{\"name\": \"edited\", \"member\": \"edit\", \"payload\": {\"kind\": \"union\", \"name\": \"Edit\"}}");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"slot\": \"Model.count\", \"class\": \"i64\"}",
+        "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"Sel.anchor\", \"class\": \"u64\"}, {\"slot\": \"Sel.focus\", \"class\": \"i64\"}, {\"slot\": \"Comp.cursor\", \"class\": \"u64\"}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadU64Saturating(bytes, 1)") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64Saturating(bytes, 1 + 8)") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "function nscfReadU64Saturating(bytes: Uint8Array, at: number): number {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (hi > 2097151) return 9007199254740991;") != null);
 }
 
 test "scroll-shaped record arms answer the dedicated scroll entry" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"ScrollState\", \"fields\": [{\"name\": \"offsetX\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"offsetY\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"velocityX\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"velocityY\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"viewportExtentX\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"viewportExtentY\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"contentExtentX\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"contentExtentY\", \"type\": {\"kind\": \"f64\"}}]},");
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"ScrollState\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"offsetX\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"offsetY\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"velocityX\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"velocityY\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"viewportExtentX\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"viewportExtentY\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"contentExtentX\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"contentExtentY\", \"type\": {\"kind\": \"f64\"}}]},");
     source = try std.mem.replaceOwned(
         u8,
         arena,
@@ -3420,7 +3602,7 @@ test "scroll-shaped record arms answer the dedicated scroll entry" {
     );
     const generated = try facadeFromJson(arena, source);
     // Both routes: the generic record decode and the flat-scalar entry.
-    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === NSCF_TAG_scrolled) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"scrolled\", scroll: { offsetX: offsetX, offsetY: offsetY, velocityX: velocityX, velocityY: velocityY, viewportExtentX: viewportExtentX, viewportExtentY: viewportExtentY, contentExtentX: contentExtentX, contentExtentY: contentExtentY } }));") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === nscfTag_scrolled) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"scrolled\", scroll: { offsetX: offsetX, offsetY: offsetY, velocityX: velocityX, velocityY: velocityY, viewportExtentX: viewportExtentX, viewportExtentY: viewportExtentY, contentExtentX: contentExtentX, contentExtentY: contentExtentY } }));") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "nscfUnknownTag(\"scroll-state\", tag);") != null);
 
     var integer_source = try std.mem.replaceOwned(u8, arena, source, "{\"name\": \"offsetX\", \"type\": {\"kind\": \"f64\"}}", "{\"name\": \"offsetX\", \"type\": {\"kind\": \"i64\"}}");
@@ -3444,6 +3626,7 @@ test "scroll-shaped record arms answer the dedicated scroll entry" {
     // rather than inventing a `value` payload member.
     var inline_source = try std.mem.replaceOwned(u8, arena, source, "{\"name\": \"Model\", \"fields\": [", "{\"name\": \"Model\", \"origin\": \"core.ts\", \"fields\": [");
     inline_source = try std.mem.replaceOwned(u8, arena, inline_source, "ScrollState", "Msg_scrolled");
+    inline_source = try std.mem.replaceOwned(u8, arena, inline_source, "{\"name\": \"Msg_scrolled\", \"origin\": \"core.ts\"", "{\"name\": \"Msg_scrolled\"");
     inline_source = try std.mem.replaceOwned(u8, arena, inline_source, "\"member\": \"scroll\", ", "");
     const inline_generated = try facadeFromJson(arena, inline_source);
     try testing.expect(std.mem.indexOf(u8, inline_generated, "{ kind: \"scrolled\", offsetX: offsetX, offsetY: offsetY") != null);

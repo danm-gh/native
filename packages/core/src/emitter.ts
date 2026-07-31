@@ -1061,11 +1061,13 @@ export class Emitter {
   /// reach — a contract fact the sidecar extractor carries so a contract
   /// consumer can re-export each type from its own module. SDK library
   /// modules spell their shipped staging path (`sdk/<name>.ts`); the
-  /// core's own modules spell their basename (a compile stages its
-  /// module graph flat). Synthesized (anonymous) type names stay out:
+  /// core's own modules spell their path relative to the entry module's
+  /// directory, with POSIX separators because the sidecar/facade contract is
+  /// platform-independent. Synthesized (anonymous) type names stay out:
   /// they are declared nowhere.
   private emitTypeOrigins(): void {
     const sdkDir = path.resolve(path.dirname(sdkCoreModulePath));
+    const entryDir = path.dirname(path.resolve(this.file.fileName));
     const seen = new Set<string>();
     const entries: string[] = [];
     for (const file of this.files) {
@@ -1078,7 +1080,10 @@ export class Emitter {
         if (this.table.genericStructTemplates.has(name) || this.table.genericAliasTemplates.has(name)) continue;
         seen.add(name);
         const fileName = path.resolve(file.fileName);
-        const origin = path.dirname(fileName) === sdkDir ? `sdk/${path.basename(fileName)}` : path.basename(fileName);
+        const origin =
+          path.dirname(fileName) === sdkDir
+            ? `sdk/${path.basename(fileName)}`
+            : path.relative(entryDir, fileName).split(path.sep).join("/");
         entries.push(`    .{ ${zigString(name)}, ${zigString(origin)} },`);
       }
     }

@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildEmitter, emit, transpile } from "./helpers.ts";
+import { buildEmitter, emit, transpile, transpileFiles } from "./helpers.ts";
 import { ts } from "../src/typed_ast.ts";
 
 test("R1 exported const number folds to pub const i64", () => {
@@ -49,6 +49,26 @@ export function stamp(src: Uint8Array): Uint8Array {
 test("R3 Uint8Array alias becomes []const u8", () => {
   const zig = emit(`export type Bytes = Uint8Array;\nexport function id(b: Bytes): Bytes { return b; }`);
   assert.match(zig, /pub const Bytes = \[\]const u8;/);
+});
+
+test("contract type origins preserve entry-relative subdirectory paths", () => {
+  const result = transpileFiles({
+    "core.ts": `
+import { type View } from "./ui/views.ts";
+export interface Model { readonly view: View; }
+export type Msg = { readonly kind: "show"; readonly view: View };
+export function initialModel(): Model { return { view: { page: 0 } }; }
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) {
+    case "show": return { view: msg.view };
+  }
+}
+`,
+    "ui/views.ts": `export interface View { readonly page: number; }`,
+  });
+  assert.equal(result.ok, true, result.diagnostics.map((d) => d.message).join("\n"));
+  assert.ok(result.zig!.includes('.{ "View", "ui/views.ts" }'), result.zig!);
+  assert.ok(result.zig!.includes('.{ "Model", "core.ts" }'), result.zig!);
 });
 
 test("R3b SDK asciiBytes intrinsic folds a literal to rodata (recognized by identity, renames honored)", () => {

@@ -51,6 +51,103 @@ const text_input_event_tags = [_][]const u8{
     "set_composition",     "commit_composition", "cancel_composition",
 };
 
+/// Whether a union payload declares the text-input event shape the markup
+/// engines route through the dedicated ABI entry: exactly the eleven tags,
+/// with the same structural payload vocabulary. This is public because the
+/// generated facade must make the identical decision when selecting the one
+/// sentinel-saturating decoder; one contract cannot have two recognizers.
+pub fn isTextInputUnion(sidecar: Sidecar, type_name: []const u8) bool {
+    const entry = sidecar_mod.findUnion(sidecar.types, type_name) orelse return false;
+    if (entry.arms.len != text_input_event_tags.len) return false;
+    outer: for (text_input_event_tags) |tag_name| {
+        for (entry.arms) |arm| {
+            if (std.mem.eql(u8, arm.name, tag_name)) continue :outer;
+        }
+        return false;
+    }
+    for (entry.arms) |arm| {
+        if (std.mem.eql(u8, arm.name, "insert_text")) {
+            if (arm.payload != .bytes) return false;
+        } else if (std.mem.eql(u8, arm.name, "move_caret")) {
+            if (!isTextCaretMoveRecord(sidecar, arm.payload)) return false;
+        } else if (std.mem.eql(u8, arm.name, "set_selection")) {
+            if (!isTextSelectionRecord(sidecar, arm.payload)) return false;
+        } else if (std.mem.eql(u8, arm.name, "set_composition")) {
+            if (!isTextCompositionRecord(sidecar, arm.payload)) return false;
+        } else if (arm.payload != .void) {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn textRecordOf(sidecar: Sidecar, ref: TypeRef) ?*const sidecar_mod.Struct {
+    return switch (ref) {
+        .value => |name| sidecar_mod.findStruct(sidecar.types, name),
+        else => null,
+    };
+}
+
+fn isTextNumericRef(ref: TypeRef) bool {
+    return ref == .f64 or ref == .i64;
+}
+
+fn isTextCaretMoveRecord(sidecar: Sidecar, ref: TypeRef) bool {
+    const record = textRecordOf(sidecar, ref) orelse return false;
+    if (record.fields.len != 2) return false;
+    const caret_members = [_][]const u8{ "previous", "next", "previous_word", "next_word", "start", "end" };
+    var direction_ok = false;
+    var extend_ok = false;
+    for (record.fields) |field| {
+        if (std.mem.eql(u8, field.name, "extend")) {
+            extend_ok = field.type == .bool;
+        } else if (std.mem.eql(u8, field.name, "direction")) {
+            const members = switch (field.type) {
+                .enum_ref => |name| (sidecar_mod.findEnum(sidecar.types, name) orelse return false).members,
+                else => return false,
+            };
+            if (members.len != caret_members.len) return false;
+            outer: for (caret_members) |member| {
+                for (members) |declared| {
+                    if (std.mem.eql(u8, declared, member)) continue :outer;
+                }
+                return false;
+            }
+            direction_ok = true;
+        }
+    }
+    return direction_ok and extend_ok;
+}
+
+fn isTextSelectionRecord(sidecar: Sidecar, ref: TypeRef) bool {
+    const record = textRecordOf(sidecar, ref) orelse return false;
+    if (record.fields.len != 2) return false;
+    var anchor_ok = false;
+    var focus_ok = false;
+    for (record.fields) |field| {
+        if (std.mem.eql(u8, field.name, "anchor")) anchor_ok = isTextNumericRef(field.type);
+        if (std.mem.eql(u8, field.name, "focus")) focus_ok = isTextNumericRef(field.type);
+    }
+    return anchor_ok and focus_ok;
+}
+
+fn isTextCompositionRecord(sidecar: Sidecar, ref: TypeRef) bool {
+    const record = textRecordOf(sidecar, ref) orelse return false;
+    if (record.fields.len != 2) return false;
+    var text_ok = false;
+    var cursor_ok = false;
+    for (record.fields) |field| {
+        if (std.mem.eql(u8, field.name, "text")) text_ok = field.type == .bytes;
+        if (std.mem.eql(u8, field.name, "cursor")) {
+            cursor_ok = switch (field.type) {
+                .optional => |inner| isTextNumericRef(inner.*),
+                else => false,
+            };
+        }
+    }
+    return text_ok and cursor_ok;
+}
+
 /// The scroll-state field vocabulary — the TWO-AXIS record, eight
 /// per-axis fields — in the TS spelling (the emitted-core mirror keeps
 /// the author's names) and the canvas spelling. The order is
@@ -326,6 +423,20 @@ const Emitter = struct {
             }
         }
         return insets_ok and buttons_ok and tabs_ok;
+    }
+
+    /// A BY-VALUE record reference for structural host vocabularies. A node
+    /// reference mirrors as a pointer and therefore cannot satisfy a record
+    /// the host constructs directly by field name.
+    fn recordOf(self: *Emitter, ref: TypeRef) ?*const sidecar_mod.Struct {
+        return switch (ref) {
+            .value => |name| sidecar_mod.findStruct(self.sidecar.types, name),
+            else => null,
+        };
+    }
+
+    fn isNumericRef(ref: TypeRef) bool {
+        return ref == .f64 or ref == .i64;
     }
 
     fn isNumericRecord(self: *Emitter, ref: TypeRef, names: []const []const u8) bool {
@@ -928,7 +1039,7 @@ const Emitter = struct {
             },
             .enum_ref => try self.print("        .{s} => |payload| abi.dispatch_enum({d}, @intCast(@intFromEnum(payload)), &cmd_ptr, &cmd_len),\n", .{ name, tag }),
             .union_ref => |type_name| {
-                if (self.isTextInputUnion(type_name)) {
+                if (isTextInputUnion(self.sidecar, type_name)) {
                     try self.print("        .{s} => |payload| {{\n            const encoded = shim_rt.encodeAlloc(@TypeOf(payload), payload, shim_rt.frameAllocator());\n            abi.dispatch_text_input({d}, encoded.ptr, encoded.len, &cmd_ptr, &cmd_len);\n        }},\n", .{ name, tag });
                 } else {
                     try self.print("        .{s} => |payload| {{\n            const encoded = shim_rt.encodeAlloc(@TypeOf(payload), payload, shim_rt.frameAllocator());\n            abi.dispatch_record({d}, encoded.ptr, encoded.len, &cmd_ptr, &cmd_len);\n        }},\n", .{ name, tag });
@@ -959,112 +1070,6 @@ const Emitter = struct {
                 else => self.diags.flag("msg.arms", "arm \"{s}\": ABI version 1 has no dispatch entry for this scalar shape (bool, number, and bytes scalars only)", .{arm.name}),
             },
         }
-    }
-
-    /// A union payload declaring the text-input event shape routes
-    /// through the dedicated dispatch entry — the same structural
-    /// recognition the markup engines apply (ui_markup_reflect's
-    /// declaredTextInputUnion, restated over sidecar data): exactly the
-    /// eleven tags, insert_text a bytes payload, the seven verb arms
-    /// void, move_caret a caret-move record, set_selection a numeric
-    /// anchor/focus record, set_composition a bytes-text plus optional
-    /// numeric cursor record. Anything short of the full shape is an
-    /// ordinary union payload on the record entry.
-    fn isTextInputUnion(self: *Emitter, type_name: []const u8) bool {
-        const entry = sidecar_mod.findUnion(self.sidecar.types, type_name) orelse return false;
-        if (entry.arms.len != text_input_event_tags.len) return false;
-        outer: for (text_input_event_tags) |tag_name| {
-            for (entry.arms) |arm| {
-                if (std.mem.eql(u8, arm.name, tag_name)) continue :outer;
-            }
-            return false;
-        }
-        for (entry.arms) |arm| {
-            if (std.mem.eql(u8, arm.name, "insert_text")) {
-                if (arm.payload != .bytes) return false;
-            } else if (std.mem.eql(u8, arm.name, "move_caret")) {
-                if (!self.isCaretMoveRecord(arm.payload)) return false;
-            } else if (std.mem.eql(u8, arm.name, "set_selection")) {
-                if (!self.isSelectionRecord(arm.payload)) return false;
-            } else if (std.mem.eql(u8, arm.name, "set_composition")) {
-                if (!self.isCompositionRecord(arm.payload)) return false;
-            } else if (arm.payload != .void) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /// A BY-VALUE record reference, for the structural vocabularies the
-    /// host constructs by field name (channel records) or the engines
-    /// match without pointer transparency (text-input payload records):
-    /// a `node` reference mirrors as `*const T`, which neither
-    /// consumer's shape accepts, so it must not satisfy these checks.
-    fn recordOf(self: *Emitter, ref: TypeRef) ?*const sidecar_mod.Struct {
-        return switch (ref) {
-            .value => |name| sidecar_mod.findStruct(self.sidecar.types, name),
-            else => null,
-        };
-    }
-
-    fn isNumericRef(ref: TypeRef) bool {
-        return ref == .f64 or ref == .i64;
-    }
-
-    fn isCaretMoveRecord(self: *Emitter, ref: TypeRef) bool {
-        const record = self.recordOf(ref) orelse return false;
-        if (record.fields.len != 2) return false;
-        const caret_members = [_][]const u8{ "previous", "next", "previous_word", "next_word", "start", "end" };
-        var direction_ok = false;
-        var extend_ok = false;
-        for (record.fields) |field| {
-            if (std.mem.eql(u8, field.name, "extend")) {
-                extend_ok = field.type == .bool;
-            } else if (std.mem.eql(u8, field.name, "direction")) {
-                const members = switch (field.type) {
-                    .enum_ref => |name| (sidecar_mod.findEnum(self.sidecar.types, name) orelse return false).members,
-                    else => return false,
-                };
-                if (members.len != caret_members.len) return false;
-                outer: for (caret_members) |member| {
-                    for (members) |declared| {
-                        if (std.mem.eql(u8, declared, member)) continue :outer;
-                    }
-                    return false;
-                }
-                direction_ok = true;
-            }
-        }
-        return direction_ok and extend_ok;
-    }
-
-    fn isSelectionRecord(self: *Emitter, ref: TypeRef) bool {
-        const record = self.recordOf(ref) orelse return false;
-        if (record.fields.len != 2) return false;
-        var anchor_ok = false;
-        var focus_ok = false;
-        for (record.fields) |field| {
-            if (std.mem.eql(u8, field.name, "anchor")) anchor_ok = isNumericRef(field.type);
-            if (std.mem.eql(u8, field.name, "focus")) focus_ok = isNumericRef(field.type);
-        }
-        return anchor_ok and focus_ok;
-    }
-
-    fn isCompositionRecord(self: *Emitter, ref: TypeRef) bool {
-        const record = self.recordOf(ref) orelse return false;
-        if (record.fields.len != 2) return false;
-        var text_ok = false;
-        var cursor_ok = false;
-        for (record.fields) |field| {
-            if (std.mem.eql(u8, field.name, "text")) text_ok = field.type == .bytes;
-            if (std.mem.eql(u8, field.name, "cursor")) {
-                cursor_ok = switch (field.type) {
-                    .optional => |inner| isNumericRef(inner.*),
-                    else => false,
-                };
-            }
-        }
-        return text_ok and cursor_ok;
     }
 
     /// Declaration-order field indexes of a scroll-state record, in the

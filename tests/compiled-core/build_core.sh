@@ -30,23 +30,28 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 
 case "$fixture" in
   ai-chat)
-    sources="examples/ai-chat-ts/src/core.ts examples/ai-chat-ts/src/api.ts"
+    source_root="examples/ai-chat-ts/src"
+    sources="core.ts api.ts"
     contract="ai-chat"
     ;;
   soundboard)
-    sources="examples/soundboard-ts/src/core.ts examples/soundboard-ts/src/library.ts examples/soundboard-ts/src/player.ts"
+    source_root="examples/soundboard-ts/src"
+    sources="core.ts library.ts player.ts"
     contract="soundboard"
     ;;
   system-monitor)
-    sources="examples/system-monitor-ts/src/core.ts examples/system-monitor-ts/src/parsers.ts examples/system-monitor-ts/src/table.ts"
+    source_root="examples/system-monitor-ts/src"
+    sources="core.ts parsers.ts table.ts"
     contract="system-monitor"
     ;;
   host-fixture)
-    sources="tests/ts-core/fixture.ts"
+    source_root="tests/ts-core"
+    sources="fixture.ts"
     contract="host-fixture"
     ;;
   markup)
-    sources="tests/ts-core/markup_fixture.ts"
+    source_root="tests/ts-core"
+    sources="markup_fixture.ts"
     contract="markup-fixture"
     ;;
   *)
@@ -92,7 +97,8 @@ resolve_specifiers() {
 }
 
 for src in $sources; do
-  resolve_specifiers "$repo/$src" "$work/$(basename "$src")"
+  mkdir -p "$(dirname "$work/$src")"
+  resolve_specifiers "$repo/$source_root/$src" "$work/$src"
 done
 # Transform 5, event-record storage: the toolchain's sidecar emitter
 # reads a declaration's FORM as its storage class — an `interface` is a
@@ -123,7 +129,7 @@ cp "$repo/tests/compiled-core/sdk_core_static.ts" "$work/sdk/core.ts"
 # declares, so the one surviving site is the one the author imports.
 author_aliases=""
 for src in $sources; do
-  more="$(awk '/^export type [A-Za-z0-9_]+ =/ { print $3 }' "$work/$(basename "$src")" | tr '\n' ' ')"
+  more="$(awk '/^export type [A-Za-z0-9_]+ =/ { print $3 }' "$work/$src" | tr '\n' ' ')"
   author_aliases="$author_aliases $more"
 done
 for sdk_file in text.ts events.ts; do

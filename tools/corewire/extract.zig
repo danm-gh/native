@@ -278,13 +278,21 @@ fn memberJson(comptime T: type, comptime arm_name: []const u8) []const u8 {
 
 /// The declaring-module fact of a named table type, as a JSON fragment
 /// (`, "origin": "..."`), read from the transpiler's `type_origins`
-/// table; empty for synthesized names (declared nowhere) and older
-/// modules.
+/// table. A newer three-field entry carries `false` when the declaration
+/// is private, so the facade can declare its structural twin instead of
+/// importing a nonexistent export. Empty for synthesized names (declared
+/// nowhere) and older modules.
 fn originJson(comptime core: type, comptime name: []const u8) []const u8 {
     comptime {
         if (!@hasDecl(core, "type_origins")) return "";
         for (core.type_origins) |entry| {
-            if (std.mem.eql(u8, entry[0], name)) return ", \"origin\": " ++ js(entry[1]);
+            if (std.mem.eql(u8, entry[0], name)) {
+                const privacy = if (@typeInfo(@TypeOf(entry)).@"struct".fields.len >= 3 and !entry[2])
+                    ", \"exported\": false"
+                else
+                    "";
+                return ", \"origin\": " ++ js(entry[1]) ++ privacy;
+            }
         }
         return "";
     }
@@ -610,6 +618,29 @@ test "message-side integer slot paths spell the union's authored name" {
     var diags = sidecar_mod.Diagnostics{ .arena = arena };
     const sidecar = try sidecar_mod.read(arena, json, &diags);
     try testing.expectEqual(@as(usize, 3), sidecar.integer_slots.len);
+}
+
+test "private type-origin markers reach the additive sidecar fact" {
+    const Core = struct {
+        const Hidden = struct { value: f64 };
+        pub const Model = struct { hidden: *const Hidden };
+        pub const Msg = union(enum) { replace };
+        pub const type_origins = .{
+            .{ "Hidden", "core.ts", false },
+            .{ "Model", "core.ts" },
+            .{ "Msg", "core.ts" },
+        };
+        pub fn initialModel() *const Model {
+            unreachable;
+        }
+        pub fn update(model: *const Model, msg: Msg) *const Model {
+            _ = msg;
+            return model;
+        }
+    };
+    const json = comptime sidecarJson(Core, "core.ts");
+    try testing.expect(std.mem.indexOf(u8, json, "{\"name\": \"Hidden\", \"origin\": \"core.ts\", \"exported\": false") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "{\"name\": \"Model\", \"origin\": \"core.ts\", \"exported\"") == null);
 }
 
 test "anonymous-name detection keys on the final compiler suffix" {

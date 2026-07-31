@@ -72,12 +72,17 @@ pub const Struct = struct {
     /// origin fact; null on sidecars that predate it and for
     /// synthesized names, which are declared nowhere).
     origin: ?[]const u8 = null,
+    /// Whether the declaring module exports this table designation under
+    /// its own name. Absent on older sidecars, where true preserves the
+    /// historical import/re-export behavior.
+    exported: bool = true,
     fields: []const Field,
 };
 
 pub const Enum = struct {
     name: []const u8,
     origin: ?[]const u8 = null,
+    exported: bool = true,
     members: []const []const u8,
 };
 
@@ -94,6 +99,7 @@ pub const UnionArm = struct {
 pub const Union = struct {
     name: []const u8,
     origin: ?[]const u8 = null,
+    exported: bool = true,
     arms: []const UnionArm,
 };
 
@@ -409,6 +415,12 @@ const Mapper = struct {
         return try self.nonEmptyString(value, self.path("{s}.{s}", .{ at, name }));
     }
 
+    /// An additive boolean member with its compatibility default.
+    fn optionalBoolean(self: *Mapper, map: std.json.ObjectMap, name: []const u8, at: []const u8, default: bool) error{ Refused, OutOfMemory }!bool {
+        const value = map.get(name) orelse return default;
+        return try self.boolean(value, self.path("{s}.{s}", .{ at, name }));
+    }
+
     fn stringList(self: *Mapper, value: std.json.Value, at: []const u8) error{ Refused, OutOfMemory }![]const []const u8 {
         const items = try self.array(value, at);
         const out = try self.arena.alloc([]const u8, items.items.len);
@@ -513,7 +525,7 @@ const Mapper = struct {
             // `origin` as the authoritative authored-vs-synthesized fact and
             // retains the name-pattern fallback for old null-origin sidecars,
             // so this older marker remains accepted and unused.
-            const entry = try self.members(item, at, &.{ "name", "origin", "synthesized", "fields" });
+            const entry = try self.members(item, at, &.{ "name", "origin", "exported", "synthesized", "fields" });
             entry.warnUnknown();
             const fields_value = try self.array(try entry.get("fields"), self.path("{s}.fields", .{at}));
             const fields = try self.arena.alloc(Field, fields_value.items.len);
@@ -529,6 +541,7 @@ const Mapper = struct {
             out[index] = .{
                 .name = try self.nonEmptyString(try entry.get("name"), self.path("{s}.name", .{at})),
                 .origin = try self.optionalString(entry.map, "origin", at),
+                .exported = try self.optionalBoolean(entry.map, "exported", at, true),
                 .fields = fields,
             };
         }
@@ -540,11 +553,12 @@ const Mapper = struct {
         const out = try self.arena.alloc(Enum, items.items.len);
         for (items.items, 0..) |item, index| {
             const at = self.path("types.enums[{d}]", .{index});
-            const entry = try self.members(item, at, &.{ "name", "origin", "members" });
+            const entry = try self.members(item, at, &.{ "name", "origin", "exported", "members" });
             entry.warnUnknown();
             out[index] = .{
                 .name = try self.nonEmptyString(try entry.get("name"), self.path("{s}.name", .{at})),
                 .origin = try self.optionalString(entry.map, "origin", at),
+                .exported = try self.optionalBoolean(entry.map, "exported", at, true),
                 .members = try self.stringList(try entry.get("members"), self.path("{s}.members", .{at})),
             };
         }
@@ -556,7 +570,7 @@ const Mapper = struct {
         const out = try self.arena.alloc(Union, items.items.len);
         for (items.items, 0..) |item, index| {
             const at = self.path("types.unions[{d}]", .{index});
-            const entry = try self.members(item, at, &.{ "name", "origin", "arms" });
+            const entry = try self.members(item, at, &.{ "name", "origin", "exported", "arms" });
             entry.warnUnknown();
             const arms_value = try self.array(try entry.get("arms"), self.path("{s}.arms", .{at}));
             const arms = try self.arena.alloc(UnionArm, arms_value.items.len);
@@ -573,6 +587,7 @@ const Mapper = struct {
             out[index] = .{
                 .name = try self.nonEmptyString(try entry.get("name"), self.path("{s}.name", .{at})),
                 .origin = try self.optionalString(entry.map, "origin", at),
+                .exported = try self.optionalBoolean(entry.map, "exported", at, true),
                 .arms = arms,
             };
         }

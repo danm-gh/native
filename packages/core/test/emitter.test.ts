@@ -71,6 +71,22 @@ export function update(model: Model, msg: Msg): Model {
   assert.ok(result.zig!.includes('.{ "Model", "core.ts" }'), result.zig!);
 });
 
+test("contract type origins mark private reachable declarations", () => {
+  const zig = emit(`
+interface Hidden { readonly value: number; }
+export interface Model { readonly hidden: Hidden; }
+export type Msg = { readonly kind: "replace"; readonly hidden: Hidden };
+export function initialModel(): Model { return { hidden: { value: 0 } }; }
+export function update(_model: Model, msg: Msg): Model {
+  switch (msg.kind) {
+    case "replace": return { hidden: msg.hidden };
+  }
+}
+`);
+  assert.match(zig, /\.\{ "Hidden", "[^"]+\.ts", false \}/);
+  assert.match(zig, /\.\{ "Model", "[^"]+\.ts" \}/);
+});
+
 test("R3b SDK asciiBytes intrinsic folds a literal to rodata (recognized by identity, renames honored)", () => {
   const zig = emit(`
 import { asciiBytes } from "@native-sdk/core";

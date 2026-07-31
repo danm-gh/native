@@ -127,6 +127,7 @@ const ambient_value_names = [_][]const u8{
 /// refuse). `use` marks dependencies transitively.
 const Codec = enum {
     trap,
+    read_u8,
     read_u32,
     read_f64,
     read_i64,
@@ -193,7 +194,7 @@ const FacadeEmitter = struct {
         // calls, so the emitted set is always self-contained.
         const deps: []const Codec = switch (id) {
             .read_i64, .read_i64_saturating, .read_u64_saturating => &.{.read_u32},
-            .read_u32, .read_f64, .read_bool, .read_bytes_body, .assert_consumed => &.{.trap},
+            .read_u8, .read_u32, .read_f64, .read_bool, .read_bytes_body, .assert_consumed => &.{.trap},
             .w_u32 => &.{.sink},
             .w_u8, .w_f64, .w_bool => &.{.sink},
             .w_i64 => &.{ .w_u32, .trunc_toward_zero, .trap },
@@ -215,6 +216,7 @@ const FacadeEmitter = struct {
         // refuses them, so importing one would always name a nonexistent
         // authored export (generic monomorphizations are the common case).
         if (self.isGeneratedOnlyType(name)) return;
+        if (!self.isExportedType(name)) return;
         if (nameListed(self.referenced.items, name)) return;
         try self.referenced.append(self.arena, name);
     }
@@ -264,6 +266,20 @@ const FacadeEmitter = struct {
             if (std.mem.eql(u8, entry.name, name)) return entry.origin == null;
         }
         return false;
+    }
+
+    fn isExportedType(self: *FacadeEmitter, name: []const u8) bool {
+        if (std.mem.eql(u8, name, self.sidecar.model) or std.mem.eql(u8, name, self.sidecar.msg.name)) return true;
+        for (self.sidecar.types.structs) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return entry.exported;
+        }
+        for (self.sidecar.types.enums) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return entry.exported;
+        }
+        for (self.sidecar.types.unions) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return entry.exported;
+        }
+        return true;
     }
 
     fn slotClassAt(self: *FacadeEmitter, path: []const u8) ?IntegerClass {
@@ -320,6 +336,7 @@ const FacadeEmitter = struct {
             .node_stored = self.node_stored,
         };
         const body = &body_emitter;
+        try body.privateTypeDeclarations();
         try body.channelConsts();
         try body.unboundDecl();
         try body.helperWrappers();
@@ -812,14 +829,17 @@ const FacadeEmitter = struct {
         for (self.sidecar.types.structs) |entry| {
             if (nameListed(self.inlined, entry.name)) continue;
             if (self.isGeneratedOnlyType(entry.name)) continue;
+            if (!entry.exported) continue;
             if (!nameListed(ordered.items, entry.name)) try ordered.append(self.arena, entry.name);
         }
         for (self.sidecar.types.enums) |entry| {
             if (self.isGeneratedOnlyType(entry.name)) continue;
+            if (!entry.exported) continue;
             if (!nameListed(ordered.items, entry.name)) try ordered.append(self.arena, entry.name);
         }
         for (self.sidecar.types.unions) |entry| {
             if (self.isGeneratedOnlyType(entry.name)) continue;
+            if (!entry.exported) continue;
             if (!nameListed(ordered.items, entry.name)) try ordered.append(self.arena, entry.name);
         }
         var groups: std.ArrayListUnmanaged(struct { origin: []const u8, names: std.ArrayListUnmanaged([]const u8) }) = .empty;
@@ -836,9 +856,9 @@ const FacadeEmitter = struct {
         try self.raw(
             \\
             \\// The contract type designations the sidecar section names — the
-            \\// author's declarations re-exported verbatim, plus every named type
-            \\// the contract's tables reach (the compiler's sidecar emitter reads
-            \\// the entry module's exported declarations).
+            \\// author's exported declarations re-exported verbatim. Private
+            \\// reachable declarations have structural twins below instead: their
+            \\// authored modules expose no name this facade can import.
             \\
         );
         for (groups.items) |group| {
@@ -847,6 +867,67 @@ const FacadeEmitter = struct {
                 try self.print("{s}{s}", .{ if (index == 0) "" else ", ", name });
             }
             try self.print(" }} from {s};\n", .{try self.importPath(group.origin)});
+        }
+    }
+
+    /// Structural twins for authored table types their declaring modules do
+    /// not export. They stay module-private too: generated readers/writers can
+    /// name the contract shape without inventing a public authoring surface.
+    fn privateTypeDeclarations(self: *FacadeEmitter) Error!void {
+        var any = false;
+        for (self.sidecar.types.structs) |entry| if (!entry.exported) {
+            any = true;
+            break;
+        };
+        if (!any) for (self.sidecar.types.enums) |entry| if (!entry.exported) {
+            any = true;
+            break;
+        };
+        if (!any) for (self.sidecar.types.unions) |entry| if (!entry.exported) {
+            any = true;
+            break;
+        };
+        if (!any) return;
+
+        try self.raw(
+            \\
+            \\// Private contract-table declarations, reconstructed structurally
+            \\// because their authored modules expose no importable designation.
+            \\
+        );
+        for (self.sidecar.types.structs) |entry| {
+            if (entry.exported) continue;
+            try self.print("type {s} = {{\n", .{entry.name});
+            for (entry.fields) |field| {
+                try self.print("  readonly {s}: {s};\n", .{ try tsProp(self.arena, field.name), try self.spellRef(field.type) });
+            }
+            try self.raw("};\n\n");
+        }
+        for (self.sidecar.types.enums) |entry| {
+            if (entry.exported) continue;
+            try self.print("type {s} = ", .{entry.name});
+            for (entry.members, 0..) |member, index| {
+                try self.print("{s}\"{s}\"", .{ if (index == 0) "" else " | ", try tsString(self.arena, member) });
+            }
+            try self.raw(";\n\n");
+        }
+        for (self.sidecar.types.unions) |entry| {
+            if (entry.exported) continue;
+            try self.print("type {s} =\n", .{entry.name});
+            for (entry.arms) |arm| {
+                try self.print("  | {{ readonly kind: \"{s}\"", .{try tsString(self.arena, arm.name)});
+                if (arm.payload != .void) {
+                    if (self.synthesizedRecordOf(arm.payload, entry.name, arm.name)) |record| {
+                        for (record.fields) |field| {
+                            try self.print("; readonly {s}: {s}", .{ try tsProp(self.arena, field.name), try self.spellRef(field.type) });
+                        }
+                    } else {
+                        try self.print("; readonly {s}: {s}", .{ try tsProp(self.arena, self.memberOf(arm.member)), try self.spellRef(arm.payload) });
+                    }
+                }
+                try self.raw(" }\n");
+            }
+            try self.raw(";\n\n");
         }
     }
 
@@ -960,17 +1041,31 @@ const FacadeEmitter = struct {
         for (self.sidecar.model_helpers) |helper| {
             const return_type = try self.spellRef(helper.returns);
             const is_int = helper.returns == .i64;
-            if (is_int) {
+            const is_optional_int = helper.returns == .optional and helper.returns.optional.* == .i64;
+            if (is_int or is_optional_int) {
                 const class = self.nestedSlotClass("helpers", helper.name, "return") orelse .i64;
-                try self.print(
-                    \\
-                    \\export function {s}(model: {s}): number {{
-                    \\  const nscfValue = nscfH_{s}(model);
-                    \\  if (nscfValue >= {s} && nscfValue <= {s}) return Math.trunc(nscfValue);
-                    \\  nscfTrap("a helper return is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
-                    \\}}
-                    \\
-                , .{ helper.name, self.sidecar.model, helper.name, integerLowerBound(class), max_safe });
+                if (is_optional_int) {
+                    try self.print(
+                        \\
+                        \\export function {s}(model: {s}): {s} {{
+                        \\  const nscfValue = nscfH_{s}(model);
+                        \\  if (nscfValue === null) return null;
+                        \\  if (nscfValue >= {s} && nscfValue <= {s}) return Math.trunc(nscfValue);
+                        \\  nscfTrap("a helper return is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
+                        \\}}
+                        \\
+                    , .{ helper.name, self.sidecar.model, return_type, helper.name, integerLowerBound(class), max_safe });
+                } else {
+                    try self.print(
+                        \\
+                        \\export function {s}(model: {s}): number {{
+                        \\  const nscfValue = nscfH_{s}(model);
+                        \\  if (nscfValue >= {s} && nscfValue <= {s}) return Math.trunc(nscfValue);
+                        \\  nscfTrap("a helper return is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
+                        \\}}
+                        \\
+                    , .{ helper.name, self.sidecar.model, helper.name, integerLowerBound(class), max_safe });
+                }
                 self.use(.trap);
             } else if (helper.returns == .slice) {
                 try self.print(
@@ -1994,6 +2089,18 @@ const FacadeEmitter = struct {
                 \\
             );
         }
+        if (self.used_codec.contains(.read_u8)) {
+            try self.raw(
+                \\
+                \\function nscfReadU8(bytes: Uint8Array, at: number): number {
+                \\  if (at >= bytes.length) {
+                \\    nscfTrap("a dispatch payload ended mid-value — the host and this core disagree about a type's layout");
+                \\  }
+                \\  return bytes[at]!;
+                \\}
+                \\
+            );
+        }
         if (self.used_codec.contains(.read_u32)) {
             try self.raw(
                 \\
@@ -2684,21 +2791,19 @@ const FacadeEmitter = struct {
     }
 };
 
-/// Locals-then-construction decode of a record's canonical bytes: each
-/// field reads into a local at a running offset, i64-classed locals
-/// join a combined range guard, and the construction expression states
-/// wholeness with Math.trunc at every guarded write.
+/// Locals-then-construction decode of canonical bytes. The emitted mutable
+/// cursor advances in the lexical branch that consumes each value, so
+/// nonterminal optionals and variable-width composites compose naturally.
+/// Integer locals join the nearest construction guard and state wholeness
+/// with Math.trunc at the guarded write.
 const RecordDecode = struct {
     emitter: *FacadeEmitter,
     buf: []const u8,
     indent: usize,
     start: []const u8 = "0",
-    /// True while decoding the structurally recognized set_selection
-    /// record whose host wire may carry the maxInt select-all sentinel.
     saturating_selection: bool = false,
     local_count: usize = 0,
-    offset_fixed: usize = 0,
-    offset_dynamic: std.ArrayListUnmanaged(u8) = .empty,
+    cursor_started: bool = false,
     guards: std.ArrayListUnmanaged(u8) = .empty,
     exprs: std.ArrayListUnmanaged(struct { name: []const u8, text: []const u8 }) = .empty,
 
@@ -2708,23 +2813,8 @@ const RecordDecode = struct {
         return self.emitter.arena;
     }
 
-    fn offsetText(self: *Self) []const u8 {
-        const base: []const u8 = if (std.mem.eql(u8, self.start, "0"))
-            std.fmt.allocPrint(self.arena(), "{d}", .{self.offset_fixed}) catch "0"
-        else if (self.offset_fixed == 0)
-            self.start
-        else
-            std.fmt.allocPrint(self.arena(), "{s} + {d}", .{ self.start, self.offset_fixed }) catch "0";
-        if (self.offset_dynamic.items.len == 0) return base;
-        return std.fmt.allocPrint(self.arena(), "{s}{s}", .{ base, self.offset_dynamic.items }) catch base;
-    }
-
-    fn advance(self: *Self, fixed: usize) void {
-        self.offset_fixed += fixed;
-    }
-
-    fn advanceDynamic(self: *Self, term: []const u8) Error!void {
-        try self.offset_dynamic.appendSlice(self.arena(), try std.fmt.allocPrint(self.arena(), " + {s}", .{term}));
+    fn offsetText(_: *Self) []const u8 {
+        return "nscfAt";
     }
 
     fn nextLocal(self: *Self) Error![]const u8 {
@@ -2739,39 +2829,114 @@ const RecordDecode = struct {
         try self.emitter.print(fmt, args);
     }
 
-    fn addGuard(self: *Self, local: []const u8, class: IntegerClass) Error!void {
-        if (self.guards.items.len > 0) try self.guards.appendSlice(self.arena(), " && ");
-        try self.guards.appendSlice(self.arena(), try std.fmt.allocPrint(self.arena(), "{s} >= {s} && {s} <= {s}", .{ local, integerLowerBound(class), local, max_safe }));
+    fn ensureCursor(self: *Self) Error!void {
+        if (self.cursor_started) return;
+        self.cursor_started = true;
+        try self.line("let nscfAt = {s};\n", .{self.start});
+    }
+
+    fn advance(self: *Self, amount: []const u8) Error!void {
+        try self.line("nscfAt += {s};\n", .{amount});
+    }
+
+    fn advanceFixed(self: *Self, amount: usize) Error!void {
+        try self.advance(try std.fmt.allocPrint(self.arena(), "{d}", .{amount}));
+    }
+
+    fn addGuard(self: *Self, guards: *std.ArrayListUnmanaged(u8), local: []const u8, class: IntegerClass) Error!void {
+        if (guards.items.len > 0) try guards.appendSlice(self.arena(), " && ");
+        try guards.appendSlice(self.arena(), try std.fmt.allocPrint(self.arena(), "{s} >= {s} && {s} <= {s}", .{ local, integerLowerBound(class), local, max_safe }));
+    }
+
+    fn guardedStatement(self: *Self, guards: []const u8, statement: []const u8) Error!void {
+        if (guards.len == 0) {
+            try self.line("{s}\n", .{statement});
+            return;
+        }
+        try self.line("if ({s}) {{\n", .{guards});
+        self.indent += 1;
+        try self.line("{s}\n", .{statement});
+        self.indent -= 1;
+        try self.line("}} else {{\n", .{});
+        self.indent += 1;
+        try self.line("nscfTrap(\"a decoded integer value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it\");\n", .{});
+        self.indent -= 1;
+        try self.line("}}\n", .{});
+        self.emitter.use(.trap);
     }
 
     fn run(self: *Self, record: *const sidecar_mod.Struct) Error!void {
-        for (record.fields, 0..) |field, index| {
-            const last = index + 1 == record.fields.len;
-            if (field.type == .optional and !last) {
-                self.emitter.diags.flag("types", "record \"{s}\" carries an optional field before its last — the generated decode reads optionals only in the final position; reorder the record in the core source", .{record.name});
-                return;
-            }
-            try self.fieldLocal(field, record.name, field.name);
-        }
+        try self.ensureCursor();
+        for (record.fields) |field| try self.fieldLocal(field, record.name, field.name);
     }
 
-    /// Read one field into a local and record its construction
-    /// expression. `container`/`member` name the slot for its class.
     fn fieldLocal(self: *Self, field: sidecar_mod.Field, container: []const u8, member: []const u8) Error!void {
+        try self.ensureCursor();
+        const text = try self.decodeRef(field.type, field.name, container, member, &self.guards);
+        try self.exprs.append(self.arena(), .{ .name = field.name, .text = text });
+    }
+
+    fn decodeRecord(self: *Self, record: *const sidecar_mod.Struct, guards: *std.ArrayListUnmanaged(u8)) Error![]const u8 {
+        var parts: std.ArrayListUnmanaged(u8) = .empty;
+        for (record.fields, 0..) |field, index| {
+            const text = try self.decodeRef(field.type, field.name, record.name, field.name, guards);
+            if (index > 0) try parts.appendSlice(self.arena(), ", ");
+            try parts.appendSlice(self.arena(), try std.fmt.allocPrint(self.arena(), "{s}: {s}", .{ try tsProp(self.arena(), field.name), text }));
+        }
+        return try std.fmt.allocPrint(self.arena(), "{{ {s} }}", .{parts.items});
+    }
+
+    fn decodeUnion(self: *Self, name: []const u8) Error![]const u8 {
         const em = self.emitter;
-        switch (field.type) {
-            .f64 => {
+        const entry = sidecar_mod.findUnion(em.sidecar.types, name) orelse {
+            em.diags.flag("types", "\"{s}\" names no tabled union", .{name});
+            return "undefined";
+        };
+        em.use(.read_u8);
+        const tag = try self.nextLocal();
+        try self.line("const {s} = nscfReadU8({s}, nscfAt);\n", .{ tag, self.buf });
+        try self.advanceFixed(1);
+        const local = try self.nextLocal();
+        try self.line("let {s}: {s};\n", .{ local, name });
+        for (entry.arms, 0..) |arm, index| {
+            try self.line("{s}if ({s} === {d}) {{\n", .{ if (index == 0) "" else "else ", tag, index });
+            self.indent += 1;
+            var arm_guards: std.ArrayListUnmanaged(u8) = .empty;
+            const object = if (arm.payload == .void)
+                try std.fmt.allocPrint(self.arena(), "{{ kind: \"{s}\" }}", .{try tsString(self.arena(), arm.name)})
+            else if (em.synthesizedRecordOf(arm.payload, entry.name, arm.name)) |record| blk: {
+                const inner = try self.decodeRecord(record, &arm_guards);
+                break :blk try std.fmt.allocPrint(self.arena(), "{{ kind: \"{s}\",{s}}}", .{ try tsString(self.arena(), arm.name), inner[1 .. inner.len - 1] });
+            } else blk: {
+                const value = try self.decodeRef(arm.payload, em.memberOf(arm.member), entry.name, arm.name, &arm_guards);
+                break :blk try std.fmt.allocPrint(self.arena(), "{{ kind: \"{s}\", {s}: {s} }}", .{ try tsString(self.arena(), arm.name), try tsProp(self.arena(), em.memberOf(arm.member)), value });
+            };
+            try self.guardedStatement(arm_guards.items, try std.fmt.allocPrint(self.arena(), "{s} = {s};", .{ local, object }));
+            self.indent -= 1;
+            try self.line("}}\n", .{});
+        }
+        try self.line("else {{\n", .{});
+        self.indent += 1;
+        try self.line("nscfTrap(\"a dispatched union payload carries a union arm index past the declared arms — the host and this core disagree about the contract\");\n", .{});
+        self.indent -= 1;
+        try self.line("}}\n", .{});
+        em.use(.trap);
+        return local;
+    }
+
+    fn decodeRef(self: *Self, ref: TypeRef, field_name: []const u8, container: []const u8, member: []const u8, guards: *std.ArrayListUnmanaged(u8)) Error![]const u8 {
+        const em = self.emitter;
+        return switch (ref) {
+            .f64 => blk: {
                 em.use(.read_f64);
                 const local = try self.nextLocal();
-                try self.line("const {s} = nscfReadF64({s}, {s});\n", .{ local, self.buf, self.offsetText() });
-                self.advance(8);
-                try self.exprs.append(self.arena(), .{ .name = field.name, .text = local });
+                try self.line("const {s} = nscfReadF64({s}, nscfAt);\n", .{ local, self.buf });
+                try self.advanceFixed(8);
+                break :blk local;
             },
-            .i64 => {
+            .i64 => blk: {
                 const class = em.slotClass(container, member) orelse .i64;
-                // The one saturating exception: selection offsets, where
-                // the host's select-all synthesizes the maxInt sentinel.
-                const selection_field = std.mem.eql(u8, field.name, "anchor") or std.mem.eql(u8, field.name, "focus");
+                const selection_field = std.mem.eql(u8, field_name, "anchor") or std.mem.eql(u8, field_name, "focus");
                 const reader: Codec = if (self.saturating_selection and selection_field)
                     if (class == .u64) .read_u64_saturating else .read_i64_saturating
                 else
@@ -2784,106 +2949,85 @@ const RecordDecode = struct {
                     .read_u64_saturating => "nscfReadU64Saturating",
                     else => unreachable,
                 };
-                try self.line("const {s} = {s}({s}, {s});\n", .{ local, reader_name, self.buf, self.offsetText() });
-                self.advance(8);
-                try self.addGuard(local, class);
-                try self.exprs.append(self.arena(), .{ .name = field.name, .text = try std.fmt.allocPrint(self.arena(), "Math.trunc({s})", .{local}) });
+                try self.line("const {s} = {s}({s}, nscfAt);\n", .{ local, reader_name, self.buf });
+                try self.advanceFixed(8);
+                try self.addGuard(guards, local, class);
+                break :blk try std.fmt.allocPrint(self.arena(), "Math.trunc({s})", .{local});
             },
-            .bool => {
+            .bool => blk: {
                 em.use(.read_bool);
                 const local = try self.nextLocal();
-                try self.line("const {s} = nscfReadBool({s}, {s});\n", .{ local, self.buf, self.offsetText() });
-                self.advance(1);
-                try self.exprs.append(self.arena(), .{ .name = field.name, .text = local });
+                try self.line("const {s} = nscfReadBool({s}, nscfAt);\n", .{ local, self.buf });
+                try self.advanceFixed(1);
+                break :blk local;
             },
-            .bytes => {
+            .bytes => blk: {
                 em.use(.read_u32);
                 em.use(.read_bytes_body);
                 const len_local = try self.nextLocal();
-                try self.line("const {s} = nscfReadU32({s}, {s});\n", .{ len_local, self.buf, self.offsetText() });
-                self.advance(4);
+                try self.line("const {s} = nscfReadU32({s}, nscfAt);\n", .{ len_local, self.buf });
+                try self.advanceFixed(4);
                 const local = try self.nextLocal();
-                try self.line("const {s} = nscfReadBytesBody({s}, {s}, {s});\n", .{ local, self.buf, self.offsetText(), len_local });
-                try self.advanceDynamic(len_local);
-                try self.exprs.append(self.arena(), .{ .name = field.name, .text = local });
+                try self.line("const {s} = nscfReadBytesBody({s}, nscfAt, {s});\n", .{ local, self.buf, len_local });
+                try self.advance(len_local);
+                break :blk local;
             },
-            .enum_ref => |name| {
+            .enum_ref => |name| blk: {
                 em.use(.read_u32);
                 try em.needEnumTable(name);
                 em.needs_member_trap = true;
                 const local = try self.nextLocal();
-                try self.line("const {s} = nscfReadU32({s}, {s});\n", .{ local, self.buf, self.offsetText() });
+                try self.line("const {s} = nscfReadU32({s}, nscfAt);\n", .{ local, self.buf });
                 try self.line("if ({s} >= nscfMembers{s}.length) nscfMember(\"{s}\", {s});\n", .{ local, name, try tsString(self.arena(), name), local });
-                self.advance(4);
-                try self.exprs.append(self.arena(), .{ .name = field.name, .text = try std.fmt.allocPrint(self.arena(), "nscfMembers{s}[{s}]!", .{ name, local }) });
+                try self.advanceFixed(4);
+                break :blk try std.fmt.allocPrint(self.arena(), "nscfMembers{s}[{s}]!", .{ name, local });
             },
-            .node, .value => |name| {
-                // Reference storage encodes transparently: the nested
-                // record's fields ride inline either way.
+            .node, .value => |name| blk: {
                 const nested = sidecar_mod.findStruct(em.sidecar.types, name) orelse {
                     em.diags.flag("types", "\"{s}\" names no tabled record", .{name});
-                    return;
+                    break :blk "undefined";
                 };
-                var parts: std.ArrayListUnmanaged(u8) = .empty;
-                for (nested.fields, 0..) |nested_field, nested_index| {
-                    if (nested_field.type == .optional and nested_index + 1 != nested.fields.len) {
-                        em.diags.flag("types", "record \"{s}\" carries an optional field before its last — the generated decode reads optionals only in the final position; reorder the record in the core source", .{name});
-                        return;
-                    }
-                    try self.fieldLocal(nested_field, name, nested_field.name);
-                    const entry = self.exprs.pop().?;
-                    if (nested_index > 0) try parts.appendSlice(self.arena(), ", ");
-                    try parts.appendSlice(self.arena(), try std.fmt.allocPrint(self.arena(), "{s}: {s}", .{ try tsProp(self.arena(), entry.name), entry.text }));
-                }
-                try self.exprs.append(self.arena(), .{ .name = field.name, .text = try std.fmt.allocPrint(self.arena(), "{{ {s} }}", .{parts.items}) });
+                break :blk try self.decodeRecord(nested, guards);
             },
-            .optional => |inner| {
-                // Only in the final position (run() enforces): read the
-                // presence byte, then branch-free via two constructions
-                // is heavy — instead decode into a nullable local using
-                // the guarded pattern the composition cursor proves.
+            .optional => |inner| blk: {
                 em.use(.read_bool);
                 const present = try self.nextLocal();
-                try self.line("const {s} = nscfReadBool({s}, {s});\n", .{ present, self.buf, self.offsetText() });
-                self.advance(1);
-                switch (inner.*) {
-                    .i64 => {
-                        const class = em.slotClass(container, member) orelse .i64;
-                        em.use(.read_i64);
-                        const local = try self.nextLocal();
-                        try self.line("let {s}: number | null = null;\n", .{local});
-                        try self.line("if ({s}) {{\n", .{present});
-                        const value_local = try self.nextLocal();
-                        try self.line("  const {s} = nscfReadI64({s}, {s});\n", .{ value_local, self.buf, self.offsetText() });
-                        try self.line("  if ({s} >= {s} && {s} <= {s}) {{\n", .{ value_local, integerLowerBound(class), value_local, max_safe });
-                        try self.line("    {s} = Math.trunc({s});\n", .{ local, value_local });
-                        try self.line("  }} else {{\n", .{});
-                        try self.line("    nscfTrap(\"a decoded integer value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it\");\n", .{});
-                        try self.line("  }}\n", .{});
-                        try self.line("}}\n", .{});
-                        em.use(.trap);
-                        try self.advanceDynamic(try std.fmt.allocPrint(self.arena(), "({s} ? 8 : 0)", .{present}));
-                        try self.exprs.append(self.arena(), .{ .name = field.name, .text = local });
-                    },
-                    .f64 => {
-                        em.use(.read_f64);
-                        const local = try self.nextLocal();
-                        try self.line("let {s}: number | null = null;\n", .{local});
-                        try self.line("if ({s}) {{\n", .{present});
-                        try self.line("  {s} = nscfReadF64({s}, {s});\n", .{ local, self.buf, self.offsetText() });
-                        try self.line("}}\n", .{});
-                        try self.advanceDynamic(try std.fmt.allocPrint(self.arena(), "({s} ? 8 : 0)", .{present}));
-                        try self.exprs.append(self.arena(), .{ .name = field.name, .text = local });
-                    },
-                    else => {
-                        em.diags.flag("types", "an optional non-scalar field has no generated dispatch decode; flatten the state in the core source", .{});
-                    },
-                }
+                try self.line("const {s} = nscfReadBool({s}, nscfAt);\n", .{ present, self.buf });
+                try self.advanceFixed(1);
+                const local = try self.nextLocal();
+                try self.line("let {s}: {s} | null = null;\n", .{ local, try em.spellRef(inner.*) });
+                try self.line("if ({s}) {{\n", .{present});
+                self.indent += 1;
+                var inner_guards: std.ArrayListUnmanaged(u8) = .empty;
+                const value = try self.decodeRef(inner.*, field_name, container, member, &inner_guards);
+                try self.guardedStatement(inner_guards.items, try std.fmt.allocPrint(self.arena(), "{s} = {s};", .{ local, value }));
+                self.indent -= 1;
+                try self.line("}}\n", .{});
+                break :blk local;
             },
-            .slice, .union_ref, .void => {
-                em.diags.flag("types", "a sequence, union, or void slot nested in a dispatched record payload has no generated decode — no producer emits the shape today; flatten the state in the core source", .{});
+            .slice => |elem| blk: {
+                em.use(.read_u32);
+                const len_local = try self.nextLocal();
+                try self.line("const {s} = nscfReadU32({s}, nscfAt);\n", .{ len_local, self.buf });
+                try self.advanceFixed(4);
+                const local = try self.nextLocal();
+                try self.line("const {s}: {s} = [];\n", .{ local, try em.spellRef(ref) });
+                const index = try self.nextLocal();
+                try self.line("for (let {s} = 0; {s} < {s}; {s}++) {{\n", .{ index, index, len_local, index });
+                self.indent += 1;
+                var elem_guards: std.ArrayListUnmanaged(u8) = .empty;
+                const value = try self.decodeRef(elem.*, field_name, container, member, &elem_guards);
+                try self.guardedStatement(elem_guards.items, try std.fmt.allocPrint(self.arena(), "{s}.push({s});", .{ local, value }));
+                self.indent -= 1;
+                try self.line("}}\n", .{});
+                break :blk local;
             },
-        }
+            .union_ref => |name| try self.decodeUnion(name),
+            .void => blk: {
+                em.diags.flag("types", "a record field cannot carry void", .{});
+                break :blk "undefined";
+            },
+        };
     }
 
     fn constructionText(self: *Self, record: *const sidecar_mod.Struct) Error![]const u8 {
@@ -3227,6 +3371,36 @@ test "origin facts group re-exports by declaring module" {
     try testing.expect(std.mem.indexOf(u8, generated, "function nscfWriteTurn(sink: nscfSink, value: Turn): void {") != null);
 }
 
+test "private reachable types get structural twins instead of invalid imports" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "\"structs\": [",
+        "\"structs\": [\n      {\"name\": \"Hidden\", \"origin\": \"core.ts\", \"exported\": false, \"fields\": [{\"name\": \"value\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"mode\", \"type\": {\"kind\": \"enum\", \"name\": \"HiddenMode\"}}, {\"name\": \"state\", \"type\": {\"kind\": \"union\", \"name\": \"HiddenState\"}}]},",
+    );
+    source = try std.mem.replaceOwned(u8, arena, source, "\"enums\": []", "\"enums\": [{\"name\": \"HiddenMode\", \"origin\": \"core.ts\", \"exported\": false, \"members\": [\"one\", \"two\"]}]");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unions\": []", "\"unions\": [{\"name\": \"HiddenState\", \"origin\": \"core.ts\", \"exported\": false, \"arms\": [{\"name\": \"off\", \"payload\": {\"kind\": \"void\"}}, {\"name\": \"on\", \"member\": \"level\", \"payload\": {\"kind\": \"f64\"}}]}]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"label\", \"type\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"hidden\", \"type\": {\"kind\": \"node\", \"name\": \"Hidden\"}}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "import type { Model, Msg } from \"./core.ts\";") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "import type { Model, Msg, Hidden }") == null);
+    try testing.expect(std.mem.indexOf(u8, generated, "export type { Model, Msg, Hidden }") == null);
+    try testing.expect(std.mem.indexOf(u8, generated, "type Hidden = {\n  readonly value: number;\n  readonly mode: HiddenMode;\n  readonly state: HiddenState;\n};") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "type HiddenMode = \"one\" | \"two\";") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "type HiddenState =\n  | { readonly kind: \"off\" }\n  | { readonly kind: \"on\"; readonly level: number }") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "function nscfWriteHidden(sink: nscfSink, value: Hidden): void {") != null);
+}
+
 test "generated generic table names refuse before emitting invalid imports" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -3284,6 +3458,24 @@ test "helpers wrap in declaration order with classed-return proofs" {
     try testing.expect(std.mem.indexOf(u8, generated, "if (helper === 1) {") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "nscfWBytes(sink, nscfValue);") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "nscfWI64(sink, nscfValue);") != null);
+}
+
+test "nullable integer helper returns prove their present branch" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "\"model_helpers\": []",
+        "\"model_helpers\": [{\"name\": \"maybeCount\", \"params\": [], \"returns\": {\"kind\": \"optional\", \"inner\": {\"kind\": \"i64\"}}, \"arena\": false}]",
+    );
+    source = try std.mem.replaceOwned(u8, arena, source, "{\"slot\": \"Model.count\", \"class\": \"i64\"}", "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"helpers.maybeCount.return\", \"class\": \"i64\"}");
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "export function maybeCount(model: Model): number | null {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (nscfValue === null) return null;") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (nscfValue >= -9007199254740991 && nscfValue <= 9007199254740991) return Math.trunc(nscfValue);") != null);
 }
 
 test "wired channels emit abi entries and the generic payload packer" {
@@ -3510,6 +3702,61 @@ test "a record referenced by node and value at once refuses" {
     try expectFacadeRefusal(arena, source, "storage once per declaration");
 }
 
+test "record dispatch decodes nonterminal optionals and nullable composites" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "\"structs\": [",
+        "\"structs\": [\n      {\"name\": \"Payload\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"maybe\", \"type\": {\"kind\": \"optional\", \"inner\": {\"kind\": \"f64\"}}}, {\"name\": \"tail\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"blob\", \"type\": {\"kind\": \"optional\", \"inner\": {\"kind\": \"bytes\"}}}]},",
+    );
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"loaded\", \"member\": \"payload\", \"payload\": {\"kind\": \"record\", \"name\": \"Payload\"}}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "let nscfAt = 0;") != null);
+    const optional_at = std.mem.indexOf(u8, generated, "let nscfV1: number | null = null;").?;
+    const tail_at = std.mem.indexOfPos(u8, generated, optional_at, "nscfReadF64(fields, nscfAt)").?;
+    try testing.expect(tail_at > optional_at);
+    try testing.expect(std.mem.indexOf(u8, generated, "Uint8Array | null = null;") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadBytesBody(fields, nscfAt,") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfAssertConsumed(fields, nscfAt);") != null);
+}
+
+test "record dispatch recursively decodes sequences and nested unions" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "\"structs\": [",
+        "\"structs\": [\n      {\"name\": \"Payload\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"values\", \"type\": {\"kind\": \"slice\", \"elem\": {\"kind\": \"f64\"}}}, {\"name\": \"choice\", \"type\": {\"kind\": \"optional\", \"inner\": {\"kind\": \"union\", \"name\": \"Choice\"}}}]},",
+    );
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unions\": []", "\"unions\": [{\"name\": \"Choice\", \"origin\": \"core.ts\", \"arms\": [{\"name\": \"none\", \"payload\": {\"kind\": \"void\"}}, {\"name\": \"text\", \"member\": \"value\", \"payload\": {\"kind\": \"bytes\"}}]}]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"loaded\", \"member\": \"payload\", \"payload\": {\"kind\": \"record\", \"name\": \"Payload\"}}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, ": number[] = [];") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, ".push(") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadU8(fields, nscfAt)") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, ": Choice | null = null;") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "{ kind: \"text\", value:") != null);
+}
+
 test "ordinary set_selection arms keep exact integer decoding" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -3531,7 +3778,8 @@ test "ordinary set_selection arms keep exact integer decoding" {
     try testing.expect(std.mem.indexOf(u8, generated, "{ kind: \"edited\", edit: nscfDecodeEdit(event) }") != null);
     // This is not the complete text-input protocol, so a homonymous arm
     // retains the ordinary exact reader and rejects out-of-window integers.
-    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64(bytes, 1)") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "let nscfAt = 1;") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64(bytes, nscfAt)") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64Saturating") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "nscfReadU64Saturating") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "anchor: Math.trunc(") != null);
@@ -3582,8 +3830,8 @@ test "text-input selection saturates signed and unsigned select-all sentinels" {
         "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"Sel.anchor\", \"class\": \"u64\"}, {\"slot\": \"Sel.focus\", \"class\": \"i64\"}, {\"slot\": \"Comp.cursor\", \"class\": \"u64\"}",
     );
     const generated = try facadeFromJson(arena, source);
-    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadU64Saturating(bytes, 1)") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64Saturating(bytes, 1 + 8)") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadU64Saturating(bytes, nscfAt)") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfReadI64Saturating(bytes, nscfAt)") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "function nscfReadU64Saturating(bytes: Uint8Array, at: number): number {") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "if (hi > 2097151) return 9007199254740991;") != null);
 }

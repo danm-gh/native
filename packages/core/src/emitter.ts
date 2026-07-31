@@ -1084,14 +1084,31 @@ export class Emitter {
           path.dirname(fileName) === sdkDir
             ? `sdk/${path.basename(fileName)}`
             : path.relative(entryDir, fileName).split(path.sep).join("/");
-        entries.push(`    .{ ${zigString(name)}, ${zigString(origin)} },`);
+        const exported =
+          hasExportModifier(stmt) ||
+          file.statements.some(
+            (candidate) =>
+              ts.isExportDeclaration(candidate) &&
+              candidate.moduleSpecifier === undefined &&
+              candidate.exportClause !== undefined &&
+              ts.isNamedExports(candidate.exportClause) &&
+              candidate.exportClause.elements.some(
+                (spec) => spec.name.text === name && this.tast.exportSpecifierTarget(spec) === stmt,
+              ),
+          );
+        // The third tuple field is additive and appears only for a private
+        // declaration. Older extractors keep reading the two origin fields;
+        // current ones use the marker to synthesize a structural facade type
+        // instead of importing a name its module does not export.
+        entries.push(`    .{ ${zigString(name)}, ${zigString(origin)}${exported ? "" : ", false"} },`);
       }
     }
     if (entries.length === 0) return;
     this.out.push(``);
     this.out.push(`// The declaring module of every named contract-table type (the sidecar`);
-    this.out.push(`// extractor's origin facts; synthesized names are declared nowhere and`);
-    this.out.push(`// stay out).`);
+    this.out.push(`// extractor's origin facts; a third false field marks declarations the`);
+    this.out.push(`// authored module does not export. Synthesized names are declared nowhere`);
+    this.out.push(`// and stay out).`);
     this.out.push(`pub const type_origins = .{`);
     this.out.push(...entries);
     this.out.push(`};`);

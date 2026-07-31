@@ -1,7 +1,7 @@
 //! corewire — the contract-sidecar shim generator.
 //!
 //!   corewire --sidecar core.contract.json --out core_shim.zig
-//!   corewire --sidecar core.contract.json --facade core_facade.ts --profile core_profile.json
+//!   corewire --sidecar core.contract.json --facade core_facade.ts --profile core_profile.json --effective-sidecar effective.contract.json
 //!   corewire --sidecar core.contract.json --check
 //!
 //! Reads the JSON contract sidecar a core-mode compile emits beside the
@@ -24,19 +24,19 @@ const emit_facade_mod = @import("emit_facade.zig");
 const emit_profile_mod = @import("emit_profile.zig");
 
 const usage =
-    \\usage: corewire --sidecar <core.contract.json> (--out <core_shim.zig> | --facade <core_facade.ts> | --profile <core_profile.json> | --check) [--f64-slot <path>]...
+    \\usage: corewire --sidecar <core.contract.json> (--out <core_shim.zig> | --facade <core_facade.ts> | --profile <core_profile.json> | --effective-sidecar <effective.contract.json> | --check) [--f64-slot <path>]...
     \\
     \\Generate the Zig mirror module (core_shim.zig), the TypeScript
-    \\projection (core_facade.ts), and/or the library-mode compiler profile
-    \\(core_profile.json) for a compiled core from its contract sidecar, or
-    \\validate the sidecar alone (--check). --out, --facade, and --profile
-    \\combine; --check stands alone.
+    \\projection (core_facade.ts), the library-mode compiler profile
+    \\(core_profile.json), and/or the effective sidecar after projection
+    \\overrides for a compiled core, or validate the input sidecar alone
+    \\(--check). Generation outputs combine; --check stands alone.
     \\
     \\--f64-slot <path> carries the named attested integer slot as f64 for
     \\this whole invocation (facade, profile, and mirror alike): a slot
     \\whose values reach the f64-exact boundary (2^53) has no honest i64
     \\declaration on the compiled side, so the caller states the demotion
-    \\explicitly and both projections stay consistent. The path must name
+    \\explicitly and every projection stays consistent. The path must name
     \\an attested slot — a misspelling would silently demote nothing.
     \\
 ;
@@ -53,6 +53,7 @@ pub fn main(init: std.process.Init) !void {
     var out_path: ?[]const u8 = null;
     var facade_path: ?[]const u8 = null;
     var profile_path: ?[]const u8 = null;
+    var effective_sidecar_path: ?[]const u8 = null;
     var check_only = false;
     var f64_slots: std.ArrayListUnmanaged([]const u8) = .empty;
     var index: usize = 1;
@@ -70,6 +71,9 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--profile") and index + 1 < args.len) {
             index += 1;
             profile_path = args[index];
+        } else if (std.mem.eql(u8, arg, "--effective-sidecar") and index + 1 < args.len) {
+            index += 1;
+            effective_sidecar_path = args[index];
         } else if (std.mem.eql(u8, arg, "--f64-slot") and index + 1 < args.len) {
             index += 1;
             try f64_slots.append(arena, args[index]);
@@ -88,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
     };
     // Either validate-only, or at least one generation target — never
     // both (a checker that writes files is not a checker).
-    const generates = out_path != null or facade_path != null or profile_path != null;
+    const generates = out_path != null or facade_path != null or profile_path != null or effective_sidecar_path != null;
     if (generates == check_only) {
         try stderr.print("{s}", .{usage});
         try stderr.flush();
@@ -108,9 +112,11 @@ pub fn main(init: std.process.Init) !void {
         out_path,
         facade_path,
         profile_path,
+        effective_sidecar_path,
         if (out_path) |path| try std.fmt.allocPrint(arena, "{s}.corewire-tmp", .{path}) else null,
         if (facade_path) |path| try std.fmt.allocPrint(arena, "{s}.corewire-tmp", .{path}) else null,
         if (profile_path) |path| try std.fmt.allocPrint(arena, "{s}.corewire-tmp", .{path}) else null,
+        if (effective_sidecar_path) |path| try std.fmt.allocPrint(arena, "{s}.corewire-tmp", .{path}) else null,
     };
     var resolved: [paths.len]?[]const u8 = @splat(null);
     for (paths, 0..) |maybe_path, path_index| {
@@ -256,6 +262,15 @@ pub fn main(init: std.process.Init) !void {
         };
     } else null;
 
+    // The staged contract twin: preserve the input document's complete
+    // additive vocabulary while applying the same explicit demotions the
+    // typed projections above consumed. This is the sidecar that truthfully
+    // belongs beside a generated facade/profile pair.
+    const effective_sidecar: ?[]const u8 = if (effective_sidecar_path != null)
+        try sidecar_mod.projectF64SlotsJson(arena, source, f64_slots.items)
+    else
+        null;
+
     // Warnings (unknown additive fields) surface even on success.
     try diags.write(input, stderr);
     try stderr.flush();
@@ -274,7 +289,7 @@ pub fn main(init: std.process.Init) !void {
         data: []const u8,
         staged: []const u8 = "",
     };
-    var outputs_buffer: [3]Output = undefined;
+    var outputs_buffer: [4]Output = undefined;
     var output_count: usize = 0;
     if (out_path) |path| {
         outputs_buffer[output_count] = .{ .flag = "--out", .path = path, .data = generated };
@@ -286,6 +301,10 @@ pub fn main(init: std.process.Init) !void {
     }
     if (profile_path) |path| {
         outputs_buffer[output_count] = .{ .flag = "--profile", .path = path, .data = profile.? };
+        output_count += 1;
+    }
+    if (effective_sidecar_path) |path| {
+        outputs_buffer[output_count] = .{ .flag = "--effective-sidecar", .path = path, .data = effective_sidecar.? };
         output_count += 1;
     }
     const outputs = outputs_buffer[0..output_count];

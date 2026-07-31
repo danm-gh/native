@@ -1261,7 +1261,12 @@ const FacadeEmitter = struct {
     fn dispatchBytes(self: *FacadeEmitter) Error!void {
         try self.raw("\nexport function dispatch_bytes(tag: number, payload: Uint8Array): Uint8Array {\n");
         for (self.sidecar.msg.arms) |arm| {
-            if (arm.payload != .bytes) continue;
+            const carries_bytes = switch (arm.payload) {
+                .bytes => true,
+                .scalar => |ref| ref == .bytes,
+                else => false,
+            };
+            if (!carries_bytes) continue;
             const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: payload }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
             try self.print("  if (tag === nscfTag_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
         }
@@ -1272,48 +1277,35 @@ const FacadeEmitter = struct {
         try self.raw("\nexport function dispatch_number(tag: number, value: number): Uint8Array {\n");
         var f64_count: usize = 0;
         for (self.sidecar.msg.arms) |arm| {
-            switch (arm.payload) {
-                .number => |class| {
-                    if (class == .f64) f64_count += 1;
-                },
-                else => {},
+            if (payloadNumberClass(arm.payload)) |class| {
+                if (class == .f64) f64_count += 1;
             }
         }
         if (f64_count > 0) {
             try self.raw("  // These arms remain f64-classed in the contract: preserve the value\n  // exactly instead of routing it through the integer proof below.\n");
             for (self.sidecar.msg.arms) |arm| {
-                switch (arm.payload) {
-                    .number => |class| {
-                        if (class != .f64) continue;
-                        const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: value }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
-                        try self.print("  if (tag === nscfTag_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
-                    },
-                    else => {},
-                }
+                if (payloadNumberClass(arm.payload) != .f64) continue;
+                const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: value }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
+                try self.print("  if (tag === nscfTag_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
             }
         }
         for (self.sidecar.msg.arms) |arm| {
-            switch (arm.payload) {
-                .number => |payload_class| {
-                    if (payload_class != .i64) continue;
-                    const class = self.slotClass(self.sidecar.msg.name, arm.name) orelse .i64;
-                    const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: whole }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
-                    try self.print(
-                        \\  // This integer-classed arm proves in place: its attestation
-                        \\  // selects the signed or unsigned lower bound, the ordered
-                        \\  // comparisons exclude NaN, and Math.trunc states wholeness.
-                        \\  if (tag === nscfTag_{s}) {{
-                        \\    if (value >= {s} && value <= {s}) {{
-                        \\      const whole = Math.trunc(value);
-                        \\      return nscfCommit(coreUpdate(nscfCommitted, {s}));
-                        \\    }}
-                        \\    nscfTrap("a numeric dispatch value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
-                        \\  }}
-                        \\
-                    , .{ arm.name, integerLowerBound(class), max_safe, object });
-                },
-                else => {},
-            }
+            if (payloadNumberClass(arm.payload) != .i64) continue;
+            const class = self.slotClass(self.sidecar.msg.name, arm.name) orelse .i64;
+            const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: whole }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
+            try self.print(
+                \\  // This integer-classed arm proves in place: its attestation
+                \\  // selects the signed or unsigned lower bound, the ordered
+                \\  // comparisons exclude NaN, and Math.trunc states wholeness.
+                \\  if (tag === nscfTag_{s}) {{
+                \\    if (value >= {s} && value <= {s}) {{
+                \\      const whole = Math.trunc(value);
+                \\      return nscfCommit(coreUpdate(nscfCommitted, {s}));
+                \\    }}
+                \\    nscfTrap("a numeric dispatch value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
+                \\  }}
+                \\
+            , .{ arm.name, integerLowerBound(class), max_safe, object });
         }
         try self.raw("  nscfUnknownTag(\"number\", tag);\n}\n");
     }
@@ -1686,11 +1678,22 @@ const FacadeEmitter = struct {
                     try self.print("    nscfWU32(sink, nscfIndex{s}({s}));\n", .{ name, try tsAccess(self.arena, "value", member) });
                 },
                 .scalar => |ref| {
-                    if (ref == .bool) {
-                        self.use(.w_bool);
-                        try self.print("    nscfWBool(sink, {s});\n", .{try tsAccess(self.arena, "value", member)});
-                    } else {
-                        self.diags.flag("msg.arms", "arm \"{s}\" carries a scalar payload outside the generated channel encoding (bool is the one scalar family a producer emits); extend the generator before wiring it", .{arm.name});
+                    const access = try tsAccess(self.arena, "value", member);
+                    switch (ref) {
+                        .bool => {
+                            self.use(.w_bool);
+                            try self.print("    nscfWBool(sink, {s});\n", .{access});
+                        },
+                        .f64 => {
+                            self.use(.w_f64);
+                            try self.print("    nscfWF64(sink, {s});\n", .{access});
+                        },
+                        .i64 => try self.print("    {s}(sink, {s});\n", .{ self.intWriter(self.sidecar.msg.name, arm.name), access }),
+                        .bytes => {
+                            self.use(.w_bytes);
+                            try self.print("    nscfWBytes(sink, {s});\n", .{access});
+                        },
+                        else => self.diags.flag("msg.arms", "arm \"{s}\" carries a scalar payload outside the generated channel encoding (only bool, number, and bytes scalars have ABI entries); extend the generator before wiring it", .{arm.name}),
                     }
                 },
             }
@@ -3080,6 +3083,22 @@ fn recordPayloadRef(payload: sidecar_mod.Payload) TypeRef {
     };
 }
 
+/// The numeric ABI class of either spelling the sidecar accepts for a
+/// one-number message payload. Dedicated descriptors are what current
+/// extractors emit; scalar descriptors remain a valid format-1 alias and
+/// must reach the same facade entry as the generated mirror.
+fn payloadNumberClass(payload: sidecar_mod.Payload) ?sidecar_mod.NumberClass {
+    return switch (payload) {
+        .number => |class| class,
+        .scalar => |ref| switch (ref) {
+            .f64 => .f64,
+            .i64 => .i64,
+            else => null,
+        },
+        else => null,
+    };
+}
+
 fn pathText(arena: std.mem.Allocator, comptime fmt: []const u8, args: anytype) []const u8 {
     return std.fmt.allocPrint(arena, fmt, args) catch "";
 }
@@ -3497,6 +3516,31 @@ test "wired channels emit abi entries and the generic payload packer" {
     // The unwired channels stay out.
     try testing.expect(std.mem.indexOf(u8, generated, "abi_pinch_msg") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "abi_command_msg") == null);
+}
+
+test "scalar primitive message payload aliases share dispatch and channel encoders" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        sidecar_mod.minimal_valid_json,
+        "{\"name\": \"label_set\", \"payload\": {\"kind\": \"bytes\"}}",
+        "{\"name\": \"blob\", \"member\": \"blob\", \"payload\": {\"kind\": \"scalar\", \"type\": {\"kind\": \"bytes\"}}}, {\"name\": \"ratio\", \"member\": \"ratio\", \"payload\": {\"kind\": \"scalar\", \"type\": {\"kind\": \"f64\"}}}, {\"name\": \"count_set\", \"member\": \"count\", \"payload\": {\"kind\": \"scalar\", \"type\": {\"kind\": \"i64\"}}}",
+    );
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unbound\": [\"label_set\"]", "\"unbound\": []");
+    source = try std.mem.replaceOwned(u8, arena, source, "{\"slot\": \"Model.count\", \"class\": \"i64\"}", "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"Msg.count_set\", \"class\": \"i64\"}");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"key_msg\": false", "\"key_msg\": true");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"helper_call\"]", "\"helper_call\", \"key_msg\"]");
+
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === nscfTag_blob) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"blob\", blob: payload }));") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === nscfTag_ratio) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"ratio\", ratio: value }));") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === nscfTag_count_set) {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfWBytes(sink, value.blob);") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfWF64(sink, value.ratio);") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "nscfWI64(sink, value.count);") != null);
 }
 
 test "u64-attested slots ride the unsigned writer" {

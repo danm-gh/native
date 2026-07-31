@@ -2972,8 +2972,8 @@ const TsCoreE2eArtifacts = struct {
     /// — every battery skipped — otherwise.
     compiled_core_parity: []const CompiledCoreParity,
     /// Per-fixture contract artifacts for an external core toolchain:
-    /// the extracted contract sidecar and its TypeScript facade
-    /// projection, installed by the stage-core-contracts step.
+    /// the effective contract sidecar and its TypeScript facade/profile
+    /// projections, installed by the stage-core-contracts step.
     core_contracts: []const CoreContract,
 };
 
@@ -3143,7 +3143,7 @@ fn tsCoreE2eArtifact(
         .{ .ts_import = "ts_ai_chat_core", .shim_import = "shim_ai_chat_core", .contract_name = "ai-chat", .core_mod = ai_chat_core_mod, .entry = "examples/ai-chat-ts/src/core.ts" },
     };
     // The corpus contract artifacts an external core toolchain consumes
-    // (stage-core-contracts): the extracted sidecar plus its generated
+    // (stage-core-contracts): the effective sidecar plus its generated
     // entry module and compiler profile, per fixture.
     var core_contracts: std.ArrayList(CoreContract) = .empty;
     {
@@ -3151,7 +3151,7 @@ fn tsCoreE2eArtifact(
         const projections = facadeProjections(b, corewire_exe, markup_sidecar, &.{});
         core_contracts.append(b.allocator, .{
             .name = "markup-fixture",
-            .sidecar = markup_sidecar,
+            .sidecar = projections.sidecar,
             .facade = projections.facade,
             .profile = projections.profile,
         }) catch @panic("OOM");
@@ -3163,7 +3163,7 @@ fn tsCoreE2eArtifact(
         const projections = facadeProjections(b, corewire_exe, sidecar_json, fixture.f64_slots);
         core_contracts.append(b.allocator, .{
             .name = fixture.contract_name,
-            .sidecar = sidecar_json,
+            .sidecar = projections.sidecar,
             .facade = projections.facade,
             .profile = projections.profile,
         }) catch @panic("OOM");
@@ -3325,14 +3325,15 @@ fn pairedCoreModule(
 }
 
 const FacadeProjections = struct {
+    sidecar: std.Build.LazyPath,
     facade: std.Build.LazyPath,
     profile: std.Build.LazyPath,
 };
 
-/// A sidecar's compiled-core projections: the generated entry module
-/// (core_facade.ts) and the compiler profile that builds it
-/// (core_profile.json), emitted by one corewire invocation so the
-/// profile's entry spelling and the facade's file name can never skew.
+/// A sidecar's compiled-core projections: the effective contract after
+/// caller-stated demotions, the generated entry module (core_facade.ts), and
+/// the compiler profile that builds it (core_profile.json), emitted by one
+/// corewire invocation so no staged sibling can describe a different layout.
 fn facadeProjections(
     b: *std.Build,
     corewire_exe: *std.Build.Step.Compile,
@@ -3346,11 +3347,13 @@ fn facadeProjections(
     const facade = generate.addOutputFileArg("core_facade.ts");
     generate.addArg("--profile");
     const profile = generate.addOutputFileArg("core_profile.json");
+    generate.addArg("--effective-sidecar");
+    const sidecar = generate.addOutputFileArg("core.contract.json");
     for (f64_slots) |slot| {
         generate.addArg("--f64-slot");
         generate.addArg(slot);
     }
-    return .{ .facade = facade, .profile = profile };
+    return .{ .sidecar = sidecar, .facade = facade, .profile = profile };
 }
 
 /// One fixture's generated-mirror module: run corewire over the

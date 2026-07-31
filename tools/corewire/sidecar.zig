@@ -1732,6 +1732,64 @@ fn validateIntegerSlots(arena: std.mem.Allocator, sidecar: Sidecar, diags: *Diag
     }
 }
 
+/// Restate a validated sidecar after applying record-slot f64 demotions.
+/// Mutating the dynamic document instead of serializing the typed reader
+/// preserves unknown additive fields for newer producers. The caller first
+/// validates each path against the typed contract, so a miss here is internal
+/// projection drift rather than user input.
+pub fn projectF64SlotsJson(arena: std.mem.Allocator, source: []const u8, f64_slots: []const []const u8) ![]const u8 {
+    if (f64_slots.len == 0) return source;
+
+    var root = try std.json.parseFromSliceLeaky(std.json.Value, arena, source, .{});
+    const types = root.object.getPtr("types").?;
+    const structs = types.object.getPtr("structs").?;
+    for (f64_slots) |slot_path| {
+        const dot = std.mem.indexOfScalar(u8, slot_path, '.') orelse return error.ProjectionDrift;
+        const container = slot_path[0..dot];
+        const field_name = slot_path[dot + 1 ..];
+        var changed = false;
+        for (structs.array.items) |*entry| {
+            if (!std.mem.eql(u8, entry.object.get("name").?.string, container)) continue;
+            const fields = entry.object.getPtr("fields").?;
+            for (fields.array.items) |*field| {
+                if (!std.mem.eql(u8, field.object.get("name").?.string, field_name)) continue;
+                const ref = field.object.getPtr("type").?;
+                const kind = ref.object.getPtr("kind").?;
+                if (std.mem.eql(u8, kind.string, "optional")) {
+                    const inner = ref.object.getPtr("inner").?;
+                    inner.object.getPtr("kind").?.* = .{ .string = "f64" };
+                } else {
+                    kind.* = .{ .string = "f64" };
+                }
+                changed = true;
+                break;
+            }
+            break;
+        }
+        if (!changed) return error.ProjectionDrift;
+    }
+
+    const attestations = root.object.getPtr("integer_slots").?;
+    var index: usize = 0;
+    while (index < attestations.array.items.len) {
+        const slot = attestations.array.items[index].object.get("slot").?.string;
+        const demoted = for (f64_slots) |candidate| {
+            if (std.mem.eql(u8, slot, candidate)) break true;
+        } else false;
+        if (demoted) {
+            _ = attestations.array.orderedRemove(index);
+        } else {
+            index += 1;
+        }
+    }
+
+    var out: std.Io.Writer.Allocating = .init(arena);
+    var json: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .whitespace = .indent_2 } };
+    try json.write(root);
+    try out.writer.writeByte('\n');
+    return out.written();
+}
+
 // --------------------------------------------------------------- tests
 
 const testing = std.testing;
@@ -1796,6 +1854,18 @@ pub const minimal_valid_json =
     \\  "async_free": true
     \\}
 ;
+
+test "effective sidecar carries f64 demotions into its type table and attestations" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const projected = try projectF64SlotsJson(arena, minimal_valid_json, &.{"Model.count"});
+    var diags = Diagnostics{ .arena = arena };
+    const parsed = try read(arena, projected, &diags);
+    const model = findStruct(parsed.types, "Model").?;
+    try testing.expect(model.fields[0].type == .f64);
+    try testing.expectEqual(@as(usize, 0), parsed.integer_slots.len);
+}
 
 fn expectRefusal(source: []const u8, expected_path: []const u8, expected_fragment: []const u8) !void {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);

@@ -274,17 +274,20 @@ export function initialModel(): Model {
 export type Msg =
   | { readonly kind: "show_albums" }
   | { readonly kind: "show_songs" }
-  | { readonly kind: "open_album"; readonly id: number }
+  // Distinct source field names keep these i64 proof obligations from
+  // collapsing into QueueEntry.id or one another. Each wire payload
+  // remains the arm's single scalar.
+  | { readonly kind: "open_album"; readonly openAlbumId: number }
   | { readonly kind: "close_album" }
-  | { readonly kind: "play_album"; readonly id: number }
+  | { readonly kind: "play_album"; readonly playAlbumId: number }
   /// The play gesture on a track row: a different track starts fresh, the
   /// loaded one toggles play/pause in place.
-  | { readonly kind: "play_track"; readonly id: number }
+  | { readonly kind: "play_track"; readonly playTrackId: number }
   | { readonly kind: "toggle_play" }
   | { readonly kind: "next_track" }
   | { readonly kind: "prev_track" }
-  | { readonly kind: "queue_track"; readonly id: number }
-  | { readonly kind: "copy_title"; readonly id: number }
+  | { readonly kind: "queue_track"; readonly queueTrackId: number }
+  | { readonly kind: "copy_title"; readonly copyTitleId: number }
   | { readonly kind: "search_edit"; readonly edit: TextInputEvent }
   /// Every audio playback report: the load acknowledgment, position
   /// ticks, the one completion, failures, spectrum frames.
@@ -696,9 +699,9 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       return [{ ...model, tab: "songs", libraryScrollTop: 0 }, Cmd.none];
     case "open_album": {
       // Resolve the payload id against the table and store the TABLE's
-      // id: markup payloads arrive as wire f64s, and keeping every id in
-      // the model integer-classed starts here.
-      const album = ALBUMS.find((a) => a.id === msg.id);
+      // id: the compiled adapter proves this arm's i64 class before the
+      // update, and resolving against the table keeps model ids classed.
+      const album = ALBUMS.find((a) => a.id === msg.openAlbumId);
       if (album === undefined) return [model, Cmd.none];
       // Every page change resets the controlled scroll: the offset is
       // model state, so the fresh page opens at its top. The id lands in
@@ -712,7 +715,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
     case "close_album":
       return [{ ...model, openAlbum: null, libraryScrollTop: 0 }, Cmd.none];
     case "play_album": {
-      const album = ALBUMS.find((a) => a.id === msg.id);
+      const album = ALBUMS.find((a) => a.id === msg.playAlbumId);
       if (album === undefined) return [model, Cmd.none];
       const albumId = album.id;
       const first = TRACKS.find((t) => t.album === albumId && t.number === 1);
@@ -729,11 +732,11 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
     case "play_track": {
       // The loaded track toggles play/pause in place; a different track
       // starts fresh.
-      if (model.now === msg.id) {
+      if (model.now === msg.playTrackId) {
         if (model.playing) return [{ ...model, playing: false }, Cmd.audioPause("player")];
         return [{ ...model, playing: true }, Cmd.audioResume("player")];
       }
-      const track = TRACKS.find((t) => t.id === msg.id);
+      const track = TRACKS.find((t) => t.id === msg.playTrackId);
       if (track === undefined) return [model, Cmd.none];
       return [
         startedModel(model, track.id, track.durationMs),
@@ -794,7 +797,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       ];
     }
     case "queue_track": {
-      const track = TRACKS.find((t) => t.id === msg.id);
+      const track = TRACKS.find((t) => t.id === msg.queueTrackId);
       if (track === undefined) return [model, Cmd.none];
       if (model.queue.some((q) => q.id === track.id)) return [model, Cmd.none];
       if (model.queue.length >= MAX_QUEUE) {
@@ -809,7 +812,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       return [model, Cmd.none];
     }
     case "copy_title": {
-      const track = TRACKS.find((t) => t.id === msg.id);
+      const track = TRACKS.find((t) => t.id === msg.copyTitleId);
       if (track === undefined) return [model, Cmd.none];
       return [
         { ...model, copiesRequested: model.copiesRequested < 9007199254740991 ? model.copiesRequested + 1 : 9007199254740991 },

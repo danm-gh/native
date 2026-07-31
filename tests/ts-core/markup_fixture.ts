@@ -67,7 +67,9 @@ export interface Model {
 
 export type Msg =
   | { readonly kind: "add" }
-  | { readonly kind: "toggle"; readonly id: number }
+  // The distinct field name keeps this i64 proof obligation separate
+  // from the f64-classed pick/hover arms after structural lowering.
+  | { readonly kind: "toggle"; readonly taskId: number }
   | { readonly kind: "pick"; readonly id: number }
   | { readonly kind: "cycle" }
   | { readonly kind: "clear" }
@@ -90,8 +92,11 @@ export function frameMsg(model: Model, frame: FrameEvent): Msg | null {
   // ordered comparison excludes NaN), and state wholeness with
   // Math.trunc at the write.
   const width = frame.width;
-  if (width >= 0 && width <= 9007199254740991 && width !== model.canvasWidth) {
-    return { kind: "canvas_resized", width: Math.trunc(width) };
+  if (width >= 0 && width <= 9007199254740991) {
+    const wholeWidth = Math.trunc(width);
+    if (wholeWidth !== model.canvasWidth) {
+      return { kind: "canvas_resized", width: wholeWidth };
+    }
   }
   return null;
 }
@@ -185,7 +190,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       return [{ ...model, tasks: [...model.tasks, added], nextId: bumped }, Cmd.none];
     }
     case "toggle": {
-      const next = model.tasks.map((t) => (t.id === msg.id ? { ...t, done: !t.done } : t));
+      const next = model.tasks.map((t) => (t.id === msg.taskId ? { ...t, done: !t.done } : t));
       let done = 0;
       for (let i = 0; i < next.length; i++) {
         if (next[i].done) {

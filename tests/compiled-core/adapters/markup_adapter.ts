@@ -152,20 +152,25 @@ export function dispatch_bytes(tag: number, payload: Uint8Array): Uint8Array {
 }
 
 export function dispatch_number(tag: number, value: number): Uint8Array {
+  // These arms remain f64-classed in the contract: preserve the value
+  // exactly instead of routing it through the integer proof below.
+  if (tag === TAG_pick) return commit(coreUpdate(committed, { kind: "pick", id: value }));
+  if (tag === TAG_stamped) return commit(coreUpdate(committed, { kind: "stamped", at: value }));
+  if (tag === TAG_hover_row) return commit(coreUpdate(committed, { kind: "hover_row", id: value }));
+  if (tag === TAG_hover_off) return commit(coreUpdate(committed, { kind: "hover_off", id: value }));
+
   // Integer-classed arms (ids and widths) prove in place: range-guard
   // the raw f64 (an ordered comparison excludes NaN) and state
   // wholeness with Math.trunc at the write.
-  if (value >= -9007199254740991 && value <= 9007199254740991) {
-    const whole = Math.trunc(value);
-    if (tag === TAG_toggle) return commit(coreUpdate(committed, { kind: "toggle", id: whole }));
-    if (tag === TAG_pick) return commit(coreUpdate(committed, { kind: "pick", id: whole }));
-    if (tag === TAG_stamped) return commit(coreUpdate(committed, { kind: "stamped", at: value }));
-    if (tag === TAG_hover_row) return commit(coreUpdate(committed, { kind: "hover_row", id: whole }));
-    if (tag === TAG_hover_off) return commit(coreUpdate(committed, { kind: "hover_off", id: whole }));
-    if (tag === TAG_canvas_resized) return commit(coreUpdate(committed, { kind: "canvas_resized", width: whole }));
-    trapUnknownTag("number", tag);
+  if (tag === TAG_toggle || tag === TAG_canvas_resized) {
+    if (value >= -9007199254740991 && value <= 9007199254740991) {
+      const whole = Math.trunc(value);
+      if (tag === TAG_toggle) return commit(coreUpdate(committed, { kind: "toggle", taskId: whole }));
+      return commit(coreUpdate(committed, { kind: "canvas_resized", width: whole }));
+    }
+    trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
   }
-  trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
+  trapUnknownTag("number", tag);
 }
 
 export function dispatch_number_bytes(tag: number, value: number, payload: Uint8Array): Uint8Array {

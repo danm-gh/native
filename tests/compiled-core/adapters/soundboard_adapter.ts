@@ -360,22 +360,27 @@ export function dispatch_bytes(tag: number, payload: Uint8Array): Uint8Array {
 }
 
 export function dispatch_number(tag: number, value: number): Uint8Array {
+  // These arms remain f64-classed in the contract: preserve the value
+  // exactly instead of routing it through the integer proof below.
+  if (tag === TAG_clock_tick) return commit(coreUpdate(committed, { kind: "clock_tick", at: value }));
+  if (tag === TAG_scrubbed) return commit(coreUpdate(committed, { kind: "scrubbed", fraction: value }));
+  if (tag === TAG_canvas_resized) return commit(coreUpdate(committed, { kind: "canvas_resized", width: value }));
+
   // The id arms are i64-classed and prove in place: range-guard the raw
   // f64 (an ordered comparison excludes NaN) and state wholeness with
   // Math.trunc at the write.
-  if (value >= -9007199254740991 && value <= 9007199254740991) {
-    const whole = Math.trunc(value);
-    if (tag === TAG_open_album) return commit(coreUpdate(committed, { kind: "open_album", id: whole }));
-    if (tag === TAG_play_album) return commit(coreUpdate(committed, { kind: "play_album", id: whole }));
-    if (tag === TAG_play_track) return commit(coreUpdate(committed, { kind: "play_track", id: whole }));
-    if (tag === TAG_queue_track) return commit(coreUpdate(committed, { kind: "queue_track", id: whole }));
-    if (tag === TAG_copy_title) return commit(coreUpdate(committed, { kind: "copy_title", id: whole }));
-    if (tag === TAG_clock_tick) return commit(coreUpdate(committed, { kind: "clock_tick", at: value }));
-    if (tag === TAG_scrubbed) return commit(coreUpdate(committed, { kind: "scrubbed", fraction: value }));
-    if (tag === TAG_canvas_resized) return commit(coreUpdate(committed, { kind: "canvas_resized", width: value }));
-    trapUnknownTag("number", tag);
+  if (tag === TAG_open_album || tag === TAG_play_album || tag === TAG_play_track || tag === TAG_queue_track || tag === TAG_copy_title) {
+    if (value >= -9007199254740991 && value <= 9007199254740991) {
+      const whole = Math.trunc(value);
+      if (tag === TAG_open_album) return commit(coreUpdate(committed, { kind: "open_album", openAlbumId: whole }));
+      if (tag === TAG_play_album) return commit(coreUpdate(committed, { kind: "play_album", playAlbumId: whole }));
+      if (tag === TAG_play_track) return commit(coreUpdate(committed, { kind: "play_track", playTrackId: whole }));
+      if (tag === TAG_queue_track) return commit(coreUpdate(committed, { kind: "queue_track", queueTrackId: whole }));
+      return commit(coreUpdate(committed, { kind: "copy_title", copyTitleId: whole }));
+    }
+    trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
   }
-  trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
+  trapUnknownTag("number", tag);
 }
 
 export function dispatch_number_bytes(tag: number, value: number, payload: Uint8Array): Uint8Array {

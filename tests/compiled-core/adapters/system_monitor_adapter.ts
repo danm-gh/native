@@ -320,18 +320,23 @@ export function dispatch_bytes(tag: number, payload: Uint8Array): Uint8Array {
 }
 
 export function dispatch_number(tag: number, value: number): Uint8Array {
-  // Integer-classed arms (timestamps and pids) prove in place:
+  // Timer ticks remain f64-classed in the contract: preserve the value
+  // exactly instead of routing it through the integer proof below.
+  if (tag === TAG_tick) return commit(coreUpdate(committed, { kind: "tick", at: value }));
+
+  // Integer-classed arms (the stamped timestamp and pids) prove in place:
   // range-guard the raw f64 (an ordered comparison excludes NaN) and
   // state wholeness with Math.trunc at the write.
-  if (value >= -9007199254740991 && value <= 9007199254740991) {
-    const whole = Math.trunc(value);
-    if (tag === TAG_tick) return commit(coreUpdate(committed, { kind: "tick", at: whole }));
-    if (tag === TAG_stamped) return commit(coreUpdate(committed, { kind: "stamped", at: whole }));
-    if (tag === TAG_request_kill) return commit(coreUpdate(committed, { kind: "request_kill", pid: whole }));
-    if (tag === TAG_copy_name) return commit(coreUpdate(committed, { kind: "copy_name", pid: whole }));
-    trapUnknownTag("number", tag);
+  if (tag === TAG_stamped || tag === TAG_request_kill || tag === TAG_copy_name) {
+    if (value >= -9007199254740991 && value <= 9007199254740991) {
+      const whole = Math.trunc(value);
+      if (tag === TAG_stamped) return commit(coreUpdate(committed, { kind: "stamped", stampedAt: whole }));
+      if (tag === TAG_request_kill) return commit(coreUpdate(committed, { kind: "request_kill", requestKillPid: whole }));
+      return commit(coreUpdate(committed, { kind: "copy_name", copyNamePid: whole }));
+    }
+    trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
   }
-  trap("a numeric dispatch value is NaN or past ±(2^53 − 1) — an i64 slot has no honest value for it");
+  trapUnknownTag("number", tag);
 }
 
 export function dispatch_number_bytes(tag: number, value: number, payload: Uint8Array): Uint8Array {
@@ -343,16 +348,16 @@ export function dispatch_number_bytes(tag: number, value: number, payload: Uint8
       return commit(coreUpdate(committed, { kind: "info_done", code: code, output: payload }));
     }
     if (tag === TAG_info2_done) {
-      return commit(coreUpdate(committed, { kind: "info2_done", code: code, output: payload }));
+      return commit(coreUpdate(committed, { kind: "info2_done", info2Code: code, output: payload }));
     }
     if (tag === TAG_ps_done) {
-      return commit(coreUpdate(committed, { kind: "ps_done", code: code, output: payload }));
+      return commit(coreUpdate(committed, { kind: "ps_done", psCode: code, output: payload }));
     }
     if (tag === TAG_mem_done) {
-      return commit(coreUpdate(committed, { kind: "mem_done", code: code, output: payload }));
+      return commit(coreUpdate(committed, { kind: "mem_done", memCode: code, output: payload }));
     }
     if (tag === TAG_kill_done) {
-      return commit(coreUpdate(committed, { kind: "kill_done", code: code, output: payload }));
+      return commit(coreUpdate(committed, { kind: "kill_done", killCode: code, output: payload }));
     }
     trapUnknownTag("number-with-bytes", tag);
   }

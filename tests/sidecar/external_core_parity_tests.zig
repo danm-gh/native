@@ -57,6 +57,13 @@ fn rawSubscriptions() []const u8 {
     return ptr[0..len];
 }
 
+fn rawFrameMsg(width: f64, height: f64, timestamp_ms: f64, interval_ms: f64) []const u8 {
+    var ptr: [*]const u8 = undefined;
+    var len: usize = 0;
+    abi.frame_msg(width, height, timestamp_ms, interval_ms, &ptr, &len);
+    return ptr[0..len];
+}
+
 /// The transpiler lane's committed model, re-expressed in the mirror's
 /// sidecar-classed layout and canonically encoded — the reference bytes
 /// the archive's snapshot must equal.
@@ -85,7 +92,7 @@ const script = [_]shim_core.Msg{
     .add,
     .add,
     .{ .toggle = 2 },
-    .{ .pick = 2 },
+    .{ .pick = 2.5 },
     .add,
     .cycle,
     .{ .banner_set = "parity" },
@@ -338,6 +345,11 @@ test "channel entries match the transpiler lane through the bytes envelope" {
         shim_model = next.shim;
         try testing.expect(ts_core.frameMsg(ts_model, .{ .width = 800, .height = 600, .timestampMs = 32, .intervalMs = 16 }) == null);
         try testing.expect(shim_core.frameMsg(shim_model, .{ .width = 800, .height = 600, .timestampMs = 32, .intervalMs = 16 }) == null);
+        // The raw archive entry receives f64 logical points before the
+        // generated mirror narrows its classed width. Compare after
+        // truncation so a fractional presentation at the committed
+        // width does not keep the channel alive.
+        try testing.expectEqualSlices(u8, &.{ 0, 0 }, rawFrameMsg(800.75, 600, 48, 16));
     }
 
     // The key-fallback channel: a bare arm rides the header-only

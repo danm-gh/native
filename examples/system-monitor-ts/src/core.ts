@@ -237,17 +237,21 @@ export type Msg =
   /// The boot probe's sysctl exit (collect mode: code + whole stdout).
   | { readonly kind: "info_done"; readonly code: number; readonly output: Bytes }
   | { readonly kind: "info_err"; readonly reason: Bytes }
+  // Distinct numeric field names keep these i64 proof obligations
+  // separate after structurally identical result records are lowered.
+  // Spawn routing matches the one number and one bytes field by type.
   /// The fallback probe's nproc exit.
-  | { readonly kind: "info2_done"; readonly code: number; readonly output: Bytes }
+  | { readonly kind: "info2_done"; readonly info2Code: number; readonly output: Bytes }
   | { readonly kind: "info2_err"; readonly reason: Bytes }
   /// Collected `ps` output arrived (or its stream failed).
-  | { readonly kind: "ps_done"; readonly code: number; readonly output: Bytes }
+  | { readonly kind: "ps_done"; readonly psCode: number; readonly output: Bytes }
   | { readonly kind: "ps_err"; readonly reason: Bytes }
   /// Collected memory-command output arrived.
-  | { readonly kind: "mem_done"; readonly code: number; readonly output: Bytes }
+  | { readonly kind: "mem_done"; readonly memCode: number; readonly output: Bytes }
   | { readonly kind: "mem_err"; readonly reason: Bytes }
-  /// The journaled Cmd.now stamp for the applied ps sample.
-  | { readonly kind: "stamped"; readonly at: number }
+  /// The journaled Cmd.now stamp for the applied ps sample. Its field
+  /// stays structurally distinct from the f64-classed tick timestamp.
+  | { readonly kind: "stamped"; readonly stampedAt: number }
   | { readonly kind: "toggle_sampling" }
   | { readonly kind: "search_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "table_scrolled"; readonly scroll: ScrollState }
@@ -260,15 +264,16 @@ export type Msg =
   /// pressable host, so the row binds this no-op (the Zig data_row is its
   /// own hit target and needs none).
   | { readonly kind: "row_pressed" }
-  /// Context menu: open the SIGTERM confirmation for this pid.
-  | { readonly kind: "request_kill"; readonly pid: number }
+  /// Context menu: open the SIGTERM confirmation for this pid. The two
+  /// pid arms use distinct fields so their i64 proofs do not collapse.
+  | { readonly kind: "request_kill"; readonly requestKillPid: number }
   | { readonly kind: "cancel_kill" }
   /// Dialog confirmed: spawn `/bin/kill -TERM <pid>`.
   | { readonly kind: "confirm_kill" }
-  | { readonly kind: "kill_done"; readonly code: number; readonly output: Bytes }
+  | { readonly kind: "kill_done"; readonly killCode: number; readonly output: Bytes }
   | { readonly kind: "kill_err"; readonly reason: Bytes }
   /// Context menu: copy the process name to the system clipboard.
-  | { readonly kind: "copy_name"; readonly pid: number }
+  | { readonly kind: "copy_name"; readonly copyNamePid: number }
   /// Chrome overlay geometry (the chromeMsg channel's arm).
   | {
       readonly kind: "chrome_changed";
@@ -709,7 +714,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         Cmd.spawn([asciiBytes("/usr/bin/nproc")], { key: "info", collect: true, exit: "info2_done", err: "info2_err" }),
       ];
     case "info2_done": {
-      if (msg.code === 0) {
+      if (msg.info2Code === 0) {
         const info = parseHostInfo(msg.output, false);
         // Same bind-guard-trunc proof as the macOS probe above.
         const parsedCores = info !== null ? info.cores : -1;
@@ -773,8 +778,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       ];
     }
     case "ps_done": {
-      if (msg.code !== 0) {
-        return [withNote({ ...model, psInflight: false }, asciiBytes(`ps failed (code ${msg.code})`)), Cmd.none];
+      if (msg.psCode !== 0) {
+        return [withNote({ ...model, psInflight: false }, asciiBytes(`ps failed (code ${msg.psCode})`)), Cmd.none];
       }
       // The sample timestamp is a JOURNALED clock read (Cmd.now): under
       // session replay it resolves from the journal, so the same Msg
@@ -787,8 +792,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         concat3(asciiBytes("ps failed ("), msg.reason, asciiBytes(")")),
       ), Cmd.none];
     case "mem_done": {
-      if (msg.code !== 0) {
-        return [withNote({ ...model, memInflight: false }, asciiBytes(`memory sample failed (code ${msg.code})`)), Cmd.none];
+      if (msg.memCode !== 0) {
+        return [withNote({ ...model, memInflight: false }, asciiBytes(`memory sample failed (code ${msg.memCode})`)), Cmd.none];
       }
       const sample = model.memCommand === "vmstat" ? parseVmStat(msg.output) : parseMeminfo(msg.output);
       if (sample === null) {
@@ -802,7 +807,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         concat3(asciiBytes("memory sample failed ("), msg.reason, asciiBytes(")")),
       ), Cmd.none];
     case "stamped":
-      return [{ ...model, sampledAtDayMs: msg.at % 86400000 }, Cmd.none];
+      return [{ ...model, sampledAtDayMs: msg.stampedAt % 86400000 }, Cmd.none];
     case "toggle_sampling": {
       if (!model.paused) {
         // Pause: the subscription reconciles away after this commit.
@@ -856,9 +861,9 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
     case "row_pressed":
       return [model, Cmd.none];
     case "request_kill": {
-      const row = model.rows.find((r) => r.pid === msg.pid);
+      const row = model.rows.find((r) => r.pid === msg.requestKillPid);
       if (row === undefined) {
-        return [withNote(model, asciiBytes(`pid ${msg.pid} is gone (it left the sample)`)), Cmd.none];
+        return [withNote(model, asciiBytes(`pid ${msg.requestKillPid} is gone (it left the sample)`)), Cmd.none];
       }
       // Copy the target out of the row at request time, so a later
       // sample can never retarget a confirmation the user is reading.
@@ -889,16 +894,16 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       // the delivery notice retires with them instead of sitting in the
       // footer forever (a sample already in flight predates the kill
       // and cannot).
-      if (msg.code === 0) return [withTransientNote(model, asciiBytes("terminate request delivered")), Cmd.none];
+      if (msg.killCode === 0) return [withTransientNote(model, asciiBytes("terminate request delivered")), Cmd.none];
       return [withNote(
         model,
-        emDashJoin(asciiBytes(`kill failed (code ${msg.code}`), asciiBytes("not your process?)")),
+        emDashJoin(asciiBytes(`kill failed (code ${msg.killCode}`), asciiBytes("not your process?)")),
       ), Cmd.none];
     }
     case "kill_err":
       return [withNote(model, concat3(asciiBytes("kill failed ("), msg.reason, asciiBytes(")"))), Cmd.none];
     case "copy_name": {
-      const row = model.rows.find((r) => r.pid === msg.pid);
+      const row = model.rows.find((r) => r.pid === msg.copyNamePid);
       if (row === undefined) return [model, Cmd.none];
       // Fire-and-forget: the clipboard op has no result routing, so the
       // note reports the request (the Zig original notes the outcome).

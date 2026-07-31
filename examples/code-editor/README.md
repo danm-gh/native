@@ -15,7 +15,7 @@ native dev
 - **A bounded filesystem tree** — the chosen directory is scanned through Zig 0.16's explicit `std.Io`. The scan caps at 128 entries and 12 levels, and shows but does not descend into `.git`, Zig cache/output directories, or `node_modules`; the status bar reports caps and unreadable subdirectories.
 - **Typed tree interaction** — visible rows carry `treeitem` semantics, one-based logical levels, model-owned disclosure state, stable path keys, click previews, and selection-only Up/Down navigation. Left selects a leaf's parent folder; Enter mounts an in-place file/folder rename field; Cmd+Enter opens the tree selection in a permanent tab. The two-pane divider is model-owned too.
 - **Desktop editor tabs** — single-click file previews stay italic and replaceable, while double-clicking either the tree row or the preview tab pins it. The active tab always shows its close button; inactive tabs reveal theirs on hover.
-- **Async file reads** — selecting a file starts `fx.readFile`; stale results are ignored by key. Editable source caps at 480 KiB (roughly 10,000 ordinary code lines), invalid UTF-8/NUL-bearing files get an explicit binary state, and failures stay in the window.
+- **Async file reads** — selecting a file starts `fx.readFile`; stale results are ignored by key. Editable source caps at 384 KiB so the largest bounded tree and tabs still fit the view's retained-text budget; invalid UTF-8/NUL-bearing files get an explicit binary state, and failures stay in the window.
 - **The native code surface** — `Ui.code` supplies five-digit line numbers, no-wrap horizontal scrolling, viewport-scaled syntax highlighting, and language selection derived from the file extension.
 
 ## Tests

@@ -42,10 +42,11 @@ pub const editor_tab_width: f32 = 180;
 /// One extra slot holds the replaceable single-click preview beside the
 /// persistent tab limit.
 pub const max_documents: usize = max_open_tabs + 1;
-/// Leave 32 KiB of the 512 KiB per-view retained-text budget for tabs,
-/// paths, semantics labels, and other chrome. This holds roughly 10,000
-/// ordinary source lines while keeping an explicit, deterministic bound.
-pub const max_preview_bytes: usize = 480 * 1024;
+/// Leave 128 KiB of the 512 KiB per-view retained-text budget for the
+/// bounded file tree, tabs, semantics labels, and other chrome. The tree
+/// retains each visible name as both text and an accessibility label, so
+/// its worst case needs substantially more than a token reserve.
+pub const max_preview_bytes: usize = 384 * 1024;
 const max_status_bytes: usize = 192;
 
 const app_permissions = [_][]const u8{
@@ -143,7 +144,7 @@ const SourceTextBuffer = canvas.TextBuffer(max_preview_bytes);
 const RenameTextBuffer = canvas.TextBuffer(max_name_bytes);
 
 /// Own the large fixed-capacity source buffer out of line. The model keeps
-/// up to 17 document slots, but only opened documents pay the 480 KiB
+/// up to 17 document slots, but only opened documents pay the 384 KiB
 /// allocation; stack-allocated models and ordinary small test fixtures stay
 /// compact.
 pub const EditorBuffer = struct {
@@ -195,6 +196,7 @@ pub const Document = struct {
     source_truncated: bool = false,
     read_key: u64 = 0,
     save_key: u64 = 0,
+    save_queued: bool = false,
     saved_len: usize = 0,
     saved_hash: u64 = 0,
     pending_save_len: usize = 0,
@@ -226,7 +228,7 @@ pub const Document = struct {
     }
 
     fn adopt(document: *Document, bytes: []const u8, effect_truncated: bool) void {
-        if (std.mem.indexOfScalar(u8, bytes, 0) != null or !std.unicode.utf8ValidateSlice(bytes)) {
+        if (std.mem.indexOfScalar(u8, bytes, 0) != null) {
             document.editor.clear();
             document.state = .binary;
             document.source_truncated = false;
@@ -235,15 +237,64 @@ pub const Document = struct {
             return;
         }
 
-        var len = @min(bytes.len, max_preview_bytes);
-        while (len > 0 and !std.unicode.utf8ValidateSlice(bytes[0..len])) len -= 1;
+        const validated_len = if (std.unicode.utf8ValidateSlice(bytes))
+            bytes.len
+        else if (effect_truncated)
+            utf8PrefixBeforeIncompleteTail(bytes) orelse {
+                document.editor.clear();
+                document.state = .binary;
+                document.source_truncated = false;
+                document.saved_len = 0;
+                document.saved_hash = 0;
+                return;
+            }
+        else {
+            document.editor.clear();
+            document.state = .binary;
+            document.source_truncated = false;
+            document.saved_len = 0;
+            document.saved_hash = 0;
+            return;
+        };
+
+        var len = @min(validated_len, max_preview_bytes);
+        while (len > 0 and len < validated_len and (bytes[len] & 0xc0) == 0x80) len -= 1;
         document.editor.set(bytes[0..len]);
         document.state = .text;
-        document.source_truncated = effect_truncated or len < bytes.len;
+        document.source_truncated = effect_truncated or len < validated_len;
         document.saved_len = document.editor.text().len;
         document.saved_hash = std.hash.Wyhash.hash(0, document.editor.text());
     }
 };
+
+/// A bounded read can stop midway through its final UTF-8 scalar. Repair
+/// only that provably incomplete tail; arbitrary malformed bytes (including
+/// an invalid final lead byte) must still select the binary-file state.
+fn utf8PrefixBeforeIncompleteTail(bytes: []const u8) ?usize {
+    if (bytes.len == 0) return null;
+    var scalar_start = bytes.len - 1;
+    while (scalar_start > 0 and (bytes[scalar_start] & 0xc0) == 0x80) scalar_start -= 1;
+    const tail = bytes[scalar_start..];
+    const scalar_len: usize = switch (tail[0]) {
+        0xc2...0xdf => 2,
+        0xe0...0xef => 3,
+        0xf0...0xf4 => 4,
+        else => return null,
+    };
+    if (scalar_len <= tail.len) return null;
+    for (tail[1..]) |byte| {
+        if ((byte & 0xc0) != 0x80) return null;
+    }
+    if (tail.len > 1) switch (tail[0]) {
+        0xe0 => if (tail[1] < 0xa0) return null,
+        0xed => if (tail[1] > 0x9f) return null,
+        0xf0 => if (tail[1] < 0x90) return null,
+        0xf4 => if (tail[1] > 0x8f) return null,
+        else => {},
+    };
+    if (!std.unicode.utf8ValidateSlice(bytes[0..scalar_start])) return null;
+    return scalar_start;
+}
 
 pub const Model = struct {
     root_storage: [max_root_path_bytes]u8 = [_]u8{0} ** max_root_path_bytes,
@@ -361,6 +412,13 @@ pub const Model = struct {
     pub fn hasDirtyDocuments(model: *const Model) bool {
         for (model.documents[0..model.document_count]) |*document| {
             if (document.dirty()) return true;
+        }
+        return false;
+    }
+
+    pub fn hasPendingWrites(model: *const Model) bool {
+        for (model.documents[0..model.document_count]) |*document| {
+            if (document.save_key != 0) return true;
         }
         return false;
     }
@@ -678,6 +736,10 @@ pub const AppModel = struct {
 
     fn closeSecondarySession(model: *AppModel, index: u8) void {
         if (index == 0 or index >= model.sessions.len) return;
+        if (model.sessions[index].browser.hasPendingWrites()) {
+            model.sessions[index].browser.setStatus("Wait for file saves before closing this window.", .{});
+            return;
+        }
         if (model.sessions[index].browser.hasDirtyDocuments()) {
             model.sessions[index].browser.setStatus("Save all files before closing this window.", .{});
             return;
@@ -732,7 +794,7 @@ pub fn appUpdate(model: *AppModel, msg: Msg, fx: *Effects) void {
             // sessions so a file completion is delivered to its owner even
             // when the user focused another window while the I/O was live.
             for (&model.sessions) |*session| {
-                if (session.open) applyFileResult(&session.browser, result);
+                if (session.open) applyFileResult(&session.browser, result, fx);
             }
         },
         // `UiApp.on_chrome` describes the scene's main canvas. Declared
@@ -748,6 +810,10 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     switch (msg) {
         .new_window, .close_window => unreachable,
         .open_folder => {
+            if (model.hasPendingWrites()) {
+                model.setStatus("Wait for file saves before opening another folder.", .{});
+                return;
+            }
             if (model.hasDirtyDocuments()) {
                 model.setStatus("Save all files before opening another folder.", .{});
                 return;
@@ -780,7 +846,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .toggle_entry => |index| toggleEntry(model, index),
         .edit_code => |edit| editCode(model, edit),
         .save_file => saveActiveFile(model, fx),
-        .file_done => |result| applyFileResult(model, result),
+        .file_done => |result| applyFileResult(model, result, fx),
         .sidebar_resized => |fraction| model.sidebar_fraction = fraction,
         .chrome_changed => |chrome| {
             model.chrome_leading = chrome.insets.left;
@@ -854,6 +920,10 @@ fn previewEntry(model: *Model, fx: *Effects, index: u16) void {
         if (model.preview_entry) |previous| {
             if (previous != index and !model.isPinned(previous)) {
                 if (model.documentForEntry(previous)) |document| {
+                    if (document.save_key != 0) {
+                        model.setStatus("Wait for {s} to finish saving before replacing its preview tab.", .{model.entries[previous].name()});
+                        return;
+                    }
                     if (document.dirty()) {
                         model.setStatus("Save {s} before replacing its preview tab.", .{model.entries[previous].name()});
                         return;
@@ -896,6 +966,10 @@ fn activateTab(model: *Model, fx: *Effects, index: u16) void {
 fn closeTab(model: *Model, fx: *Effects, index: u16) void {
     if (!tabIsOpen(model, index)) return;
     if (model.documentForEntry(index)) |document| {
+        if (document.save_key != 0) {
+            model.setStatus("Wait for {s} to finish saving before closing it.", .{model.entries[index].name()});
+            return;
+        }
         if (document.dirty()) {
             model.setStatus("Save {s} before closing it.", .{model.entries[index].name()});
             return;
@@ -920,6 +994,10 @@ fn closeOtherTabs(model: *Model, fx: *Effects, index: u16) void {
     for (open) |other| {
         if (other == index) continue;
         if (model.documentForEntry(other)) |document| {
+            if (document.save_key != 0) {
+                model.setStatus("Wait for {s} to finish saving before closing other tabs.", .{model.entries[other].name()});
+                return;
+            }
             if (document.dirty()) {
                 model.setStatus("Save {s} before closing other tabs.", .{model.entries[other].name()});
                 return;
@@ -1021,7 +1099,6 @@ fn closeTabUnchecked(model: *Model, fx: *Effects, index: u16) void {
         if (document.read_key != 0) {
             fx.cancel(document.read_key);
         }
-        if (document.save_key != 0) fx.cancel(document.save_key);
     }
     model.removeDocument(index);
 }
@@ -1095,20 +1172,30 @@ fn editCode(model: *Model, edit: canvas.TextInputEvent) void {
 
 fn saveActiveFile(model: *Model, fx: *Effects) void {
     const selected_index = model.selected_entry orelse return;
-    const entry = &model.entries[selected_index];
     const document = model.activeDocumentMut() orelse return;
     if (document.state != .text or !document.dirty()) return;
     if (document.source_truncated) {
         model.setStatus("Cannot save a cut preview; the full file was not loaded.", .{});
         return;
     }
+    if (document.save_key != 0) {
+        document.save_queued = true;
+        model.setStatus("Saving {s}… latest edits queued", .{model.entries[selected_index].name()});
+        return;
+    }
+    startDocumentSave(model, fx, selected_index);
+}
 
+fn startDocumentSave(model: *Model, fx: *Effects, entry_index: u16) void {
+    if (entry_index >= model.entry_count) return;
+    const entry = &model.entries[entry_index];
+    const document = model.documentForEntryMut(entry_index) orelse return;
+    if (document.state != .text or !document.dirty() or document.source_truncated or document.save_key != 0) return;
     var path_buffer: [native_sdk.max_effect_file_path_bytes]u8 = undefined;
     const path = model.fullPath(entry, &path_buffer) orelse {
         model.setStatus("That file path is too long to save.", .{});
         return;
     };
-    if (document.save_key != 0) fx.cancel(document.save_key);
     model.next_file_key +%= 1;
     if (model.next_file_key == 0) model.next_file_key = 100;
     document.save_key = model.next_file_key;
@@ -1123,7 +1210,7 @@ fn saveActiveFile(model: *Model, fx: *Effects) void {
     });
 }
 
-fn applyFileResult(model: *Model, result: native_sdk.EffectFileResult) void {
+fn applyFileResult(model: *Model, result: native_sdk.EffectFileResult, fx: *Effects) void {
     for (model.documents[0..model.document_count]) |*document| {
         const index = document.entry_index orelse continue;
         const entry = &model.entries[index];
@@ -1150,6 +1237,8 @@ fn applyFileResult(model: *Model, result: native_sdk.EffectFileResult) void {
         }
         if (result.op == .write and result.key == document.save_key) {
             document.save_key = 0;
+            const save_queued = document.save_queued;
+            document.save_queued = false;
             switch (result.outcome) {
                 .ok => {
                     // The acknowledgement describes the copied bytes from
@@ -1164,6 +1253,7 @@ fn applyFileResult(model: *Model, result: native_sdk.EffectFileResult) void {
                 },
                 else => model.setStatus("Could not save {s}: {s}", .{ entry.name(), @tagName(result.outcome) }),
             }
+            if (save_queued and document.dirty()) startDocumentSave(model, fx, index);
             return;
         }
     }
@@ -1252,8 +1342,10 @@ pub fn performPendingRenameOnDisk(model: *Model, io: std.Io) void {
 
     const cwd = std.Io.Dir.cwd();
     if (cwd.access(io, new_full, .{})) |_| {
-        model.setStatus("An item named {s} already exists.", .{new_name});
-        return;
+        if (!caseOnlyRenameResolvesToSource(io, old_full, new_full, old_name, new_name)) {
+            model.setStatus("An item named {s} already exists.", .{new_name});
+            return;
+        }
     } else |err| switch (err) {
         error.FileNotFound => {},
         else => {
@@ -1275,6 +1367,26 @@ pub fn performPendingRenameOnDisk(model: *Model, io: std.Io) void {
     };
     model.renaming_entry = null;
     model.setStatus("Renamed {s} to {s}.", .{ old_name, new_name });
+}
+
+/// Case-insensitive volumes report the source itself when probing a new
+/// capitalization. Canonical paths distinguish that alias from a hard link
+/// with a different directory entry, so only the former may bypass the
+/// destination-exists guard.
+fn caseOnlyRenameResolvesToSource(
+    io: std.Io,
+    old_path: []const u8,
+    new_path: []const u8,
+    old_name: []const u8,
+    new_name: []const u8,
+) bool {
+    if (std.mem.eql(u8, old_name, new_name) or !std.ascii.eqlIgnoreCase(old_name, new_name)) return false;
+    var old_real_storage: [std.fs.max_path_bytes]u8 = undefined;
+    var new_real_storage: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd = std.Io.Dir.cwd();
+    const old_real_len = cwd.realPathFile(io, old_path, &old_real_storage) catch return false;
+    const new_real_len = cwd.realPathFile(io, new_path, &new_real_storage) catch return false;
+    return std.mem.eql(u8, old_real_storage[0..old_real_len], new_real_storage[0..new_real_len]);
 }
 
 fn applyRenamedEntry(model: *Model, entry_index: u16, new_name: []const u8) !void {
@@ -1330,6 +1442,7 @@ fn remapModelEntryIndices(model: *Model, old_to_new: *const [max_entries]u16) vo
 /// hermetic in tests while `scanFolder` supplies the production path open.
 pub fn scanOpenDirectory(model: *Model, io: std.Io, allocator: std.mem.Allocator, root_path: []const u8, root_dir: std.Io.Dir) !void {
     if (root_path.len == 0 or root_path.len > model.root_storage.len) return error.PathTooLong;
+    if (model.hasPendingWrites()) return error.FileActivityPending;
     if (model.hasDirtyDocuments()) return error.UnsavedChanges;
 
     // A scan replaces folder-scoped data, but the picker request serial must

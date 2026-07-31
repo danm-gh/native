@@ -49,7 +49,14 @@ pub const HighlightState = struct {
     /// of ending it.
     html_tag_context_bases: [max_html_tag_contexts]usize = [_]usize{0} ** max_html_tag_contexts,
     html_tag_context_expect_names: [max_html_tag_contexts]bool = [_]bool{false} ** max_html_tag_contexts,
+    html_tag_context_opened_elements: [max_html_tag_contexts]bool = [_]bool{false} ** max_html_tag_contexts,
     html_tag_context_len: usize = 0,
+    /// Expression depth at which each currently open element began.
+    /// A closing tag is structural at that same depth even when ordinary
+    /// JSX text immediately before it ends in an identifier.
+    html_element_expression_bases: [max_html_tag_contexts]usize = [_]usize{0} ** max_html_tag_contexts,
+    html_element_len: usize = 0,
+    html_tag_opened_element: bool = false,
     /// Last non-whitespace source byte from the preceding presentation
     /// chunk. JSX comparison/tag disambiguation needs its left context even
     /// when a bounded paragraph happens to split immediately before `<`.
@@ -70,6 +77,7 @@ fn pushHtmlTagContext(state: *HighlightState) void {
     const index = state.html_tag_context_len;
     state.html_tag_context_bases[index] = state.html_tag_expression_base;
     state.html_tag_context_expect_names[index] = state.html_expect_tag_name;
+    state.html_tag_context_opened_elements[index] = state.html_tag_opened_element;
     state.html_tag_context_len += 1;
 }
 
@@ -80,6 +88,7 @@ fn restoreHtmlTagContext(state: *HighlightState) bool {
     state.html_in_tag = true;
     state.html_tag_expression_base = state.html_tag_context_bases[index];
     state.html_expect_tag_name = state.html_tag_context_expect_names[index];
+    state.html_tag_opened_element = state.html_tag_context_opened_elements[index];
     return true;
 }
 
@@ -350,6 +359,11 @@ fn embeddedScriptLanguage(language: Language) Language {
 fn htmlLessThanStartsTag(source: []const u8, index: usize, language: Language, state: HighlightState) bool {
     if (index + 1 >= source.len or !htmlTagOpenerByte(source[index + 1])) return false;
     if (language == .html and state.html_expression_depth == 0) return true;
+    if (!state.html_in_tag and state.html_element_len > 0 and
+        state.html_expression_depth == state.html_element_expression_bases[state.html_element_len - 1])
+    {
+        return true;
+    }
 
     var cursor = index;
     while (cursor > 0) {
@@ -849,21 +863,37 @@ pub fn highlightWithState(
             htmlLessThanStartsTag(source, index, language, state.*))
         {
             index += 1;
-            if (index < source.len and source[index] == '/') index += 1;
+            const opener = if (index < source.len) source[index] else 0;
+            const closing = opener == '/';
+            if (closing) index += 1;
             pushHtmlTagContext(state);
             state.html_in_tag = true;
             state.html_expect_tag_name = true;
             state.html_tag_expression_base = state.html_expression_depth;
+            state.html_tag_opened_element = false;
+            if (closing) {
+                if (state.html_element_len > 0) state.html_element_len -= 1;
+            } else if ((identifierStart(opener) or opener == '>') and
+                state.html_element_len < state.html_element_expression_bases.len)
+            {
+                state.html_element_expression_bases[state.html_element_len] = state.html_expression_depth;
+                state.html_element_len += 1;
+                state.html_tag_opened_element = true;
+            }
             color = .syntax_plain;
         } else if (isHtmlFamily(language) and
             state.html_in_tag and
             state.html_expression_depth == state.html_tag_expression_base and
             rest[0] == '>')
         {
+            if (state.html_tag_opened_element and index > 0 and source[index - 1] == '/' and state.html_element_len > 0) {
+                state.html_element_len -= 1;
+            }
             index += 1;
             if (!restoreHtmlTagContext(state)) {
                 state.html_in_tag = false;
                 state.html_expect_tag_name = false;
+                state.html_tag_opened_element = false;
             }
             color = .syntax_plain;
         } else if (isHtmlFamily(language) and rest[0] == '{') {

@@ -63,6 +63,16 @@ fn countRole(widget: canvas.Widget, role: canvas.WidgetRole) usize {
     return count;
 }
 
+fn retainedWidgetTextBytes(widget: canvas.Widget) usize {
+    var count = widget.text.len + widget.icon.len + widget.command.len + widget.semantics.label.len;
+    for (widget.context_menu) |item| count += item.label.len;
+    for (widget.spans) |span| count += span.link.len;
+    for (widget.chart.x_labels) |label| count += label.len;
+    for (widget.chart.series) |series| count += series.label.len;
+    for (widget.children) |child| count += retainedWidgetTextBytes(child);
+    return count;
+}
+
 fn collectIds(widget: canvas.Widget, ids: *std.ArrayListUnmanaged(canvas.ObjectId), allocator: std.mem.Allocator) !void {
     try ids.append(allocator, widget.id);
     for (widget.children) |child| try collectIds(child, ids, allocator);
@@ -477,6 +487,31 @@ test "filesystem rename keeps directory descendants and open documents attached"
     try testing.expectEqualStrings("pub fn main() void {}\n", model.preview());
 }
 
+test "filesystem rename permits a case-only spelling change" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "Widget.zig", .data = "pub const widget = true;\n" });
+
+    var root_storage: [256]u8 = undefined;
+    const root_path = try std.fmt.bufPrint(&root_storage, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    var model = main.Model{};
+    defer model.deinit();
+    try main.scanFolder(&model, testing.io, testing.allocator, root_path);
+    const entry_index = model.findEntry("Widget.zig").?;
+
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    main.update(&model, .{ .begin_rename = entry_index }, &fx);
+    model.rename_buffer.set("widget.zig");
+    main.update(&model, .commit_rename, &fx);
+    main.performPendingRenameOnDisk(&model, testing.io);
+
+    try tmp.dir.access(testing.io, "widget.zig", .{});
+    try testing.expect(model.findEntry("Widget.zig") == null);
+    try testing.expect(model.findEntry("widget.zig") != null);
+}
+
 test "selecting a folder preserves the active editor file" {
     var model = try fixtureModel();
     defer model.deinit();
@@ -585,6 +620,82 @@ test "file selection issues a bounded read and adopts text, truncation, and bina
         .bytes = "png\x00bytes",
     } }, &fx);
     try testing.expectEqual(main.PreviewState.binary, model.previewState());
+}
+
+test "a truncated read ending inside UTF-8 remains a text preview" {
+    var model = main.Model{};
+    defer model.deinit();
+    model.entry_count = 1;
+    model.entries[0] = .{};
+    const name = "unicode.txt";
+    @memcpy(model.entries[0].name_storage[0..name.len], name);
+    model.entries[0].name_len = name.len;
+    @memcpy(model.entries[0].relative_storage[0..name.len], name);
+    model.entries[0].relative_len = name.len;
+    seedActiveDocument(&model, 0, "old");
+    model.documents[0].read_key = 700;
+
+    const bytes = try testing.allocator.alloc(u8, native_sdk.max_effect_file_bytes);
+    defer testing.allocator.free(bytes);
+    @memset(bytes, 'a');
+    bytes[bytes.len - 1] = 0xe2;
+
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    main.update(&model, .{ .file_done = .{
+        .key = 700,
+        .op = .read,
+        .outcome = .truncated,
+        .bytes = bytes,
+    } }, &fx);
+
+    try testing.expectEqual(main.PreviewState.text, model.previewState());
+    try testing.expect(model.previewTruncated());
+    try testing.expectEqual(main.max_preview_bytes, model.preview().len);
+    try testing.expect(std.unicode.utf8ValidateSlice(model.preview()));
+
+    bytes[bytes.len - 1] = 0xf5;
+    model.documents[0].read_key = 701;
+    main.update(&model, .{ .file_done = .{
+        .key = 701,
+        .op = .read,
+        .outcome = .truncated,
+        .bytes = bytes,
+    } }, &fx);
+    try testing.expectEqual(main.PreviewState.binary, model.previewState());
+}
+
+test "the largest source preview and bounded chrome fit retained text storage" {
+    var model = main.Model{};
+    defer model.deinit();
+    const root = "/max";
+    @memcpy(model.root_storage[0..root.len], root);
+    model.root_len = root.len;
+    model.entry_count = main.max_entries;
+    for (model.entries[0..model.entry_count], 0..) |*entry, index| {
+        entry.* = .{};
+        @memset(&entry.name_storage, 'x');
+        const prefix = try std.fmt.bufPrint(entry.name_storage[0..16], "file-{d:0>3}-", .{index});
+        entry.name_len = main.max_name_bytes;
+        @memcpy(entry.relative_storage[0..prefix.len], prefix);
+        @memset(entry.relative_storage[prefix.len..main.max_name_bytes], 'x');
+        entry.relative_len = main.max_name_bytes;
+        entry.depth = 1;
+    }
+    for (0..main.max_open_tabs) |index| model.pinned_entries[index] = @intCast(index);
+    model.pinned_count = main.max_open_tabs;
+    model.preview_entry = main.max_open_tabs;
+
+    const source = try testing.allocator.alloc(u8, main.max_preview_bytes);
+    defer testing.allocator.free(source);
+    @memset(source, 'x');
+    seedActiveDocument(&model, 0, source);
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const tree = try buildTree(arena_state.allocator(), &model);
+    try testing.expect(retainedWidgetTextBytes(tree.root) <= canvas.max_widget_text_bytes_per_view);
 }
 
 test "single-click previews replace each other while double-click pins persistent tabs" {
@@ -817,7 +928,7 @@ test "previous and next tab commands cycle the open tab order with wrapping" {
     try testing.expectEqual(readme_index, model.selected_entry.?);
 }
 
-test "editing pins the preview, marks its tab dirty, and save acknowledgements track the written snapshot" {
+test "editing pins the preview and repeated saves serialize the latest snapshot" {
     var model = try fixtureModel();
     defer model.deinit();
     const main_path = try std.fs.path.join(testing.allocator, &.{ "src", "main.zig" });
@@ -857,9 +968,14 @@ test "editing pins the preview, marks its tab dirty, and save acknowledgements t
     try testing.expectEqual(first_save_key, request.key);
     try testing.expectEqualStrings(model.preview(), request.bytes);
 
-    // Typing during the write leaves the newer edit dirty when the
-    // acknowledgement for the copied request bytes arrives.
+    // A second save while the first write is live queues the latest
+    // snapshot without trying to cancel a disk operation already in flight.
     main.update(&model, .{ .edit_code = .{ .insert_text = "// newer\n" } }, &fx);
+    main.update(&model, .save_file, &fx);
+    try testing.expectEqual(first_save_key, model.documents[0].save_key);
+    try testing.expect(model.documents[0].save_queued);
+    try testing.expectEqual(@as(usize, 1), fx.pendingFileCount());
+
     main.update(&model, .{ .file_done = .{
         .key = first_save_key,
         .op = .write,
@@ -867,9 +983,10 @@ test "editing pins the preview, marks its tab dirty, and save acknowledgements t
         .bytes = "",
     } }, &fx);
     try testing.expect(model.selectedDirty());
-
-    main.update(&model, .save_file, &fx);
     const second_save_key = model.documents[0].save_key;
+    try testing.expect(second_save_key != 0 and second_save_key != first_save_key);
+    try testing.expect(!model.documents[0].save_queued);
+    try testing.expectEqualStrings(model.preview(), fx.pendingFileAt(1).?.bytes);
     main.update(&model, .{ .file_done = .{
         .key = second_save_key,
         .op = .write,
@@ -880,6 +997,44 @@ test "editing pins the preview, marks its tab dirty, and save acknowledgements t
     _ = arena_state.reset(.retain_capacity);
     tabs = model.openTabs(arena_state.allocator());
     try testing.expect(!tabs[0].dirty);
+}
+
+test "an in-flight save keeps its document and folder session alive" {
+    var model = try fixtureModel();
+    defer model.deinit();
+    const entry_index = model.findEntry("README.md").?;
+    const source = "# Fixture\n";
+    model.pinned_entries[0] = entry_index;
+    model.pinned_count = 1;
+    seedActiveDocument(&model, entry_index, source);
+
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    main.update(&model, .{ .edit_code = .{ .insert_text = "draft\n" } }, &fx);
+    main.update(&model, .save_file, &fx);
+    try testing.expect(model.documents[0].save_key != 0);
+
+    // Returning the editor to its previous snapshot makes dirty() false,
+    // but the non-interruptible write still owns this document until its
+    // acknowledgement arrives.
+    model.documents[0].editor.set(source);
+    try testing.expect(!model.documents[0].dirty());
+    main.update(&model, .{ .close_tab = entry_index }, &fx);
+    try testing.expect(model.isPinned(entry_index));
+    try testing.expectEqual(@as(usize, 1), model.document_count);
+    try testing.expect(std.mem.startsWith(u8, model.status(), "Wait for README.md"));
+
+    main.update(&model, .open_folder, &fx);
+    try testing.expectEqual(@as(u64, 0), model.picker_serial);
+    try testing.expectEqualStrings("Wait for file saves before opening another folder.", model.status());
+
+    var replacement = testing.tmpDir(.{ .iterate = true });
+    defer replacement.cleanup();
+    try testing.expectError(
+        error.FileActivityPending,
+        main.scanOpenDirectory(&model, testing.io, testing.allocator, "/replacement", replacement.dir),
+    );
 }
 
 test "tab close actions select a neighbor, close others, and preserve dirty documents" {

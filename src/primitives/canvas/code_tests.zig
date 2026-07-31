@@ -16,6 +16,15 @@ fn spanWithFragment(spans: []const canvas.TextSpan, fragment: []const u8) ?canva
     return null;
 }
 
+fn colorAtOffset(spans: []const canvas.TextSpan, offset: usize) ?canvas.TextSpanColor {
+    var cursor: usize = 0;
+    for (spans) |span| {
+        if (offset < cursor + span.text.len) return span.color;
+        cursor += span.text.len;
+    }
+    return null;
+}
+
 fn findByKind(widget: canvas.Widget, kind: canvas.WidgetKind) ?canvas.Widget {
     if (widget.kind == kind) return widget;
     for (widget.children) |child| {
@@ -237,6 +246,40 @@ test "TSX relational less-than at top level does not open a tag" {
     const second = code_model.highlightWithState("<limit; const later=true;", .tsx, &second_storage, &chunked_state);
     try testing.expectEqual(canvas.TextSpanColor.syntax_plain, spanWithFragment(second, "limit").?.color.?);
     try testing.expect(!chunked_state.html_in_tag);
+}
+
+test "JSX closing tags remain structural after plain text" {
+    const source = "const view = <div>Hello<span>world</span></div>; const later = true;";
+    var state: code_model.HighlightState = .{};
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlightWithState(source, .tsx, &storage, &state);
+    const closing_name = std.mem.lastIndexOf(u8, source, "div").?;
+    const nested_opening_name = std.mem.indexOf(u8, source, "span").?;
+    const nested_closing_name = std.mem.lastIndexOf(u8, source, "span").?;
+    const later_name = std.mem.indexOf(u8, source, "later").?;
+
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, colorAtOffset(spans, closing_name).?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, colorAtOffset(spans, nested_opening_name).?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, colorAtOffset(spans, nested_closing_name).?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, colorAtOffset(spans, later_name).?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, spanWithFragment(spans, "true").?.color.?);
+    try testing.expectEqual(@as(usize, 0), state.html_element_len);
+    try testing.expect(!state.html_in_tag);
+}
+
+test "JSX regex comparisons inside elements do not become closing tags" {
+    const source = "const view = <div>{value</x/.test(text) ? 'yes' : 'no'}</div>;";
+    var state: code_model.HighlightState = .{};
+    var storage: [text_spans.max_text_spans_per_paragraph]canvas.TextSpan = undefined;
+    const spans = code_model.highlightWithState(source, .tsx, &storage, &state);
+    const regex_name = std.mem.indexOf(u8, source, "x/").?;
+    const closing_name = std.mem.lastIndexOf(u8, source, "div").?;
+
+    try testing.expectEqual(canvas.TextSpanColor.syntax_plain, colorAtOffset(spans, regex_name).?);
+    try testing.expectEqual(canvas.TextSpanColor.syntax_literal, colorAtOffset(spans, closing_name).?);
+    try testing.expectEqual(@as(usize, 0), state.html_element_len);
+    try testing.expectEqual(@as(usize, 0), state.html_expression_depth);
+    try testing.expect(!state.html_in_tag);
 }
 
 test "Markdown highlighting distinguishes structure links code and comments" {

@@ -28,6 +28,18 @@ work="${2:?usage: build_core.sh <fixture> <workdir>}"
 compiler="${NATIVE_SDK_CORE_COMPILER:?set NATIVE_SDK_CORE_COMPILER to the external core toolchain command}"
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 
+# The profile's determinism-fence table is RELEASE-PINNED DATA (see
+# tools/corewire/emit_profile.zig): its ids resolve against one
+# toolchain release's surface manifest, so the supplied command must BE
+# that release. tests/compiled-core/core_compiler_pin is the one place
+# the pin lives — bump it there and everything downstream follows.
+pin="$(cat "$repo/tests/compiled-core/core_compiler_pin")"
+reported="$($compiler -v)"
+if [ "$reported" != "$pin" ]; then
+  echo "external core toolchain reports version $reported, but the profile's fence table is pinned to $pin (tests/compiled-core/core_compiler_pin) — supply that release, or bump the pin when the fence table has been re-verified against the new release's surface manifest" >&2
+  exit 2
+fi
+
 case "$fixture" in
   ai-chat)
     source_root="examples/ai-chat-ts/src"

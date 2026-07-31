@@ -27,6 +27,69 @@ jobs:
       - run: zig build test
       - run: zig build validate
 
+  compiled-core-parity:
+    name: Compiled-Core Parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The transpiled lane of every pairing runs the repo's own
+      # transpiler under node at build time; it needs its installed
+      # dependency.
+      - run: npm ci --prefix packages/core
+      # The external core compiler, at the release the profiles'
+      # determinism fence tables are pinned to.
+      # tests/compiled-core/core_compiler_pin is the ONE place the pin
+      # lives — build_core.sh refuses any other release, so a bump is a
+      # one-line change there and this step follows.
+      - name: Install the external core compiler
+        run: |
+          set -euo pipefail
+          pin="$(cat tests/compiled-core/core_compiler_pin)"
+          npm install --prefix .zig-cache/core-compiler "scriptc@${pin}"
+          compiler="$PWD/.zig-cache/core-compiler/node_modules/.bin/scriptc"
+          test "$("$compiler" -v)" = "$pin"
+          echo "NATIVE_SDK_CORE_COMPILER=$compiler" >> "$GITHUB_ENV"
+      # Per-fixture contract artifacts the external compile consumes:
+      # the effective sidecar plus its generated entry module and
+      # compiler profile, under zig-out/core-contracts.
+      - run: zig build stage-core-contracts
+      # Determinism-fence negative control: the pristine markup fixture
+      # compiles and its co-emitted sidecar attests deterministic: true,
+      # then one injected ambient read (Date.now() in update) must be
+      # refused by the profile's fences — proving the fences fire, not
+      # merely that clean cores pass under them.
+      - name: Determinism fences fire (negative control)
+        run: tests/compiled-core/fence_check.sh .zig-cache/fence-check
+      - name: Build the five fixture cores
+        run: |
+          set -euo pipefail
+          for fixture in host-fixture soundboard system-monitor ai-chat markup; do
+            tests/compiled-core/build_core.sh "$fixture" ".zig-cache/compiled-cores/$fixture"
+          done
+      # Each fixture app's OWN e2e battery over a paired core — the
+      # transpiled lane vs the compiled archive, byte-compared at every
+      # seam. Locally this step is env-gated (no external compiler on a
+      # stock checkout); this job is where it always runs.
+      - name: Run the compiled-core parity battery
+        run: zig build test-compiled-core-parity
+        env:
+          NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_HOST: ${{ github.workspace }}/.zig-cache/compiled-cores/host-fixture/libhost_fixture_core.a
+          NATIVE_SDK_EXTERNAL_CORE_SIDECAR_HOST: ${{ github.workspace }}/.zig-cache/compiled-cores/host-fixture/core.contract.json
+          NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_SOUNDBOARD: ${{ github.workspace }}/.zig-cache/compiled-cores/soundboard/libsoundboard_core.a
+          NATIVE_SDK_EXTERNAL_CORE_SIDECAR_SOUNDBOARD: ${{ github.workspace }}/.zig-cache/compiled-cores/soundboard/core.contract.json
+          NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_SYSTEM_MONITOR: ${{ github.workspace }}/.zig-cache/compiled-cores/system-monitor/libsystem_monitor_core.a
+          NATIVE_SDK_EXTERNAL_CORE_SIDECAR_SYSTEM_MONITOR: ${{ github.workspace }}/.zig-cache/compiled-cores/system-monitor/core.contract.json
+          NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_AI_CHAT: ${{ github.workspace }}/.zig-cache/compiled-cores/ai-chat/libai_chat_core.a
+          NATIVE_SDK_EXTERNAL_CORE_SIDECAR_AI_CHAT: ${{ github.workspace }}/.zig-cache/compiled-cores/ai-chat/core.contract.json
+          NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_MARKUP: ${{ github.workspace }}/.zig-cache/compiled-cores/markup/libmarkup_core.a
+          NATIVE_SDK_EXTERNAL_CORE_SIDECAR_MARKUP: ${{ github.workspace }}/.zig-cache/compiled-cores/markup/core.contract.json
+
   macos-webview:
     name: macOS WebView
     runs-on: macos-14

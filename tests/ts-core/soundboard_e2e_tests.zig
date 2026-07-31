@@ -783,6 +783,9 @@ test "dispatch at the rendered-clock cadence stays far under the frame budget" {
     // Debug build on loaded CI hardware; the core alone must be
     // microseconds. Measured on an M-class laptop (Debug): ~3.3ms whole
     // pipeline, ~450ns core-only.
+    if (per_dispatch_ns >= 16_000_000 or per_core_dispatch_ns >= 1_000_000) {
+        std.debug.print("dispatch budget exceeded: whole-pipeline {d}ns (budget 16000000), core-only {d}ns (budget 1000000), best of {d} attempts\n", .{ per_dispatch_ns, per_core_dispatch_ns, perf_attempts });
+    }
     try std.testing.expect(per_dispatch_ns < 16_000_000);
     try std.testing.expect(per_core_dispatch_ns < 1_000_000);
 }

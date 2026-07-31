@@ -60,9 +60,9 @@ jobs:
           for fixture in host-fixture soundboard system-monitor ai-chat markup; do
             tests/compiled-core/build_core.sh "$fixture" ".zig-cache/compiled-cores/$fixture"
           done
-      # Each fixture app's OWN e2e battery over a paired core — the transpiled lane vs the compiled archive, byte-compared at every seam. Locally this step is env-gated (no external compiler on a stock checkout); this job is where it always runs.
+      # Each fixture app's OWN e2e battery over a paired core — the transpiled lane vs the compiled archive, byte-compared at every seam. Locally this step is env-gated (no external compiler on a stock checkout); this job is where it always runs. Serial (-j1): the soundboard battery measures wall-clock dispatch budgets, and five test binaries racing on a two-core runner turn scheduler contention into failures the budgets were never meant to catch.
       - name: Run the compiled-core parity battery
-        run: zig build test-compiled-core-parity
+        run: zig build test-compiled-core-parity -j1
         env:
           NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_HOST: ${{ github.workspace }}/.zig-cache/compiled-cores/host-fixture/libhost_fixture_core.a
           NATIVE_SDK_EXTERNAL_CORE_SIDECAR_HOST: ${{ github.workspace }}/.zig-cache/compiled-cores/host-fixture/core.contract.json

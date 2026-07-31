@@ -1508,23 +1508,11 @@ fn emitVisibleCodeTextSpansWidget(
     if (widget.code_editor and widget.text_no_wrap) {
         return emitVisibleEditableCodeLines(builder, widget, tokens, visible_bounds, paint);
     }
-    var current_span_storage: [text_spans_model.max_text_spans_per_paragraph]text_spans_model.TextSpan = undefined;
-    const spans = if (widget.code_editor) blk: {
-        if (widget.text.len == 0) {
-            current_span_storage[0] = .{
-                .text = widget.text,
-                .monospace = true,
-                .color = .syntax_plain,
-            };
-            break :blk current_span_storage[0..1];
-        }
-        break :blk code_model.highlight(widget.text, widget.code_language, &current_span_storage);
-    } else widget.spans;
-    var content = widget_metrics.widgetTextSpanContentFrame(widget, tokens);
     if (widget.code_editor) {
-        content.x -= widget.value_x;
-        content.y -= widget.value;
+        return emitVisibleWrappedEditableCodeLines(builder, widget, tokens, visible_bounds, paint);
     }
+    const spans = widget.spans;
+    const content = widget_metrics.widgetTextSpanContentFrame(widget, tokens);
     const layout_options = widget_metrics.widgetTextSpanLayoutOptions(
         widget,
         tokens,
@@ -1549,15 +1537,8 @@ fn emitVisibleCodeTextSpansWidget(
     var budget = CodeEmissionBudget.init(builder);
     if (!budget.hasCommand(builder)) return;
 
-    var gutter_content = content;
-    if (widget.code_editor) gutter_content.x += widget.value_x;
     if (paint.selection_ordinal == null) {
-        try emitCodeLineNumberGutter(builder, widget, spans, tokens, gutter_content, visible_bounds, layout_options, &budget);
-    }
-    // Editable code already emitted its textarea selection from the
-    // scroll-aware input geometry. The static paragraph selector uses
-    // unscrolled span frames and would duplicate it at the wrong offset.
-    if (!widget.code_editor and paint.selection_ordinal == null) {
+        try emitCodeLineNumberGutter(builder, widget, spans, tokens, content, visible_bounds, layout_options, &budget);
         try emitStaticTextSelectionBounded(builder, widget, tokens, budget.command_ceiling);
     }
     if (!budget.hasCommand(builder) or budget.remainingText() == 0) return;
@@ -1623,6 +1604,132 @@ fn emitVisibleCodeTextSpansWidget(
     }
 }
 
+/// Wrapped editors cannot retain one syntax span for every token in a large
+/// document. Tokenize one logical line at a time while advancing lexer state
+/// through the prefix, then paint only lines intersecting the viewport. Each
+/// line gets the full bounded span budget without dropping later syntax.
+fn emitVisibleWrappedEditableCodeLines(
+    builder: *Builder,
+    widget: Widget,
+    tokens: DesignTokens,
+    visible_bounds: geometry.RectF,
+    paint: CodeTextPaint,
+) Error!void {
+    var content = widget_metrics.widgetTextSpanContentFrame(widget, tokens);
+    content.x -= widget.value_x;
+    content.y -= widget.value;
+    const layout_options = widget_metrics.widgetTextSpanLayoutOptions(
+        widget,
+        tokens,
+        textWrapMaxWidth(tokens, content.width),
+    );
+    const line_height = text_spans_model.textSpanLineHeight(widget.spans, layout_options);
+    if (line_height <= 0 or !std.math.isFinite(line_height)) return;
+
+    var budget = CodeEmissionBudget.init(builder);
+    if (!budget.hasCommand(builder)) return;
+    if (paint.selection_ordinal == null) {
+        var gutter_content = content;
+        gutter_content.x += widget.value_x;
+        try emitCodeLineNumberGutter(
+            builder,
+            widget,
+            widget.spans,
+            tokens,
+            gutter_content,
+            visible_bounds,
+            layout_options,
+            &budget,
+        );
+    }
+    if (!budget.hasCommand(builder) or budget.remainingText() == 0) return;
+
+    var state: code_model.HighlightState = .{};
+    var span_storage: [text_spans_model.max_text_spans_per_paragraph]text_spans_model.TextSpan = undefined;
+    var line_runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
+    var line_start: usize = 0;
+    var logical_line: usize = 0;
+    var visual_line: usize = 0;
+
+    while (line_start <= widget.text.len) : (logical_line += 1) {
+        const newline = std.mem.indexOfScalarPos(u8, widget.text, line_start, '\n');
+        const line_end = if (newline) |index| index + 1 else widget.text.len;
+        const line_source = widget.text[line_start..line_end];
+        const highlighted = if (line_source.len == 0) blk: {
+            span_storage[0] = .{
+                .text = line_source,
+                .monospace = true,
+                .color = .syntax_plain,
+            };
+            break :blk span_storage[0..1];
+        } else code_model.highlightWithState(
+            line_source,
+            widget.code_language,
+            &span_storage,
+            &state,
+        );
+        const line_layout = text_spans_model.layoutTextSpans(
+            highlighted,
+            layout_options,
+            &line_runs,
+        );
+        const visual_count = @max(1, line_layout.line_count);
+        const line_top = content.y + @as(f32, @floatFromInt(visual_line)) * line_height;
+        const line_bottom = line_top + @as(f32, @floatFromInt(visual_count)) * line_height;
+        if (line_top > visible_bounds.maxY()) return;
+
+        if (line_bottom >= visible_bounds.y) {
+            for (line_layout.runs) |run| {
+                if (run.text.len == 0) continue;
+                const local_bounds = text_spans_model.textSpanRunBounds(line_layout, run);
+                const run_bounds = geometry.RectF.init(
+                    content.x + local_bounds.x,
+                    line_top + local_bounds.y,
+                    local_bounds.width,
+                    local_bounds.height,
+                );
+                if (!run_bounds.intersects(visible_bounds)) continue;
+                const span = highlighted[run.span_index];
+                const absolute_x = content.x + run.x;
+                const visible = text_spans_model.textSpanRunVisibleSlice(
+                    span,
+                    run,
+                    layout_options,
+                    visible_bounds.x - absolute_x,
+                    visible_bounds.maxX() - absolute_x,
+                ) orelse continue;
+                if (!budget.hasCommand(builder)) return;
+                const admitted_text = codeTextPrefix(visible.text, budget.remainingText());
+                if (admitted_text.len == 0) return;
+                const color_ref = span.color orelse .syntax_plain;
+                try builder.drawText(.{
+                    .id = codeTextPaintCommandId(editableCodeRunCommandId(widget, logical_line, run), paint),
+                    .font_id = run.font_id,
+                    .size = run.size,
+                    .origin = pixelSnapTextPoint(tokens, geometry.PointF.init(
+                        absolute_x + visible.x,
+                        line_top + run.baseline,
+                    )),
+                    .color = paint.color orelse text_spans_model.textSpanColorValue(tokens.colors, color_ref),
+                    .text = admitted_text,
+                    .text_layout = .{
+                        .max_width = 0,
+                        .line_height = line_height,
+                        .wrap = .none,
+                        .alignment = .start,
+                        .measure = tokens.text_measure,
+                    },
+                });
+                budget.chargeText(admitted_text.len);
+            }
+        }
+
+        visual_line += visual_count;
+        if (newline == null) break;
+        line_start = line_end;
+    }
+}
+
 /// Large no-wrap editors retain one plain source span, then tokenize just
 /// the logical lines intersecting the viewport. Lexer state is advanced
 /// across the offscreen prefix so multiline comments, strings, and JSX
@@ -1684,8 +1791,6 @@ fn emitVisibleEditableCodeLines(
     var line_runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
 
     while (line_start <= widget.text.len and logical_line <= last_line) : (logical_line += 1) {
-        if (line_start == widget.text.len and widget.text.len > 0 and
-            widget.text[widget.text.len - 1] == '\n') break;
         const newline = std.mem.indexOfScalarPos(u8, widget.text, line_start, '\n');
         const line_end = if (newline) |index| index + 1 else widget.text.len;
         const line_source = widget.text[line_start..line_end];
@@ -1830,8 +1935,6 @@ fn emitVisibleEditableCodeLineNumberGutter(
     }
 
     while (line_start <= widget.text.len and logical_line <= last_line) : (logical_line += 1) {
-        if (line_start == widget.text.len and widget.text.len > 0 and
-            widget.text[widget.text.len - 1] == '\n') break;
         const line_top = content.y + @as(f32, @floatFromInt(logical_line)) * line_height;
         const marker_bounds = geometry.RectF.init(padded.x, line_top, marker_width, line_height);
         if (marker_bounds.intersects(visible_bounds)) {
@@ -1896,7 +1999,7 @@ fn emitCodeLineNumberGutter(
     while (line_start <= widget.text.len) : (logical_line += 1) {
         // A terminal newline closes the preceding painted line; the span
         // breaker intentionally does not reserve another empty visual line.
-        if (line_start == widget.text.len and widget.text.len > 0) break;
+        if (line_start == widget.text.len and widget.text.len > 0 and !widget.code_editor) break;
         const newline = std.mem.indexOfScalarPos(u8, widget.text, line_start, '\n');
         const line_end = newline orelse widget.text.len;
         const baseline = content.y + layout_options.size +

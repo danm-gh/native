@@ -247,6 +247,28 @@ test "folder scanning builds a sorted, bounded tree without descending generated
     try testing.expectEqual(@as(usize, 7), model.visible(arena_state.allocator()).len);
 }
 
+test "folder scanning does not report an exact-cap directory as truncated" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    for (0..main.max_entries) |index| {
+        var name_buffer: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "file-{d:0>3}.txt", .{index});
+        try tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = "" });
+    }
+
+    var model = main.Model{};
+    defer model.deinit();
+    try main.scanOpenDirectory(&model, testing.io, testing.allocator, "/exact-cap", tmp.dir);
+
+    try testing.expectEqual(main.max_entries, model.entry_count);
+    try testing.expect(!model.scan_truncated);
+
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "one-more.txt", .data = "" });
+    try main.scanOpenDirectory(&model, testing.io, testing.allocator, "/over-cap", tmp.dir);
+    try testing.expectEqual(main.max_entries, model.entry_count);
+    try testing.expect(model.scan_truncated);
+}
+
 test "tree depth moves each row's icon and label together" {
     var model = try fixtureModel();
     defer model.deinit();

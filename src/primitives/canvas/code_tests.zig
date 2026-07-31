@@ -832,7 +832,7 @@ test "editable line-number gutter masks horizontally scrolled source" {
                 }
             },
             .draw_text => |draw| {
-                if (std.mem.eql(u8, draw.text, "1")) {
+                if (std.mem.eql(u8, draw.text, "1") or std.mem.eql(u8, draw.text, "2")) {
                     marker_index = index;
                 } else {
                     source_index = index;
@@ -908,6 +908,72 @@ test "wrapped editable code re-highlights runtime-owned text" {
         if (command == .draw_text) try rendered.appendSlice(testing.allocator, command.draw_text.text);
     }
     try testing.expectEqualStrings(edited, rendered.items);
+}
+
+test "wrapped editable code preserves syntax after the document exhausts the span budget" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    for (0..40) |index| {
+        var line_buffer: [64]u8 = undefined;
+        const line = try std.fmt.bufPrint(&line_buffer, "const value_{d} = \"ordinary\";\n", .{index});
+        try source.appendSlice(testing.allocator, line);
+    }
+    try source.appendSlice(testing.allocator, "const tail = \"TAIL_SENTINEL\";");
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .zig,
+        .editable = true,
+        .wrap = true,
+    }, source.items));
+    var editor = findByText(view.root, source.items).?;
+    editor.frame = geometry.RectF.init(0, 0, 800, 1_000);
+
+    const tokens = canvas.DesignTokens{};
+    var commands: [512]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, tokens);
+
+    var tail_color: ?canvas.Color = null;
+    for (builder.displayList().commands) |command| {
+        if (command != .draw_text) continue;
+        if (std.mem.indexOf(u8, command.draw_text.text, "TAIL_SENTINEL") != null) {
+            tail_color = command.draw_text.color;
+            break;
+        }
+    }
+    try testing.expectEqual(tokens.colors.syntax_literal, tail_color.?);
+}
+
+test "editable code numbers the empty caret row after a terminal newline" {
+    const source = "alpha\n";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .plain,
+        .editable = true,
+        .line_numbers = true,
+        .wrap = false,
+    }, source));
+    var editor = findByText(view.root, source).?;
+    editor.frame = geometry.RectF.init(0, 0, 300, 80);
+    try testing.expectEqual(@as(u8, 1), editor.code_line_number_digits);
+
+    var commands: [256]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, .{});
+
+    var saw_second_line = false;
+    for (builder.displayList().commands) |command| {
+        if (command == .draw_text and std.mem.eql(u8, command.draw_text.text, "2")) {
+            saw_second_line = true;
+            break;
+        }
+    }
+    try testing.expect(saw_second_line);
 }
 
 test "wrapped editable code measures vertical extent with its monospace font" {
@@ -1042,7 +1108,7 @@ test "editable code highlights the caret row but not a text selection" {
             .draw_text => |draw| {
                 if (std.mem.eql(u8, draw.text, "2")) {
                     marker_index = index;
-                } else if (!std.mem.eql(u8, draw.text, "1")) {
+                } else if (!std.mem.eql(u8, draw.text, "1") and !std.mem.eql(u8, draw.text, "3")) {
                     source_index = index;
                 }
             },

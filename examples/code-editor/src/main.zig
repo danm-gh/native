@@ -1463,7 +1463,7 @@ pub fn scanOpenDirectory(model: *Model, io: std.Io, allocator: std.mem.Allocator
     var walker = try root_dir.walkSelectively(allocator);
     defer walker.deinit();
 
-    while (next.entry_count < next.entries.len) {
+    while (true) {
         const maybe_entry = walker.next(io) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => {
@@ -1472,6 +1472,10 @@ pub fn scanOpenDirectory(model: *Model, io: std.Io, allocator: std.mem.Allocator
             },
         };
         const walker_entry = maybe_entry orelse break;
+        if (next.entry_count == next.entries.len) {
+            next.scan_truncated = true;
+            break;
+        }
         const depth = walker_entry.depth();
         const descend = walker_entry.kind == .directory and
             depth < max_scan_depth and
@@ -1492,8 +1496,6 @@ pub fn scanOpenDirectory(model: *Model, io: std.Io, allocator: std.mem.Allocator
             },
         };
     }
-    if (next.entry_count == next.entries.len) next.scan_truncated = true;
-
     std.mem.sort(Entry, next.entries[0..next.entry_count], {}, entryLessThan);
     assignParents(&next);
     next.setStatus("{d} items{s}{s}", .{

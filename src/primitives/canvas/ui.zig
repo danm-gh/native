@@ -2339,8 +2339,9 @@ pub fn Ui(comptime Msg: type) type {
         /// in a panel or card when those presentation choices are wanted.
         /// Markdown fences lower through this same component.
         pub fn code(self: *Self, options: CodeOptions, source: []const u8) Node {
-            const line_count = codeLineCount(source);
-            const numbered = options.line_numbers and line_count <=
+            const line_count = codeLineCount(source, options.editable);
+            const terminal_editor_line = options.editable and source.len > 0 and source[source.len - 1] == '\n';
+            const numbered = options.line_numbers and line_count - @intFromBool(terminal_editor_line) <=
                 (if (options.editable) max_editable_code_lines else max_code_lines);
             if (options.editable) {
                 const retained = if (options.wrap) blk: {
@@ -2643,10 +2644,10 @@ pub fn Ui(comptime Msg: type) type {
         const max_code_logical_lines_per_paragraph: usize =
             canvas.text_spans.max_text_span_lines_per_paragraph;
 
-        fn codeLineCount(source: []const u8) usize {
+        fn codeLineCount(source: []const u8, include_terminal_line: bool) usize {
             if (source.len == 0) return 1;
             return std.mem.count(u8, source, "\n") +
-                @intFromBool(source[source.len - 1] != '\n');
+                @intFromBool(include_terminal_line or source[source.len - 1] != '\n');
         }
 
         fn decimalDigits(value: usize) usize {

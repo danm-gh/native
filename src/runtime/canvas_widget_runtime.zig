@@ -1682,7 +1682,7 @@ fn canvasWidgetTreeFirstChildRow(layout: canvas.WidgetLayoutTree, tree_index: us
         while (index < layout.nodes.len and layout.nodes[index].depth > tree_depth) : (index += 1) {
             const widget = layout.nodes[index].widget;
             if (widget.semantics.role != .treeitem) continue;
-            if (widget.tree_level == focused_level + 1) {
+            if (@as(u32, widget.tree_level) == @as(u32, focused_level) + 1) {
                 return canvasWidgetTreeRowFocusTarget(layout, index);
             }
             return null;

@@ -453,6 +453,24 @@ test "flat tree child lookup stays inside its tree scope" {
     try std.testing.expectEqual(@as(canvas.ObjectId, 31), target.id);
 }
 
+test "flat tree child lookup handles the maximum logical level" {
+    var first_row = treeRowPanel(51, 0, 24, true, &.{});
+    first_row.tree_level = std.math.maxInt(u16);
+    var second_row = treeRowPanel(52, 30, 24, null, &.{});
+    second_row.tree_level = std.math.maxInt(u16);
+    const rows = [_]canvas.Widget{ first_row, second_row };
+    var nodes: [4]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        .{ .id = 50, .kind = .tree, .children = &rows },
+        geometry.RectF.init(0, 0, 240, 100),
+        &nodes,
+    );
+    const focused = layout.focusTargetById(51).?;
+
+    const target = canvas_widget_runtime.canvasWidgetTreeDirectionalFocusTarget(layout, focused, .right).?;
+    try std.testing.expectEqual(@as(canvas.ObjectId, 51), target.id);
+}
+
 test "a virtual list declaring the tree role scopes the tree keymap over its rows" {
     const harness = try TestHarness().create(std.testing.allocator, .{});
     defer harness.destroy(std.testing.allocator);

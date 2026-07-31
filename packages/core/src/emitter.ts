@@ -1014,8 +1014,44 @@ export class Emitter {
       this.emitHoistedFunctions();
     }
     this.emitInstantiatedTypes();
+    this.emitTypeOrigins();
     this.emitCommitWalkers();
     return this.out.join("\n") + "\n";
+  }
+
+  /// The declaring module of every named type the contract tables can
+  /// reach — a contract fact the sidecar extractor carries so a contract
+  /// consumer can re-export each type from its own module. SDK library
+  /// modules spell their shipped staging path (`sdk/<name>.ts`); the
+  /// core's own modules spell their basename (a compile stages its
+  /// module graph flat). Synthesized (anonymous) type names stay out:
+  /// they are declared nowhere.
+  private emitTypeOrigins(): void {
+    const sdkDir = path.resolve(path.dirname(sdkCoreModulePath));
+    const seen = new Set<string>();
+    const entries: string[] = [];
+    for (const file of this.files) {
+      for (const stmt of file.statements) {
+        if (!ts.isInterfaceDeclaration(stmt) && !ts.isTypeAliasDeclaration(stmt) && !ts.isClassDeclaration(stmt)) continue;
+        if (!stmt.name) continue;
+        const name = stmt.name.text;
+        if (seen.has(name)) continue;
+        if (!this.table.structs.has(name) && !this.table.enums.has(name) && !this.table.unions.has(name)) continue;
+        if (this.table.genericStructTemplates.has(name) || this.table.genericAliasTemplates.has(name)) continue;
+        seen.add(name);
+        const fileName = path.resolve(file.fileName);
+        const origin = path.dirname(fileName) === sdkDir ? `sdk/${path.basename(fileName)}` : path.basename(fileName);
+        entries.push(`    .{ ${zigString(name)}, ${zigString(origin)} },`);
+      }
+    }
+    if (entries.length === 0) return;
+    this.out.push(``);
+    this.out.push(`// The declaring module of every named contract-table type (the sidecar`);
+    this.out.push(`// extractor's origin facts; synthesized names are declared nowhere and`);
+    this.out.push(`// stay out).`);
+    this.out.push(`pub const type_origins = .{`);
+    this.out.push(...entries);
+    this.out.push(`};`);
   }
 
   /// R15e: emit every queued generic instantiation under its resolved
@@ -1953,6 +1989,18 @@ export class Emitter {
           this.out.push(`    ${zigId(arm.tag)}: struct { ${fields.join(", ")} },`);
         }
       }
+      const singles = un.arms.filter((a) => a.fields.length === 1);
+      if (singles.length > 0) {
+        // The authored member name of each single-payload arm: the arm's
+        // emitted payload spells the bare type, erasing the author's
+        // spelling, so the sidecar extractor reads it from this table (a
+        // contract consumer constructing arm values needs the author's
+        // property names).
+        this.out.push(``);
+        this.out.push(
+          `    pub const payload_members = .{ ${singles.map((a) => `.${zigId(a.tag)} = ${zigString(a.fields[0].tsName)}`).join(", ")} };`,
+        );
+      }
       if (name === "Msg" && this.unbound.msg.length > 0) {
         // The dead-state lint opt-out `native check` reads (viewUnbound).
         this.out.push(``);
@@ -1985,6 +2033,7 @@ export class Emitter {
     const names = new Set<string>(emittedFixtureNames);
     names.add("Thrown");
     names.add("thrown_payload");
+    names.add("type_origins");
     names.add(THROWN_UNION_NAME);
     for (const file of this.files) {
       for (const stmt of file.statements) {
@@ -11609,6 +11658,21 @@ function isScalarElem(t: ZType): boolean {
 
 function zigId(name: string): string {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `@"${name}"`;
+}
+
+/// A Zig double-quoted string literal for an authored spelling (name
+/// tables the sidecar extractor reads).
+function zigString(text: string): string {
+  let out = '"';
+  for (const ch of text) {
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else out += ch;
+  }
+  return out + '"';
 }
 
 /// Zig keywords that are legal JS label identifiers — a TS label with one of

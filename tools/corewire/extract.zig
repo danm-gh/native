@@ -83,7 +83,7 @@ pub fn sidecarJson(comptime core: type, comptime entry: []const u8) []const u8 {
                         }
                     }
                     if (struct_count > 0) structs = structs ++ ",\n      ";
-                    structs = structs ++ "{\"name\": " ++ js(item.name) ++ ", \"fields\": [" ++ fields ++ "]}";
+                    structs = structs ++ "{\"name\": " ++ js(item.name) ++ originJson(core, item.name) ++ ", \"fields\": [" ++ fields ++ "]}";
                     struct_count += 1;
                 },
                 .@"enum" => |info| {
@@ -93,7 +93,7 @@ pub fn sidecarJson(comptime core: type, comptime entry: []const u8) []const u8 {
                         members = members ++ js(member.name);
                     }
                     if (enum_count > 0) enums = enums ++ ",\n      ";
-                    enums = enums ++ "{\"name\": " ++ js(item.name) ++ ", \"members\": [" ++ members ++ "]}";
+                    enums = enums ++ "{\"name\": " ++ js(item.name) ++ originJson(core, item.name) ++ ", \"members\": [" ++ members ++ "]}";
                     enum_count += 1;
                 },
                 .@"union" => |info| {
@@ -101,13 +101,13 @@ pub fn sidecarJson(comptime core: type, comptime entry: []const u8) []const u8 {
                     for (info.fields, 0..) |arm, index| {
                         if (index > 0) arms = arms ++ ", ";
                         const payload = if (arm.type == void) "{\"kind\": \"void\"}" else typeRefJson(arm.type, lastComponent(@typeName(item.T)), item.name, arm.name);
-                        arms = arms ++ "{\"name\": " ++ js(arm.name) ++ ", \"payload\": " ++ payload ++ "}";
+                        arms = arms ++ "{\"name\": " ++ js(arm.name) ++ memberJson(item.T, arm.name) ++ ", \"payload\": " ++ payload ++ "}";
                         if (arm.type != void and spellsI64(arm.type)) {
                             appendSlot(&slots, &slot_count, item.name ++ "." ++ arm.name);
                         }
                     }
                     if (union_count > 0) unions = unions ++ ",\n      ";
-                    unions = unions ++ "{\"name\": " ++ js(item.name) ++ ", \"arms\": [" ++ arms ++ "]}";
+                    unions = unions ++ "{\"name\": " ++ js(item.name) ++ originJson(core, item.name) ++ ", \"arms\": [" ++ arms ++ "]}";
                     union_count += 1;
                 },
                 else => @compileError("the type table cannot carry " ++ @typeName(item.T)),
@@ -119,7 +119,7 @@ pub fn sidecarJson(comptime core: type, comptime entry: []const u8) []const u8 {
         for (@typeInfo(core.Msg).@"union".fields, 0..) |arm, index| {
             if (index > 0) msg_arms = msg_arms ++ ",\n      ";
             const descriptor = payloadDescriptor(arm.type, msg_zig, arm.name, &slots, &slot_count);
-            msg_arms = msg_arms ++ "{\"name\": " ++ js(arm.name) ++ ", \"payload\": " ++ descriptor ++ "}";
+            msg_arms = msg_arms ++ "{\"name\": " ++ js(arm.name) ++ memberJson(core.Msg, arm.name) ++ ", \"payload\": " ++ descriptor ++ "}";
         }
 
         // Helpers, in Model-declaration (= export) order.
@@ -261,6 +261,32 @@ fn js(comptime text: []const u8) []const u8 {
             };
         }
         return out ++ "\"";
+    }
+}
+
+/// The authored member-name fact of a single-payload union arm, as a
+/// JSON fragment (`, "member": "..."`), read from the transpiler's
+/// `payload_members` table on the union; empty when the module carries
+/// no fact for the arm (bare and multi-field arms, older modules).
+fn memberJson(comptime T: type, comptime arm_name: []const u8) []const u8 {
+    comptime {
+        if (!@hasDecl(T, "payload_members")) return "";
+        if (!@hasField(@TypeOf(T.payload_members), arm_name)) return "";
+        return ", \"member\": " ++ js(@field(T.payload_members, arm_name));
+    }
+}
+
+/// The declaring-module fact of a named table type, as a JSON fragment
+/// (`, "origin": "..."`), read from the transpiler's `type_origins`
+/// table; empty for synthesized names (declared nowhere) and older
+/// modules.
+fn originJson(comptime core: type, comptime name: []const u8) []const u8 {
+    comptime {
+        if (!@hasDecl(core, "type_origins")) return "";
+        for (core.type_origins) |entry| {
+            if (std.mem.eql(u8, entry[0], name)) return ", \"origin\": " ++ js(entry[1]);
+        }
+        return "";
     }
 }
 

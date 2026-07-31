@@ -68,21 +68,32 @@ pub const Field = struct {
 
 pub const Struct = struct {
     name: []const u8,
+    /// The declaring module of the type, entry-relative (an additive
+    /// origin fact; null on sidecars that predate it and for
+    /// synthesized names, which are declared nowhere).
+    origin: ?[]const u8 = null,
     fields: []const Field,
 };
 
 pub const Enum = struct {
     name: []const u8,
+    origin: ?[]const u8 = null,
     members: []const []const u8,
 };
 
 pub const UnionArm = struct {
     name: []const u8,
+    /// The authored member name of a single-payload arm (an additive
+    /// fact; the payload descriptor erases the author's spelling, and a
+    /// consumer constructing arm values needs it back). Null for bare
+    /// and multi-field arms, and on sidecars that predate the fact.
+    member: ?[]const u8 = null,
     payload: TypeRef,
 };
 
 pub const Union = struct {
     name: []const u8,
+    origin: ?[]const u8 = null,
     arms: []const UnionArm,
 };
 
@@ -112,6 +123,9 @@ pub const Payload = union(enum) {
 
 pub const MsgArm = struct {
     name: []const u8,
+    /// The authored member name of a single-payload arm (see
+    /// UnionArm.member).
+    member: ?[]const u8 = null,
     payload: Payload,
 };
 
@@ -387,6 +401,14 @@ const Mapper = struct {
         return std.fmt.parseInt(u64, text, 16) catch unreachable;
     }
 
+    /// An OPTIONAL nonempty-string member: null when absent (additive
+    /// facts older emitters do not write), refused when present but not
+    /// a nonempty string.
+    fn optionalString(self: *Mapper, map: std.json.ObjectMap, name: []const u8, at: []const u8) error{ Refused, OutOfMemory }!?[]const u8 {
+        const value = map.get(name) orelse return null;
+        return try self.nonEmptyString(value, self.path("{s}.{s}", .{ at, name }));
+    }
+
     fn stringList(self: *Mapper, value: std.json.Value, at: []const u8) error{ Refused, OutOfMemory }![]const []const u8 {
         const items = try self.array(value, at);
         const out = try self.arena.alloc([]const u8, items.items.len);
@@ -486,7 +508,7 @@ const Mapper = struct {
         const out = try self.arena.alloc(Struct, items.items.len);
         for (items.items, 0..) |item, index| {
             const at = self.path("types.structs[{d}]", .{index});
-            const entry = try self.members(item, at, &.{ "name", "fields" });
+            const entry = try self.members(item, at, &.{ "name", "origin", "fields" });
             entry.warnUnknown();
             const fields_value = try self.array(try entry.get("fields"), self.path("{s}.fields", .{at}));
             const fields = try self.arena.alloc(Field, fields_value.items.len);
@@ -501,6 +523,7 @@ const Mapper = struct {
             }
             out[index] = .{
                 .name = try self.nonEmptyString(try entry.get("name"), self.path("{s}.name", .{at})),
+                .origin = try self.optionalString(entry.map, "origin", at),
                 .fields = fields,
             };
         }
@@ -512,10 +535,11 @@ const Mapper = struct {
         const out = try self.arena.alloc(Enum, items.items.len);
         for (items.items, 0..) |item, index| {
             const at = self.path("types.enums[{d}]", .{index});
-            const entry = try self.members(item, at, &.{ "name", "members" });
+            const entry = try self.members(item, at, &.{ "name", "origin", "members" });
             entry.warnUnknown();
             out[index] = .{
                 .name = try self.nonEmptyString(try entry.get("name"), self.path("{s}.name", .{at})),
+                .origin = try self.optionalString(entry.map, "origin", at),
                 .members = try self.stringList(try entry.get("members"), self.path("{s}.members", .{at})),
             };
         }
@@ -527,21 +551,23 @@ const Mapper = struct {
         const out = try self.arena.alloc(Union, items.items.len);
         for (items.items, 0..) |item, index| {
             const at = self.path("types.unions[{d}]", .{index});
-            const entry = try self.members(item, at, &.{ "name", "arms" });
+            const entry = try self.members(item, at, &.{ "name", "origin", "arms" });
             entry.warnUnknown();
             const arms_value = try self.array(try entry.get("arms"), self.path("{s}.arms", .{at}));
             const arms = try self.arena.alloc(UnionArm, arms_value.items.len);
             for (arms_value.items, 0..) |arm_value, arm_index| {
                 const arm_at = self.path("{s}.arms[{d}]", .{ at, arm_index });
-                const arm = try self.members(arm_value, arm_at, &.{ "name", "payload" });
+                const arm = try self.members(arm_value, arm_at, &.{ "name", "member", "payload" });
                 arm.warnUnknown();
                 arms[arm_index] = .{
                     .name = try self.nonEmptyString(try arm.get("name"), self.path("{s}.name", .{arm_at})),
+                    .member = try self.optionalString(arm.map, "member", arm_at),
                     .payload = try self.mapTypeRef(try arm.get("payload"), self.path("{s}.payload", .{arm_at})),
                 };
             }
             out[index] = .{
                 .name = try self.nonEmptyString(try entry.get("name"), self.path("{s}.name", .{at})),
+                .origin = try self.optionalString(entry.map, "origin", at),
                 .arms = arms,
             };
         }
@@ -663,10 +689,11 @@ const Mapper = struct {
         const arms = try self.arena.alloc(MsgArm, arms_value.items.len);
         for (arms_value.items, 0..) |arm_value, index| {
             const at = self.path("msg.arms[{d}]", .{index});
-            const arm = try self.members(arm_value, at, &.{ "name", "payload" });
+            const arm = try self.members(arm_value, at, &.{ "name", "member", "payload" });
             arm.warnUnknown();
             arms[index] = .{
                 .name = try self.nonEmptyString(try arm.get("name"), self.path("{s}.name", .{at})),
+                .member = try self.optionalString(arm.map, "member", at),
                 .payload = try self.mapPayload(try arm.get("payload"), self.path("{s}.payload", .{at})),
             };
         }

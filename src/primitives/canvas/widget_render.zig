@@ -1200,7 +1200,13 @@ fn emitCodeEditorWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
             }
         }
     }
-    try emitVisibleEditableCodeLineNumberGutter(builder, widget, tokens, widget.frame, active_row);
+    // Wrapped code emits its gutter beside the wrapped span rows. The
+    // viewport-owned gutter below is the no-wrap path: emitting both would
+    // duplicate the retained line-number command IDs and place a second set
+    // of markers at logical-line rather than visual-row positions.
+    if (widget.text_no_wrap) {
+        try emitVisibleEditableCodeLineNumberGutter(builder, widget, tokens, widget.frame, active_row);
+    }
     try builder.popClip();
 }
 

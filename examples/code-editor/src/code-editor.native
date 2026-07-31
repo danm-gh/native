@@ -149,6 +149,9 @@
                     <if test="{previewLanguage == 'json'}">
                       <code source="{preview}" language="json" editable="{codeEditable}" on-input="edit_code" line-numbers="true" wrap="false" grow="1" label="{selectedPath}" />
                     </if>
+                    <if test="{previewLanguage == 'yaml'}">
+                      <code source="{preview}" language="yaml" editable="{codeEditable}" on-input="edit_code" line-numbers="true" wrap="false" grow="1" label="{selectedPath}" />
+                    </if>
                     <if test="{previewLanguage == 'shell'}">
                       <code source="{preview}" language="shell" editable="{codeEditable}" on-input="edit_code" line-numbers="true" wrap="false" grow="1" label="{selectedPath}" />
                     </if>

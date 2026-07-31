@@ -13,6 +13,7 @@ const App = support.App;
 const Runtime = support.Runtime;
 const Event = support.Event;
 const TestHarness = support.TestHarness;
+const canvas_widget_runtime = @import("canvas_widget_runtime.zig");
 
 const TestMsg = union(enum) {
     resized: f32,
@@ -427,6 +428,29 @@ test "flat tree levels resolve logical parents and children" {
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{ .window_id = 1, .label = "canvas", .kind = .key_down, .key = "arrowright" } });
     try std.testing.expectEqual(@as(canvas.ObjectId, 22), view.canvas_widget_focused_id);
     try std.testing.expect(app_state.last_keyboard_focus_moved);
+}
+
+test "flat tree child lookup stays inside its tree scope" {
+    var first_row = treeRowPanel(31, 0, 24, true, &.{});
+    first_row.tree_level = 1;
+    var second_row = treeRowPanel(41, 0, 24, null, &.{});
+    second_row.tree_level = 2;
+    const first_rows = [_]canvas.Widget{first_row};
+    const second_rows = [_]canvas.Widget{second_row};
+    const trees = [_]canvas.Widget{
+        .{ .id = 30, .kind = .tree, .children = &first_rows },
+        .{ .id = 40, .kind = .tree, .children = &second_rows },
+    };
+    var nodes: [5]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        .{ .id = 29, .kind = .stack, .children = &trees },
+        geometry.RectF.init(0, 0, 240, 100),
+        &nodes,
+    );
+    const focused = layout.focusTargetById(31).?;
+
+    const target = canvas_widget_runtime.canvasWidgetTreeDirectionalFocusTarget(layout, focused, .right).?;
+    try std.testing.expectEqual(@as(canvas.ObjectId, 31), target.id);
 }
 
 test "a virtual list declaring the tree role scopes the tree keymap over its rows" {

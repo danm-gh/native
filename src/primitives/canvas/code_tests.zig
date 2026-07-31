@@ -59,6 +59,14 @@ fn displayListTextBytes(display_list: canvas.DisplayList) usize {
     return count;
 }
 
+fn codeFontSensitiveMeasure(context: ?*anyopaque, font_id: canvas.FontId, size: f32, text: []const u8) f32 {
+    _ = context;
+    const advance: f32 = if (font_id == canvas.default_mono_font_id) 1 else 0.1;
+    return size * advance * @as(f32, @floatFromInt(text.len));
+}
+
+const code_font_sensitive_measure = canvas.TextMeasureProvider{ .measure_fn = codeFontSensitiveMeasure };
+
 fn expectCompleteSpanLayouts(widget: canvas.Widget) !void {
     if (widget.kind == .text and widget.spans.len > 0) {
         var runs: [text_spans.max_text_span_runs_per_paragraph]text_spans.TextSpanRun = undefined;
@@ -720,6 +728,55 @@ test "editable line-number gutter masks horizontally scrolled source" {
     try testing.expectEqual(editor.frame.y, gutter_rect.?.y);
     try testing.expect(gutter_rect.?.width > 0);
     try testing.expectEqual(editor.frame.height, gutter_rect.?.height);
+}
+
+test "wrapped numbered editable code emits one retained gutter" {
+    const source = "alpha beta gamma delta epsilon zeta eta theta";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .plain,
+        .editable = true,
+        .line_numbers = true,
+        .wrap = true,
+    }, source));
+    var editor = findByText(view.root, source).?;
+    editor.frame = geometry.RectF.init(0, 0, 120, 80);
+
+    var commands: [256]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, .{});
+
+    var line_one_count: usize = 0;
+    for (builder.displayList().commands) |command| {
+        if (command == .draw_text and std.mem.eql(u8, command.draw_text.text, "1")) {
+            line_one_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 1), line_one_count);
+
+    var changes: [256]canvas.DiffChange = undefined;
+    _ = try canvas.DisplayList.diff(.{}, builder.displayList(), &changes);
+}
+
+test "wrapped editable code measures vertical extent with its monospace font" {
+    const source = "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .plain,
+        .editable = true,
+        .line_numbers = true,
+        .wrap = true,
+    }, source));
+    var editor = findByText(view.root, source).?;
+    editor.frame = geometry.RectF.init(0, 0, 140, 20);
+    const tokens = canvas.DesignTokens{ .text_measure = &code_font_sensitive_measure };
+
+    try testing.expect(canvas.textInputContentExtentForWidget(editor, tokens) > editor.frame.height);
+    try testing.expect(canvas.textInputMaxScrollOffsetForWidget(editor, tokens) > 0);
 }
 
 test "numbered editable code does not invent trailing horizontal overflow" {

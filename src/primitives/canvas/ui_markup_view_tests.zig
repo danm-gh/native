@@ -2017,6 +2017,28 @@ test "code markup builds the reusable component with opt-in numbers and horizont
     try testing.expectEqualStrings("x", edit.edit.insert_text);
 }
 
+test "code markup accepts lexer aliases from the shared language registry" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const model = CodeModel{};
+    const CodeMarkup = markup_view.MarkupView(CodeModel, CodeMsg);
+    const cases = [_][]const u8{
+        "<code source=\"{snippet}\" language=\"mjs\" />",
+        "<code source=\"{snippet}\" language=\"yaml\" />",
+        "<code source=\"{snippet}\" language=\"yml\" />",
+    };
+
+    for (cases) |source| {
+        var parser = canvas.ui_markup.Parser.init(arena, source);
+        try testing.expectEqual(@as(?canvas.ui_markup.MarkupErrorInfo, null), canvas.ui_markup.validate(try parser.parse()));
+
+        var view = try CodeMarkup.init(arena, source);
+        var ui = CodeUi.init(arena);
+        _ = try ui.finalize(try view.build(&ui, &model));
+    }
+}
+
 test "code markup misuse reports the component's closed contract" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();

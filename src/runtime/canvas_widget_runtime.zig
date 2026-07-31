@@ -1529,7 +1529,7 @@ pub fn canvasWidgetTreeDirectionalFocusTarget(
         .right => blk: {
             const expanded = layout.nodes[focused.index].widget.state.expanded orelse false;
             if (!expanded) break :blk null; // expand intent (or leaf no-op)
-            break :blk canvasWidgetTreeFirstChildRow(layout, focused.index) orelse focused;
+            break :blk canvasWidgetTreeFirstChildRow(layout, tree_index, focused.index) orelse focused;
         },
         .forward, .backward => null,
     };
@@ -1610,11 +1610,12 @@ fn canvasWidgetTreeParentRow(layout: canvas.WidgetLayoutTree, tree_index: usize,
     return null;
 }
 
-fn canvasWidgetTreeFirstChildRow(layout: canvas.WidgetLayoutTree, focused_index: usize) ?canvas.WidgetFocusTarget {
+fn canvasWidgetTreeFirstChildRow(layout: canvas.WidgetLayoutTree, tree_index: usize, focused_index: usize) ?canvas.WidgetFocusTarget {
     const focused_level = layout.nodes[focused_index].widget.tree_level;
     if (focused_level > 0) {
+        const tree_depth = layout.nodes[tree_index].depth;
         var index = focused_index + 1;
-        while (index < layout.nodes.len) : (index += 1) {
+        while (index < layout.nodes.len and layout.nodes[index].depth > tree_depth) : (index += 1) {
             const widget = layout.nodes[index].widget;
             if (widget.semantics.role != .treeitem) continue;
             if (widget.tree_level == focused_level + 1) {

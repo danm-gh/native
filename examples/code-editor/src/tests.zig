@@ -140,12 +140,23 @@ test "yaml and yml files use YAML syntax highlighting" {
     defer model.deinit();
     const selected_index = model.findEntry("src/main.zig").?;
     const selected = &model.entries[selected_index];
-    model.selected_entry = selected_index;
+    seedActiveDocument(&model, selected_index, "name: value\n");
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
 
     inline for (.{ "workflow.yaml", "workflow.yml" }) |yaml_path| {
         @memcpy(selected.relative_storage[0..yaml_path.len], yaml_path);
         selected.relative_len = yaml_path.len;
         try testing.expectEqual(native_sdk.code.Language.yaml, model.previewLanguage());
+
+        _ = arena_state.reset(.retain_capacity);
+        const compiled = try buildTree(arena_state.allocator(), &model);
+        try testing.expectEqual(native_sdk.code.Language.yaml, findByKind(compiled.root, .textarea).?.code_language);
+
+        _ = arena_state.reset(.retain_capacity);
+        const interpreted = try interpretTree(arena_state.allocator(), &model);
+        try testing.expectEqual(native_sdk.code.Language.yaml, findByKind(interpreted.root, .textarea).?.code_language);
     }
 }
 

@@ -276,7 +276,7 @@ pub fn textInputContentExtentForWidget(widget: Widget, tokens: DesignTokens) f32
     const text_inset = widgetTextInputInset(widget, tokens);
     const options = widgetTextInputLayoutOptions(widget, tokens, text_size, text_inset);
     const line_height = widgetTextInputLineHeight(text_size);
-    return @as(f32, @floatFromInt(widgetTextInputLineCount(widget, tokens.typography.font_id, text_size, options))) * line_height;
+    return @as(f32, @floatFromInt(widgetTextInputLineCount(widget, widgetTextInputFontId(widget, tokens), text_size, options))) * line_height;
 }
 
 pub fn textInputContentWidthForWidget(widget: Widget, tokens: DesignTokens) f32 {
@@ -394,7 +394,7 @@ pub fn widgetTextInputClipsText(widget: Widget, tokens: DesignTokens, text_size:
 
 fn widgetTextInputMaxScrollOffset(widget: Widget, tokens: DesignTokens, text_size: f32, text_inset: f32, options: TextLayoutOptions) f32 {
     const viewport = widgetTextInputClipRect(widget, tokens, text_size, text_inset, options);
-    return @max(0, textInputContentExtentForWidgetWithOptions(widget, tokens.typography.font_id, text_size, options) - viewport.height);
+    return @max(0, textInputContentExtentForWidgetWithOptions(widget, widgetTextInputFontId(widget, tokens), text_size, options) - viewport.height);
 }
 
 fn textInputContentExtentForWidgetWithOptions(widget: Widget, font_id: FontId, text_size: f32, options: TextLayoutOptions) f32 {

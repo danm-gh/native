@@ -306,6 +306,7 @@ pub const Model = struct {
 
     pub fn rootName(model: *const Model) []const u8 {
         const path = model.rootPath();
+        if (path.len == 0) return "Code Explorer";
         const trimmed = std.mem.trimEnd(u8, path, "/\\");
         if (trimmed.len == 0) return path;
         return std.fs.path.basename(trimmed);

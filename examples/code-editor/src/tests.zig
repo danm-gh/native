@@ -112,6 +112,8 @@ fn fixtureModel() !main.Model {
 
 test "titlebar derives the folder name and preserves a filesystem root" {
     var model = main.Model{};
+    try testing.expectEqualStrings("Code Explorer", model.rootName());
+
     const path = "/Users/ctate/Developer/3d-maze/";
     @memcpy(model.root_storage[0..path.len], path);
     model.root_len = path.len;
@@ -1167,6 +1169,8 @@ test "the empty and loaded views expose the picker, tree, and highlighted code s
     var model = main.Model{};
     defer model.deinit();
     var tree = try buildTree(arena_state.allocator(), &model);
+    const empty_titlebar = findByLabel(tree.root, "Code editor titlebar").?;
+    _ = findByText(empty_titlebar, .text, "Code Explorer").?;
     const open_button = findByText(tree.root, .button, "Open Folder…").?;
     try testing.expectEqual(main.Msg.open_folder, tree.msgForPointer(open_button.id, .up).?);
     try testing.expectEqual(@as(usize, 0), countRole(tree.root, .treeitem));

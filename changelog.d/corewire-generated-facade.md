@@ -1,0 +1,1 @@
+feature: **Generated compiled-core facade**: `corewire --facade` now emits the complete compiler entry and matching profile from the contract sidecar, including explicit `--f64-slot` demotions, authored type provenance, and signed or unsigned integer proofs at every host ingress.

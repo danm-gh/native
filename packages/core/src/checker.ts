@@ -459,6 +459,7 @@ export class SubsetChecker {
     for (const file of this.files) this.checkModuleShape(file);
     this.checkEntryContract();
     this.checkNameCollisions();
+    this.checkGeneratedMetadataNames();
     this.checkModelHoldsData();
     this.checkModelTextIsBytes();
     this.checkCmdPurity();
@@ -1204,6 +1205,44 @@ export class SubsetChecker {
       this.report("NS1038", `Exported \`${name}\` is also declared ${where}.`, site);
     } else {
       exportedValues.set(name, { file, decl });
+    }
+  }
+
+  /// NS1038 — fixed declarations consumed by the contract extractor share
+  /// the emitted Zig namespace with authored declarations. Reserve the
+  /// module-level type-origin table and each union's payload-member table so
+  /// a valid TypeScript name fails with a teaching instead of duplicate Zig.
+  private checkGeneratedMetadataNames(): void {
+    const reportTypeOrigins = (name: ts.Identifier): void => {
+      if (name.text === "type_origins") {
+        this.report("NS1038", "`type_origins` collides with the generated contract type-origin metadata declaration.", name);
+      }
+    };
+    for (const file of this.files) {
+      for (const stmt of file.statements) {
+        if (
+          ts.isInterfaceDeclaration(stmt) ||
+          ts.isTypeAliasDeclaration(stmt) ||
+          ts.isClassDeclaration(stmt) ||
+          ts.isFunctionDeclaration(stmt)
+        ) {
+          if (stmt.name) reportTypeOrigins(stmt.name);
+        } else if (ts.isVariableStatement(stmt)) {
+          for (const decl of stmt.declarationList.declarations) {
+            if (ts.isIdentifier(decl.name)) reportTypeOrigins(decl.name);
+          }
+        }
+      }
+      for (const binding of exportListBindings(this.tast, file)) {
+        if (binding.exportedName === "type_origins") {
+          this.report("NS1038", "`type_origins` collides with the generated contract type-origin metadata declaration.", binding.spec.name);
+        }
+      }
+    }
+    for (const union of this.table.unions.values()) {
+      if (union.arms.some((arm) => arm.fields.length === 1) && union.arms.some((arm) => arm.tag === "payload_members")) {
+        this.report("NS1038", `Union \`${union.name}\` has an arm named \`payload_members\`, which collides with its generated single-payload metadata declaration.`, union.decl.name);
+      }
     }
   }
 

@@ -509,9 +509,10 @@ const Mapper = struct {
         for (items.items, 0..) |item, index| {
             const at = self.path("types.structs[{d}]", .{index});
             // "synthesized" is an additive marker some emitters place on
-            // records they named themselves (the `<Container>_<member>`
-            // pattern); this reader re-derives the fact from the name
-            // pattern, so the marker is accepted and unused.
+            // records they named themselves. The current projection uses
+            // `origin` as the authoritative authored-vs-synthesized fact and
+            // retains the name-pattern fallback for old null-origin sidecars,
+            // so this older marker remains accepted and unused.
             const entry = try self.members(item, at, &.{ "name", "origin", "synthesized", "fields" });
             entry.warnUnknown();
             const fields_value = try self.array(try entry.get("fields"), self.path("{s}.fields", .{at}));

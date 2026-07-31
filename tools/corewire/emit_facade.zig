@@ -47,9 +47,14 @@ const IntegerClass = sidecar_mod.IntegerClass;
 
 pub const Error = error{ Refused, OutOfMemory };
 
-/// The two's-complement window an f64 carries exactly, as the generated
-/// guards spell it.
+/// The exact-integer window an f64 carries, as the generated guards spell
+/// it. Signed slots use `min_safe`; unsigned slots start at zero.
 const max_safe = "9007199254740991";
+const min_safe = "-9007199254740991";
+
+fn integerLowerBound(class: IntegerClass) []const u8 {
+    return if (class == .u64) "0" else min_safe;
+}
 
 /// The scroll-state field vocabulary (the mirror's routing twin in
 /// emit.zig): a record arm carrying exactly these eight numeric fields
@@ -94,13 +99,12 @@ const ts_reserved_words = [_][]const u8{
 /// The value-space names this module itself exports; an authored helper
 /// or type may not take one.
 const fixed_exports = [_][]const u8{
-    "init",           "coreUpdate",          "coreSubscriptions", "boot_cmd",
-    "dispatch_void",  "dispatch_bytes",      "dispatch_number",   "dispatch_number_bytes",
-    "dispatch_bool",  "dispatch_enum",       "dispatch_record",   "dispatch_text_input",
-    "dispatch_scroll_state",                 "subscriptions",     "model_snapshot",
-    "helper_call",    "abi_command_msg",     "abi_frame_msg",     "abi_key_msg",
-    "abi_pinch_msg",  "appearanceMsg",       "chromeMsg",         "envMsgs",
-    "viewUnbound",
+    "init",                  "coreUpdate",     "coreSubscriptions", "boot_cmd",
+    "dispatch_void",         "dispatch_bytes", "dispatch_number",   "dispatch_number_bytes",
+    "dispatch_bool",         "dispatch_enum",  "dispatch_record",   "dispatch_text_input",
+    "dispatch_scroll_state", "subscriptions",  "model_snapshot",    "helper_call",
+    "abi_command_msg",       "abi_frame_msg",  "abi_key_msg",       "abi_pinch_msg",
+    "appearanceMsg",         "chromeMsg",      "envMsgs",           "viewUnbound",
 };
 
 /// The wire-codec snippets, emitted exactly when generated code reaches
@@ -223,12 +227,21 @@ const FacadeEmitter = struct {
         return std.fs.path.basenamePosix(self.sidecar.entry);
     }
 
-    fn slotClass(self: *FacadeEmitter, container: []const u8, member: []const u8) ?IntegerClass {
-        const path = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ container, member }) catch return null;
+    fn slotClassAt(self: *FacadeEmitter, path: []const u8) ?IntegerClass {
         for (self.sidecar.integer_slots) |entry| {
             if (std.mem.eql(u8, entry.slot, path)) return entry.class;
         }
         return null;
+    }
+
+    fn slotClass(self: *FacadeEmitter, container: []const u8, member: []const u8) ?IntegerClass {
+        const path = std.fmt.allocPrint(self.arena, "{s}.{s}", .{ container, member }) catch return null;
+        return self.slotClassAt(path);
+    }
+
+    fn nestedSlotClass(self: *FacadeEmitter, container: []const u8, member: []const u8, field: []const u8) ?IntegerClass {
+        const path = std.fmt.allocPrint(self.arena, "{s}.{s}.{s}", .{ container, member, field }) catch return null;
+        return self.slotClassAt(path);
     }
 
     /// The integer writer for a slot: unsigned twin for u64-attested
@@ -844,15 +857,16 @@ const FacadeEmitter = struct {
             const return_type = try self.spellRef(helper.returns);
             const is_int = helper.returns == .i64;
             if (is_int) {
+                const class = self.nestedSlotClass("helpers", helper.name, "return") orelse .i64;
                 try self.print(
                     \\
                     \\export function {s}(model: {s}): number {{
                     \\  const nscfValue = nscfH_{s}(model);
-                    \\  if (nscfValue >= -{s} && nscfValue <= {s}) return Math.trunc(nscfValue);
-                    \\  nscfTrap("a helper return is NaN or past +-(2^53 - 1) — the i64 slot has no honest value for it");
+                    \\  if (nscfValue >= {s} && nscfValue <= {s}) return Math.trunc(nscfValue);
+                    \\  nscfTrap("a helper return is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
                     \\}}
                     \\
-                , .{ helper.name, self.sidecar.model, helper.name, max_safe, max_safe });
+                , .{ helper.name, self.sidecar.model, helper.name, integerLowerBound(class), max_safe });
                 self.use(.trap);
             } else if (helper.returns == .slice) {
                 try self.print(
@@ -1063,11 +1077,10 @@ const FacadeEmitter = struct {
     fn dispatchNumber(self: *FacadeEmitter) Error!void {
         try self.raw("\nexport function dispatch_number(tag: number, value: number): Uint8Array {\n");
         var f64_count: usize = 0;
-        var int_count: usize = 0;
         for (self.sidecar.msg.arms) |arm| {
             switch (arm.payload) {
                 .number => |class| {
-                    if (class == .f64) f64_count += 1 else int_count += 1;
+                    if (class == .f64) f64_count += 1;
                 },
                 else => {},
             }
@@ -1085,37 +1098,28 @@ const FacadeEmitter = struct {
                 }
             }
         }
-        if (int_count > 0) {
-            try self.raw("\n  // Integer-classed arms prove in place: range-guard the raw f64 (an\n  // ordered comparison excludes NaN) and state wholeness with\n  // Math.trunc at the write.\n  if (");
-            var first = true;
-            for (self.sidecar.msg.arms) |arm| {
-                switch (arm.payload) {
-                    .number => |class| {
-                        if (class != .i64) continue;
-                        try self.print("{s}tag === NSCF_TAG_{s}", .{ if (first) "" else " || ", arm.name });
-                        first = false;
-                    },
-                    else => {},
-                }
+        for (self.sidecar.msg.arms) |arm| {
+            switch (arm.payload) {
+                .number => |payload_class| {
+                    if (payload_class != .i64) continue;
+                    const class = self.slotClass(self.sidecar.msg.name, arm.name) orelse .i64;
+                    const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: whole }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
+                    try self.print(
+                        \\  // This integer-classed arm proves in place: its attestation
+                        \\  // selects the signed or unsigned lower bound, the ordered
+                        \\  // comparisons exclude NaN, and Math.trunc states wholeness.
+                        \\  if (tag === NSCF_TAG_{s}) {{
+                        \\    if (value >= {s} && value <= {s}) {{
+                        \\      const whole = Math.trunc(value);
+                        \\      return nscfCommit(coreUpdate(nscfCommitted, {s}));
+                        \\    }}
+                        \\    nscfTrap("a numeric dispatch value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
+                        \\  }}
+                        \\
+                    , .{ arm.name, integerLowerBound(class), max_safe, object });
+                },
+                else => {},
             }
-            try self.print(") {{\n    if (value >= -{s} && value <= {s}) {{\n      const whole = Math.trunc(value);\n", .{ max_safe, max_safe });
-            var remaining = int_count;
-            for (self.sidecar.msg.arms) |arm| {
-                switch (arm.payload) {
-                    .number => |class| {
-                        if (class != .i64) continue;
-                        remaining -= 1;
-                        const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: whole }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)) });
-                        if (remaining == 0) {
-                            try self.print("      return nscfCommit(coreUpdate(nscfCommitted, {s}));\n", .{object});
-                        } else {
-                            try self.print("      if (tag === NSCF_TAG_{s}) return nscfCommit(coreUpdate(nscfCommitted, {s}));\n", .{ arm.name, object });
-                        }
-                    },
-                    else => {},
-                }
-            }
-            try self.raw("    }\n    nscfTrap(\"a numeric dispatch value is NaN or past +-(2^53 - 1) — an i64 slot has no honest value for it\");\n  }\n");
         }
         try self.raw("  nscfUnknownTag(\"number\", tag);\n}\n");
     }
@@ -1129,18 +1133,19 @@ const FacadeEmitter = struct {
                     const number_prop = try tsProp(self.arena, desc.number_field);
                     const bytes_prop = try tsProp(self.arena, desc.bytes_field);
                     if (desc.number_class == .i64) {
+                        const class = self.nestedSlotClass(self.sidecar.msg.name, arm.name, desc.number_field) orelse .i64;
                         try self.print(
                             \\  if (tag === NSCF_TAG_{s}) {{
                             \\    // The number field is i64-classed: range-guard the raw f64 (an
                             \\    // ordered comparison excludes NaN) and state wholeness with
                             \\    // Math.trunc at the write.
-                            \\    if (value >= -{s} && value <= {s}) {{
+                            \\    if (value >= {s} && value <= {s}) {{
                             \\      return nscfCommit(coreUpdate(nscfCommitted, {{ kind: "{s}", {s}: Math.trunc(value), {s}: payload }}));
                             \\    }}
-                            \\    nscfTrap("a numeric dispatch value is NaN or past +-(2^53 - 1) — an i64 slot has no honest value for it");
+                            \\    nscfTrap("a numeric dispatch value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
                             \\  }}
                             \\
-                        , .{ arm.name, max_safe, max_safe, kind, number_prop, bytes_prop });
+                        , .{ arm.name, integerLowerBound(class), max_safe, kind, number_prop, bytes_prop });
                     } else {
                         try self.print("  if (tag === NSCF_TAG_{s}) return nscfCommit(coreUpdate(nscfCommitted, {{ kind: \"{s}\", {s}: value, {s}: payload }}));\n", .{ arm.name, kind, number_prop, bytes_prop });
                     }
@@ -1252,15 +1257,35 @@ const FacadeEmitter = struct {
                 .record => |name| {
                     const record = self.scrollShapedRecord(name) orelse continue;
                     // Construct the scroll record with the author's own
-                    // field spellings, each fed by its axis parameter.
+                    // field spellings, each fed by its axis parameter. An
+                    // integer-attested axis proves against its own signed or
+                    // unsigned range before Math.trunc states wholeness.
                     var fields_text: std.ArrayListUnmanaged(u8) = .empty;
+                    var guards: std.ArrayListUnmanaged(u8) = .empty;
                     for (record.fields, 0..) |field, index| {
                         const param = scrollParamFor(field.name) orelse field.name;
+                        const value = if (field.type == .i64) blk: {
+                            const class = self.slotClass(record.name, field.name) orelse .i64;
+                            if (guards.items.len > 0) try guards.appendSlice(self.arena, " && ");
+                            try guards.appendSlice(self.arena, try std.fmt.allocPrint(self.arena, "{s} >= {s} && {s} <= {s}", .{ param, integerLowerBound(class), param, max_safe }));
+                            break :blk try std.fmt.allocPrint(self.arena, "Math.trunc({s})", .{param});
+                        } else param;
                         if (index > 0) try fields_text.appendSlice(self.arena, ", ");
-                        try fields_text.appendSlice(self.arena, try std.fmt.allocPrint(self.arena, "{s}: {s}", .{ try tsProp(self.arena, field.name), param }));
+                        try fields_text.appendSlice(self.arena, try std.fmt.allocPrint(self.arena, "{s}: {s}", .{ try tsProp(self.arena, field.name), value }));
                     }
                     const object = try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\", {s}: {{ {s} }} }}", .{ try tsString(self.arena, arm.name), try tsProp(self.arena, self.memberOf(arm.member)), fields_text.items });
-                    try self.print("  if (tag === NSCF_TAG_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
+                    if (guards.items.len == 0) {
+                        try self.print("  if (tag === NSCF_TAG_{s}) {s}\n", .{ arm.name, try self.commitLine(object) });
+                    } else {
+                        try self.print(
+                            \\  if (tag === NSCF_TAG_{s}) {{
+                            \\    if ({s}) return nscfCommit(coreUpdate(nscfCommitted, {s}));
+                            \\    nscfTrap("a scroll dispatch value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it");
+                            \\  }}
+                            \\
+                        , .{ arm.name, guards.items, object });
+                        self.use(.trap);
+                    }
                 },
                 else => {},
             }
@@ -1421,7 +1446,8 @@ const FacadeEmitter = struct {
                     // number's bytes lead.
                     const number_access = try tsAccess(self.arena, "value", desc.number_field);
                     if (desc.number_class == .i64) {
-                        try self.print("    {s}(sink, {s});\n", .{ self.intWriter(self.sidecar.msg.name, arm.name), number_access });
+                        const slot_member = try std.fmt.allocPrint(self.arena, "{s}.{s}", .{ arm.name, desc.number_field });
+                        try self.print("    {s}(sink, {s});\n", .{ self.intWriter(self.sidecar.msg.name, slot_member), number_access });
                     } else {
                         self.use(.w_f64);
                         try self.print("    nscfWF64(sink, {s});\n", .{number_access});
@@ -1766,7 +1792,7 @@ const FacadeEmitter = struct {
             break :blk try std.fmt.allocPrint(self.arena, "{{ kind: \"{s}\",{s}}}", .{ try tsString(self.arena, arm_name), inner });
         };
         if (decode.guards.items.len > 0) {
-            try self.print("    if ({s}) {{\n      return nscfCommit(coreUpdate(nscfCommitted, {s}));\n    }}\n    nscfTrap(\"a decoded integer value is NaN or past +-(2^53 - 1) — an i64 slot has no honest value for it\");\n", .{ decode.guards.items, object });
+            try self.print("    if ({s}) {{\n      return nscfCommit(coreUpdate(nscfCommitted, {s}));\n    }}\n    nscfTrap(\"a decoded integer value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it\");\n", .{ decode.guards.items, object });
             self.use(.trap);
         } else {
             try self.print("    return nscfCommit(coreUpdate(nscfCommitted, {s}));\n", .{object});
@@ -1807,7 +1833,7 @@ const FacadeEmitter = struct {
                 }
                 try self.print("    nscfAssertConsumed(bytes, {s});\n", .{decode.offsetText()});
                 if (decode.guards.items.len > 0) {
-                    try self.print("    if ({s}) {{\n      return {s};\n    }}\n    nscfTrap(\"a decoded integer value is NaN or past +-(2^53 - 1) — an i64 slot has no honest value for it\");\n", .{ decode.guards.items, construction });
+                    try self.print("    if ({s}) {{\n      return {s};\n    }}\n    nscfTrap(\"a decoded integer value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it\");\n", .{ decode.guards.items, construction });
                 } else {
                     try self.print("    return {s};\n", .{construction});
                 }
@@ -2452,7 +2478,9 @@ const FacadeEmitter = struct {
             else => return null,
         };
         if (!emit_mod.isSynthesizedRef(container, member, name) or !nameListed(self.inlined, name)) return null;
-        return sidecar_mod.findStruct(self.sidecar.types, name);
+        const record = sidecar_mod.findStruct(self.sidecar.types, name) orelse return null;
+        if (record.origin != null) return null;
+        return record;
     }
 
     /// The synthesized single-use records this projection flattens into
@@ -2566,9 +2594,9 @@ const RecordDecode = struct {
         try self.emitter.print(fmt, args);
     }
 
-    fn addGuard(self: *Self, local: []const u8) Error!void {
+    fn addGuard(self: *Self, local: []const u8, class: IntegerClass) Error!void {
         if (self.guards.items.len > 0) try self.guards.appendSlice(self.arena(), " && ");
-        try self.guards.appendSlice(self.arena(), try std.fmt.allocPrint(self.arena(), "{s} >= -{s} && {s} <= {s}", .{ local, max_safe, local, max_safe }));
+        try self.guards.appendSlice(self.arena(), try std.fmt.allocPrint(self.arena(), "{s} >= {s} && {s} <= {s}", .{ local, integerLowerBound(class), local, max_safe }));
     }
 
     fn run(self: *Self, record: *const sidecar_mod.Struct) Error!void {
@@ -2595,16 +2623,16 @@ const RecordDecode = struct {
                 try self.exprs.append(self.arena(), .{ .name = field.name, .text = local });
             },
             .i64 => {
+                const class = em.slotClass(container, member) orelse .i64;
                 // The one saturating exception: selection offsets, where
                 // the host's select-all synthesizes the maxInt sentinel.
-                const saturating = std.mem.eql(u8, container, "TextSelection");
+                const saturating = class == .i64 and std.mem.eql(u8, container, "TextSelection");
                 em.use(if (saturating) .read_i64_saturating else .read_i64);
                 const local = try self.nextLocal();
                 try self.line("const {s} = {s}({s}, {s});\n", .{ local, if (saturating) "nscfReadI64Saturating" else "nscfReadI64", self.buf, self.offsetText() });
                 self.advance(8);
-                try self.addGuard(local);
+                try self.addGuard(local, class);
                 try self.exprs.append(self.arena(), .{ .name = field.name, .text = try std.fmt.allocPrint(self.arena(), "Math.trunc({s})", .{local}) });
-                _ = member;
             },
             .bool => {
                 em.use(.read_bool);
@@ -2665,16 +2693,17 @@ const RecordDecode = struct {
                 self.advance(1);
                 switch (inner.*) {
                     .i64 => {
+                        const class = em.slotClass(container, member) orelse .i64;
                         em.use(.read_i64);
                         const local = try self.nextLocal();
                         try self.line("let {s}: number | null = null;\n", .{local});
                         try self.line("if ({s}) {{\n", .{present});
                         const value_local = try self.nextLocal();
                         try self.line("  const {s} = nscfReadI64({s}, {s});\n", .{ value_local, self.buf, self.offsetText() });
-                        try self.line("  if ({s} >= -{s} && {s} <= {s}) {{\n", .{ value_local, max_safe, value_local, max_safe });
+                        try self.line("  if ({s} >= {s} && {s} <= {s}) {{\n", .{ value_local, integerLowerBound(class), value_local, max_safe });
                         try self.line("    {s} = Math.trunc({s});\n", .{ local, value_local });
                         try self.line("  }} else {{\n", .{});
-                        try self.line("    nscfTrap(\"a decoded integer value is NaN or past +-(2^53 - 1) — an i64 slot has no honest value for it\");\n", .{});
+                        try self.line("    nscfTrap(\"a decoded integer value is NaN or outside its attested exact-integer range — the integer slot has no honest value for it\");\n", .{});
                         try self.line("  }}\n", .{});
                         try self.line("}}\n", .{});
                         em.use(.trap);
@@ -3072,6 +3101,54 @@ test "u64-attested slots ride the unsigned writer" {
     try testing.expect(std.mem.indexOf(u8, signed, "nscfWU64") == null);
 }
 
+test "u64 attestations set nonnegative proofs on every ingress shape" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"Payload\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"id\", \"type\": {\"kind\": \"i64\"}}]},");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"model_helpers\": []", "\"model_helpers\": [{\"name\": \"nextId\", \"params\": [], \"returns\": {\"kind\": \"i64\"}, \"arena\": false}]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"id_set\", \"member\": \"value\", \"payload\": {\"kind\": \"number\", \"class\": \"i64\"}}, {\"name\": \"loaded\", \"member\": \"payload\", \"payload\": {\"kind\": \"record\", \"name\": \"Payload\"}}",
+    );
+    source = try std.mem.replaceOwned(u8, arena, source, "{\"name\": \"label_set\", \"payload\": {\"kind\": \"bytes\"}}", "{\"name\": \"sized\", \"payload\": {\"kind\": \"number_bytes\", \"number_field\": \"size\", \"number_class\": \"i64\", \"bytes_field\": \"label\"}}");
+    source = try std.mem.replaceOwned(u8, arena, source, "\"unbound\": [\"label_set\"]", "\"unbound\": [\"id_set\", \"loaded\", \"sized\"]");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"slot\": \"Model.count\", \"class\": \"i64\"}",
+        "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"Msg.id_set\", \"class\": \"u64\"}, {\"slot\": \"Msg.sized.size\", \"class\": \"u64\"}, {\"slot\": \"Payload.id\", \"class\": \"u64\"}, {\"slot\": \"helpers.nextId.return\", \"class\": \"u64\"}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === NSCF_TAG_id_set) {\n    if (value >= 0 && value <= 9007199254740991) {") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (tag === NSCF_TAG_sized) {\n    // The number field is i64-classed") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (value >= 0 && value <= 9007199254740991) {\n      return nscfCommit(coreUpdate(nscfCommitted, { kind: \"sized\"") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (nscfValue >= 0 && nscfValue <= 9007199254740991) return Math.trunc(nscfValue);") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "if (nscfV0 >= 0 && nscfV0 <= 9007199254740991) {") != null);
+}
+
+test "an authored pattern-named record keeps its member and re-export" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"Msg_loaded\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"status\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"ok\", \"type\": {\"kind\": \"bool\"}}]},");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"loaded\", \"member\": \"payload\", \"payload\": {\"kind\": \"record\", \"name\": \"Msg_loaded\"}}",
+    );
+    const generated = try facadeFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "export type { Model, Msg, Msg_loaded } from \"./core.ts\";") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "{ kind: \"loaded\", payload: { status:") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "{ kind: \"loaded\", status:") == null);
+}
+
 test "a helper taking a fixed export's name refuses" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -3200,4 +3277,11 @@ test "scroll-shaped record arms answer the dedicated scroll entry" {
     // Both routes: the generic record decode and the flat-scalar entry.
     try testing.expect(std.mem.indexOf(u8, generated, "if (tag === NSCF_TAG_scrolled) return nscfCommit(coreUpdate(nscfCommitted, { kind: \"scrolled\", scroll: { offsetX: offsetX, offsetY: offsetY, velocityX: velocityX, velocityY: velocityY, viewportExtentX: viewportExtentX, viewportExtentY: viewportExtentY, contentExtentX: contentExtentX, contentExtentY: contentExtentY } }));") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "nscfUnknownTag(\"scroll-state\", tag);") != null);
+
+    var integer_source = try std.mem.replaceOwned(u8, arena, source, "{\"name\": \"offsetX\", \"type\": {\"kind\": \"f64\"}}", "{\"name\": \"offsetX\", \"type\": {\"kind\": \"i64\"}}");
+    integer_source = try std.mem.replaceOwned(u8, arena, integer_source, "{\"name\": \"offsetY\", \"type\": {\"kind\": \"f64\"}}", "{\"name\": \"offsetY\", \"type\": {\"kind\": \"i64\"}}");
+    integer_source = try std.mem.replaceOwned(u8, arena, integer_source, "{\"slot\": \"Model.count\", \"class\": \"i64\"}", "{\"slot\": \"Model.count\", \"class\": \"i64\"}, {\"slot\": \"ScrollState.offsetX\", \"class\": \"u64\"}, {\"slot\": \"ScrollState.offsetY\", \"class\": \"i64\"}");
+    const integer_generated = try facadeFromJson(arena, integer_source);
+    try testing.expect(std.mem.indexOf(u8, integer_generated, "offsetX >= 0 && offsetX <= 9007199254740991 && offsetY >= -9007199254740991 && offsetY <= 9007199254740991") != null);
+    try testing.expect(std.mem.indexOf(u8, integer_generated, "offsetX: Math.trunc(offsetX), offsetY: Math.trunc(offsetY)") != null);
 }

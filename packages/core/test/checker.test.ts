@@ -19,6 +19,27 @@ test("clean core passes the checker", () => {
   assert.deepEqual(ruleIds(checkOnly(core)), []);
 });
 
+test("NS1038 reserves generated contract metadata names", () => {
+  const moduleName = checkOnly(`${core}\nexport const type_origins = 1;`);
+  assert.ok(ruleIds(moduleName).includes("NS1038"), `got ${ruleIds(moduleName)}`);
+  assert.ok(moduleName.diagnostics.some((d) => d.message.includes("type-origin metadata")), JSON.stringify(moduleName.diagnostics));
+
+  const unionMember = checkOnly(`
+export interface Model { readonly count: number; }
+export type Msg =
+  | { readonly kind: "payload_members"; readonly value: number }
+  | { readonly kind: "tick" };
+export function update(model: Model, msg: Msg): Model {
+  switch (msg.kind) {
+    case "payload_members": return { count: msg.value };
+    case "tick": return model;
+  }
+}
+`);
+  assert.ok(ruleIds(unionMember).includes("NS1038"), `got ${ruleIds(unionMember)}`);
+  assert.ok(unionMember.diagnostics.some((d) => d.message.includes("single-payload metadata")), JSON.stringify(unionMember.diagnostics));
+});
+
 test("NS1001 mutating array methods", () => {
   const ids = ruleIds(
     checkOnly(`

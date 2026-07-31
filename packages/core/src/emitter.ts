@@ -269,7 +269,7 @@ const emittedFixtureNames = [
   "jsPow", "tagEq", "tagIsNull",
   "tagCast", "strEq", "strIsNull", "numEq", "numIsNull", "empty_bytes", "UpdateResult", "InitResult",
   "CommitMode", "commitBytes", "commitScalars", "commitModelRoot",
-  "shouldCopy", "inOldHeap", "old_heap_base", "old_heap_len", "core_root",
+  "shouldCopy", "inOldHeap", "old_heap_base", "old_heap_len", "core_root", "type_origins",
 ] as const;
 
 /// The `Cmd.audio*` control verbs and their zig enum literals (`resume` is a
@@ -375,6 +375,7 @@ export class Emitter {
     this.fileSet = new Set(this.files);
     this.sourceName = sourceName;
     this.capacities = capacities;
+    this.validateGeneratedMetadataNames();
     this.claimModuleNames();
     this.computeExceptions();
   }
@@ -518,6 +519,43 @@ export class Emitter {
     };
     visit(root);
     return found;
+  }
+
+  /// Layer-3 re-derivation of the fixed names the contract extractor reads.
+  /// The checker gives the normal teaching; this fence prevents a direct
+  /// emitter caller from producing duplicate Zig declarations.
+  private validateGeneratedMetadataNames(): void {
+    const refuseTypeOrigins = (name: ts.Identifier): void => {
+      if (name.text === "type_origins") {
+        this.fail(name, "`type_origins` collides with the generated contract type-origin metadata declaration; rename the authored declaration.", "NS1038");
+      }
+    };
+    for (const file of this.files) {
+      for (const stmt of file.statements) {
+        if (
+          ts.isInterfaceDeclaration(stmt) ||
+          ts.isTypeAliasDeclaration(stmt) ||
+          ts.isClassDeclaration(stmt) ||
+          ts.isFunctionDeclaration(stmt)
+        ) {
+          if (stmt.name) refuseTypeOrigins(stmt.name);
+        } else if (ts.isVariableStatement(stmt)) {
+          for (const decl of stmt.declarationList.declarations) {
+            if (ts.isIdentifier(decl.name)) refuseTypeOrigins(decl.name);
+          }
+        }
+      }
+      for (const binding of exportListBindings(this.tast, file)) {
+        if (binding.exportedName === "type_origins") {
+          this.fail(binding.spec.name, "`type_origins` collides with the generated contract type-origin metadata declaration; rename the export.", "NS1038");
+        }
+      }
+    }
+    for (const union of this.table.unions.values()) {
+      if (union.arms.some((arm) => arm.fields.length === 1) && union.arms.some((arm) => arm.tag === "payload_members")) {
+        this.fail(union.decl.name, `Union \`${union.name}\` has an arm named \`payload_members\`, which collides with its generated single-payload metadata declaration; rename the arm.`, "NS1038");
+      }
+    }
   }
 
   /// Claim every module-level name up front, across all files: fixture

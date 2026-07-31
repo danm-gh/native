@@ -1290,15 +1290,10 @@ const Emitter = struct {
 /// A table entry whose name follows the schema's synthesized pattern
 /// for a reference site (`<Container>_<member>`).
 ///
-/// The sidecar carries no synthesized-vs-authored marker, so a
-/// single-use AUTHORED type that happens to spell exactly
-/// `<Container>_<member>` at its one reference site is indistinguishable
-/// from a synthesized entry and inlines too — layout, fingerprint, and
-/// binding surface stay identical either way; only `@typeName`-carrying
-/// artifacts see the difference. The bias must run this direction: real
-/// synthesized records (the common case, pinned by the conformance
-/// corpus) MUST inline to mirror the emitted module. Closing the
-/// ambiguity needs a schema fact (see SCHEMA-GAPS.md).
+/// Current sidecars carry an `origin` for authored declarations and null
+/// for synthesized names, so provenance decides first. Older sidecars have
+/// no origins; their null entries retain the name-pattern fallback so the
+/// reader remains backward compatible with that generation.
 pub fn isSynthesizedRef(container: []const u8, member: []const u8, name: []const u8) bool {
     if (name.len != container.len + 1 + member.len) return false;
     return std.mem.startsWith(u8, name, container) and
@@ -1338,6 +1333,9 @@ pub fn inlinedTableNames(arena: std.mem.Allocator, sidecar: Sidecar) error{OutOf
         // compile collapse it while the mirror keeps a record — the two
         // projections must never diverge, so such records stay named.
         const entry = sidecar_mod.findStruct(sidecar.types, name) orelse continue;
+        // A declaring module proves this is an authored type even when its
+        // spelling happens to match the synthesized-name convention.
+        if (entry.origin != null) continue;
         if (entry.fields.len < 2) continue;
         try names.append(arena, name);
     }
@@ -2345,11 +2343,9 @@ test "a single-use pattern-named record inlines to mirror the emitted module" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    // The sidecar carries no synthesized-vs-authored marker
-    // (SCHEMA-GAPS.md records the missing fact), so a unique-reference
-    // pattern match MUST inline: this is the shape every real
-    // anonymous record in the conformance corpus takes, and a named
-    // declaration here would fail every fixture's artifact comparison.
+    // A legacy null-origin sidecar retains the pattern fallback: this is
+    // the shape every real anonymous record in the older conformance
+    // corpus takes, and a named declaration here would skew its artifacts.
     var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"Msg_loaded\", \"fields\": [{\"name\": \"status\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"ok\", \"type\": {\"kind\": \"bool\"}}]},");
     source = try std.mem.replaceOwned(
         u8,
@@ -2361,6 +2357,23 @@ test "a single-use pattern-named record inlines to mirror the emitted module" {
     const generated = try emitFromJson(arena, source);
     try testing.expect(std.mem.indexOf(u8, generated, "loaded: struct { status: f64, ok: bool },") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "pub const Msg_loaded") == null);
+}
+
+test "a single-use authored pattern-named record stays declared by provenance" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var source = try std.mem.replaceOwned(u8, arena, sidecar_mod.minimal_valid_json, "\"structs\": [", "\"structs\": [\n      {\"name\": \"Msg_loaded\", \"origin\": \"core.ts\", \"fields\": [{\"name\": \"status\", \"type\": {\"kind\": \"f64\"}}, {\"name\": \"ok\", \"type\": {\"kind\": \"bool\"}}]},");
+    source = try std.mem.replaceOwned(
+        u8,
+        arena,
+        source,
+        "{\"name\": \"bump\", \"payload\": {\"kind\": \"void\"}}",
+        "{\"name\": \"loaded\", \"member\": \"payload\", \"payload\": {\"kind\": \"record\", \"name\": \"Msg_loaded\"}}",
+    );
+    const generated = try emitFromJson(arena, source);
+    try testing.expect(std.mem.indexOf(u8, generated, "pub const Msg_loaded = struct") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "loaded: Msg_loaded,") != null);
 }
 
 test "keywords and exotic names are quoted" {

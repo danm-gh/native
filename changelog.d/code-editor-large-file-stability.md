@@ -1,3 +1,7 @@
 fix: **Reliable large-code editing**: editable code now repaints only visible selected glyphs and caches longest-line width measurements, keeping large selections and steady-state no-wrap rendering inside bounded display-list and host-measurement budgets.
 - **Stable code-editor reads**: switching tabs no longer cancels a pinned file's load, and reopened secondary windows keep monotonic file-effect keys so late completions cannot populate a newer document.
 - **Unsaved-edit protection**: opening another folder or closing a secondary editor window now refuses while that window still has dirty documents.
+- **Steady editor tabs**: active and inactive tabs now share the same background and label alignment, so filenames no longer shift when selection changes.
+- **Familiar file opening**: Command+Down Arrow now opens the selected tree file as a persistent tab; Command+Enter remains available to the focused control.
+- **Visible active tabs**: inactive tabs retain their bottom divider, and opening, clicking, or keyboard-cycling to a tab now scrolls it into view horizontally.
+- **Distinct new windows**: Command+N now opens each editor window slightly down and to the right of the active window so the new window is immediately apparent.

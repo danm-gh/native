@@ -57,70 +57,79 @@
         <stack min-width="360">
           <if test="{selectedIsFile}">
             <column>
-              <!-- App-authored flat editor tabs: the baseline paints behind
-                   the tabs, so the full-height active tab masks it and flows
-                   directly into the editor while inactive tabs leave the
-                   divider visible. A single-click preview remains italic;
-                   double-clicking the tree row pins it as normal text. -->
+              <!-- App-authored flat editor tabs share one surface and height
+                   so labels stay fixed when selection moves. The baseline
+                   paints behind the tabs, while a single-click preview stays
+                   italic; double-clicking the tree row pins it as normal text. -->
               <stack height="37" background="background" label="Editor tab strip">
                 <column grow="1">
                   <spacer height="36" />
                   <separator />
                 </column>
-                <scroll grow="1" axis="horizontal" overscroll="none" label="Open file tabs">
+                <!-- The selected-path key reapplies the model offset when a
+                     new preview replaces another tab in the same slot. -->
+                <scroll key="{selectedPath}" grow="1" axis="horizontal" value-x="{tabScrollX}" overscroll="none" label="Open file tabs">
                   <row height="37">
                     <for each="openTabs" key="relative_path" as="tab">
                       <if test="{tab.selected}">
-                        <row height="37" gap="6" cross="center" background="background" selected="true" role="tab" label="{tab.name}" on-press="activate_tab:{tab.index}" on-double-press="pin_entry:{tab.index}" on-hover-enter="hover_tab:{tab.index}" on-hover-leave="unhover_tab:{tab.index}">
-                          <spacer width="10" />
-                          <icon name="file-text" width="14" height="14" foreground="text_muted" />
-                          <if test="{tab.preview}">
-                            <text><span italic="true">{tab.name}</span></text>
-                          </if>
-                          <else>
-                            <text wrap="false">{tab.name}</text>
-                          </else>
-                          <if test="{tab.dirty}">
-                            <text foreground="accent">●</text>
-                          </if>
-                          <if test="{tab.show_close}">
-                            <button width="22" height="22" size="icon" variant="ghost" icon="x" label="Close tab" on-press="close_tab:{tab.index}"></button>
-                          </if>
-                          <else>
-                            <spacer width="22" />
-                          </else>
-                          <separator width="1" height="36" />
+                        <stack width="180" height="37" background="background" selected="true" role="tab" label="{tab.name}" on-press="activate_tab:{tab.index}" on-double-press="pin_entry:{tab.index}" on-hover-enter="hover_tab:{tab.index}" on-hover-leave="unhover_tab:{tab.index}">
+                          <row height="37" gap="6" cross="center">
+                            <spacer width="10" />
+                            <icon name="file-text" width="14" height="14" foreground="text_muted" />
+                            <if test="{tab.preview}">
+                              <text grow="1"><span italic="true">{tab.name}</span></text>
+                            </if>
+                            <else>
+                              <text grow="1" wrap="false">{tab.name}</text>
+                            </else>
+                            <if test="{tab.dirty}">
+                              <text foreground="accent">●</text>
+                            </if>
+                            <if test="{tab.show_close}">
+                              <button width="22" height="22" size="icon" variant="ghost" icon="x" label="Close tab" on-press="close_tab:{tab.index}"></button>
+                            </if>
+                            <else>
+                              <spacer width="22" />
+                            </else>
+                            <separator width="1" height="36" />
+                          </row>
                           <context-menu>
                             <menu-item on-press="close_tab:{tab.index}">Close</menu-item>
                             <menu-item disabled="{tab.only_tab}" on-press="close_other_tabs:{tab.index}">Close Others</menu-item>
                           </context-menu>
-                        </row>
+                        </stack>
                       </if>
                       <else>
-                        <row height="36" gap="6" cross="center" background="surface_subtle" foreground="text_muted" role="tab" label="{tab.name}" on-press="activate_tab:{tab.index}" on-double-press="pin_entry:{tab.index}" on-hover-enter="hover_tab:{tab.index}" on-hover-leave="unhover_tab:{tab.index}">
-                          <spacer width="10" />
-                          <icon name="file-text" width="14" height="14" foreground="text_muted" />
-                          <if test="{tab.preview}">
-                            <text><span italic="true">{tab.name}</span></text>
-                          </if>
-                          <else>
-                            <text wrap="false">{tab.name}</text>
-                          </else>
-                          <if test="{tab.dirty}">
-                            <text foreground="accent">●</text>
-                          </if>
-                          <if test="{tab.show_close}">
-                            <button width="22" height="22" size="icon" variant="ghost" icon="x" label="Close tab" on-press="close_tab:{tab.index}"></button>
-                          </if>
-                          <else>
-                            <spacer width="22" />
-                          </else>
-                          <separator width="1" height="36" />
+                        <stack width="180" height="37" background="background" foreground="text_muted" role="tab" label="{tab.name}" on-press="activate_tab:{tab.index}" on-double-press="pin_entry:{tab.index}" on-hover-enter="hover_tab:{tab.index}" on-hover-leave="unhover_tab:{tab.index}">
+                          <row height="37" gap="6" cross="center">
+                            <spacer width="10" />
+                            <icon name="file-text" width="14" height="14" foreground="text_muted" />
+                            <if test="{tab.preview}">
+                              <text grow="1"><span italic="true">{tab.name}</span></text>
+                            </if>
+                            <else>
+                              <text grow="1" wrap="false">{tab.name}</text>
+                            </else>
+                            <if test="{tab.dirty}">
+                              <text foreground="accent">●</text>
+                            </if>
+                            <if test="{tab.show_close}">
+                              <button width="22" height="22" size="icon" variant="ghost" icon="x" label="Close tab" on-press="close_tab:{tab.index}"></button>
+                            </if>
+                            <else>
+                              <spacer width="22" />
+                            </else>
+                            <separator width="1" height="36" />
+                          </row>
+                          <column grow="1">
+                            <spacer height="36" />
+                            <separator />
+                          </column>
                           <context-menu>
                             <menu-item on-press="close_tab:{tab.index}">Close</menu-item>
                             <menu-item disabled="{tab.only_tab}" on-press="close_other_tabs:{tab.index}">Close Others</menu-item>
                           </context-menu>
-                        </row>
+                        </stack>
                       </else>
                     </for>
                   </row>

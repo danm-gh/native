@@ -2471,6 +2471,15 @@ test "mac active implicit show activates before making the window key" {
     ) != null);
 }
 
+test "mac unrestored secondary windows cascade from the active window" {
+    for ([_][]const u8{ @embedFile("appkit_host.m"), @embedFile("cef_host.mm") }) |host_source| {
+        try std.testing.expect(std.mem.indexOf(u8, host_source, "NSWindow *referenceWindow = NSApp.keyWindow ?: self.window;") != null);
+        try std.testing.expect(std.mem.indexOf(u8, host_source, "NSMinX(referenceFrame) + 24.0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, host_source, "NSMaxY(referenceFrame) - 24.0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, host_source, "if (!makeMain && referenceWindow)") != null);
+    }
+}
+
 test "mac explicit focus activates before making the window key" {
     const host_source = @embedFile("appkit_host.m");
     try std.testing.expect(std.mem.indexOf(u8, host_source,

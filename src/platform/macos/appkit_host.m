@@ -7352,6 +7352,18 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
     }
     if (!restoreFrame) {
         [window center];
+        // AppKit centers every new window by default, which leaves a
+        // model-declared secondary window exactly covering the editor that
+        // opened it. Cascade from the active window like Win32's default
+        // placement so repeated Command+N windows stay visibly distinct.
+        NSWindow *referenceWindow = NSApp.keyWindow ?: self.window;
+        if (!makeMain && referenceWindow) {
+            NSRect referenceFrame = referenceWindow.frame;
+            [window setFrameTopLeftPoint:NSMakePoint(
+                NSMinX(referenceFrame) + 24.0,
+                NSMaxY(referenceFrame) - 24.0
+            )];
+        }
     }
     if (makeMain) NativeSdkLaunchLap("window_chrome_ready");
 

@@ -946,7 +946,20 @@ static const char *NativeSdkCefBridgeScript() {
     if ((windowFlags & (1u << 2)) != 0) window.ignoresMouseEvents = YES;
     if ((windowFlags & (1u << 3)) != 0) [self.passiveShowWindows addObject:key];
     [window setTitle:title.length > 0 ? title : @"native-sdk"];
-    if (!restoreFrame) [window center];
+    if (!restoreFrame) {
+        [window center];
+        // Match the system-WebView host and Win32's default placement:
+        // secondary windows should reveal the window that opened them,
+        // not land directly on top of it.
+        NSWindow *referenceWindow = NSApp.keyWindow ?: self.window;
+        if (!makeMain && referenceWindow) {
+            NSRect referenceFrame = referenceWindow.frame;
+            [window setFrameTopLeftPoint:NSMakePoint(
+                NSMinX(referenceFrame) + 24.0,
+                NSMaxY(referenceFrame) - 24.0
+            )];
+        }
+    }
 
     NSView *stackRoot = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, width, height)];
     stackRoot.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;

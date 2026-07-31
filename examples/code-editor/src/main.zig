@@ -36,6 +36,9 @@ pub const max_relative_path_bytes: usize = 512;
 pub const max_name_bytes: usize = 255;
 /// Pinned tabs are bounded like the folder scan and source preview.
 pub const max_open_tabs: usize = 16;
+/// Stable tab geometry lets the model move the horizontal strip to the
+/// selected tab without depending on host-only text measurements.
+pub const editor_tab_width: f32 = 180;
 /// One extra slot holds the replaceable single-click preview beside the
 /// persistent tab limit.
 pub const max_documents: usize = max_open_tabs + 1;
@@ -379,6 +382,26 @@ pub const Model = struct {
         }
         for (out[0..count]) |*tab| tab.only_tab = count == 1;
         return out[0..count];
+    }
+
+    /// Programmatic horizontal offset that places the selected tab at the
+    /// leading edge. The scroll element is keyed by the selected path, so a
+    /// newly opened preview reapplies this value even when it replaces the
+    /// previous preview in the same ordinal slot.
+    pub fn tabScrollX(model: *const Model) f32 {
+        const selected_index = model.selected_entry orelse return 0;
+        var position: usize = 0;
+        for (model.pinned_entries[0..model.pinned_count]) |index| {
+            if (index >= model.entry_count or model.entries[index].kind != .file) continue;
+            if (index == selected_index) return @as(f32, @floatFromInt(position)) * editor_tab_width;
+            position += 1;
+        }
+        if (model.preview_entry) |index| {
+            if (index == selected_index and index < model.entry_count and model.entries[index].kind == .file and !model.isPinned(index)) {
+                return @as(f32, @floatFromInt(position)) * editor_tab_width;
+            }
+        }
+        return 0;
     }
 
     fn openTab(model: *const Model, index: u16, preview_tab: bool) OpenTab {
@@ -1465,13 +1488,12 @@ pub fn onCommand(name: []const u8) ?Msg {
     return null;
 }
 
-/// Tree rows consume plain Enter through their inline-rename `on-submit`.
-/// The primary chord is deliberately left to this app fallback, which
-/// pins the model's tree selection without stealing Enter from the rename
-/// field or the code editor (text entries outrank `on_key`).
+/// Command+Down is deliberately left to this app fallback, which pins the
+/// model's tree selection without interfering with the tree's plain-Enter
+/// inline rename or the code editor (text entries outrank `on_key`).
 pub fn onKey(keyboard: canvas.WidgetKeyboardEvent) ?Msg {
     if (!keyboard.modifiers.hasCommandModifier() or keyboard.modifiers.alt or keyboard.modifiers.shift) return null;
-    if (std.ascii.eqlIgnoreCase(keyboard.key, "enter") or std.ascii.eqlIgnoreCase(keyboard.key, "return")) {
+    if (std.ascii.eqlIgnoreCase(keyboard.key, "arrowdown")) {
         return .pin_tree_entry;
     }
     return null;

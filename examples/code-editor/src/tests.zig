@@ -352,7 +352,7 @@ test "tree keyboard selection preserves the preview and Left selects a file's fo
     try testing.expectEqual(readme_index, model.selected_entry.?);
 }
 
-test "Enter starts inline rename while Cmd+Enter pins the tree file" {
+test "Enter starts inline rename while Cmd+Down pins the tree file" {
     var model = try fixtureModel();
     defer model.deinit();
     const src_index = model.findEntry("src").?;
@@ -394,6 +394,11 @@ test "Enter starts inline rename while Cmd+Enter pins the tree file" {
     pin_model.entries[pin_src].expanded = true;
     const pin_index = pin_model.findEntry(main_path).?;
     pin_model.tree_selected_entry = pin_index;
+    const command_down = canvas.WidgetKeyboardEvent{
+        .phase = .key_down,
+        .key = "arrowdown",
+        .modifiers = .{ .super = true },
+    };
     const command_enter = canvas.WidgetKeyboardEvent{
         .phase = .key_down,
         .key = "enter",
@@ -402,9 +407,10 @@ test "Enter starts inline rename while Cmd+Enter pins the tree file" {
     _ = arena_state.reset(.retain_capacity);
     tree = try buildTree(arena_state.allocator(), &pin_model);
     const pin_row = findByRoleAndLabel(tree.root, .treeitem, "main.zig").?;
-    try testing.expect(tree.msgForKeyboard(pin_row.id, command_enter) == null);
-    try testing.expectEqual(main.Msg.pin_tree_entry, main.onKey(command_enter).?);
-    main.update(&pin_model, main.onKey(command_enter).?, &fx);
+    try testing.expect(tree.msgForKeyboard(pin_row.id, command_down) == null);
+    try testing.expect(main.onKey(command_enter) == null);
+    try testing.expectEqual(main.Msg.pin_tree_entry, main.onKey(command_down).?);
+    main.update(&pin_model, main.onKey(command_down).?, &fx);
     try testing.expect(pin_model.isPinned(pin_index));
     try testing.expectEqual(pin_index, pin_model.selected_entry.?);
     try testing.expect(pin_model.preview_entry == null);
@@ -631,9 +637,39 @@ test "single-click previews replace each other while double-click pins persisten
     _ = arena_state.reset(.retain_capacity);
     tree = try buildTree(arena, &model);
     const active_preview = findByRoleAndLabel(tree.root, .tab, "README.md").?;
+    try testing.expectEqual(main.editor_tab_width, model.tabScrollX());
     try testing.expect(findByLabel(active_preview, "Close tab") != null);
     const inactive_util = findByRoleAndLabel(tree.root, .tab, "util.zig").?;
     try testing.expect(findByLabel(inactive_util, "Close tab") == null);
+    try testing.expectEqual(active_preview.style.background.?, inactive_util.style.background.?);
+    try testing.expectEqual(canvas.WidgetKind.stack, active_preview.kind);
+    try testing.expectEqual(canvas.WidgetKind.stack, inactive_util.kind);
+    try testing.expectEqual(@as(usize, 2), inactive_util.children.len);
+    const inactive_baseline_layer = inactive_util.children[1];
+    try testing.expectEqual(canvas.WidgetKind.column, inactive_baseline_layer.kind);
+    try testing.expectEqual(canvas.WidgetKind.separator, inactive_baseline_layer.children[1].kind);
+
+    var tab_nodes: [256]canvas.WidgetLayoutNode = undefined;
+    const tab_layout = try canvas.layoutWidgetTree(
+        tree.root,
+        native_sdk.geometry.RectF.init(0, 0, main.window_width, main.window_height),
+        &tab_nodes,
+    );
+    const active_frame = tab_layout.findById(active_preview.id).?.frame;
+    const inactive_frame = tab_layout.findById(inactive_util.id).?.frame;
+    try testing.expectEqual(active_frame.height, inactive_frame.height);
+    try testing.expectEqual(main.editor_tab_width, active_frame.width);
+    try testing.expectEqual(main.editor_tab_width, inactive_frame.width);
+    const inactive_baseline_frame = tab_layout.findById(inactive_baseline_layer.children[1].id).?.frame;
+    try testing.expectEqual(inactive_frame.width, inactive_baseline_frame.width);
+    try testing.expectEqual(inactive_frame.maxY(), inactive_baseline_frame.maxY());
+    const active_label = findByText(active_preview, .text, "README.md").?;
+    const inactive_label = findByText(inactive_util, .text, "util.zig").?;
+    try testing.expectEqual(
+        tab_layout.findById(active_label.id).?.frame.y,
+        tab_layout.findById(inactive_label.id).?.frame.y,
+    );
+
     const hover_message = tree.msgFor(inactive_util.id, .hover_enter).?;
     try testing.expectEqual(main.Msg{ .hover_tab = util_index }, hover_message);
     main.update(&model, hover_message, &fx);
@@ -652,6 +688,7 @@ test "single-click previews replace each other while double-click pins persisten
     try testing.expect(model.hovered_tab == null);
 
     main.update(&model, .{ .activate_tab = util_index }, &fx);
+    try testing.expectEqual(@as(f32, 0), model.tabScrollX());
     _ = arena_state.reset(.retain_capacity);
     tabs = model.openTabs(arena);
     try testing.expect(tabs[0].selected);
@@ -690,6 +727,42 @@ test "switching tabs keeps pinned file reads alive" {
     try testing.expectEqualStrings("pub fn main() void {}\n", model.documents[0].editor.text());
 }
 
+test "selected tab offset reveals an overflowing tab in the horizontal strip" {
+    var model = try fixtureModel();
+    defer model.deinit();
+    const main_path = try std.fs.path.join(testing.allocator, &.{ "src", "main.zig" });
+    defer testing.allocator.free(main_path);
+    const util_path = try std.fs.path.join(testing.allocator, &.{ "src", "lib", "util.zig" });
+    defer testing.allocator.free(util_path);
+    const main_index = model.findEntry(main_path).?;
+    const util_index = model.findEntry(util_path).?;
+    const readme_index = model.findEntry("README.md").?;
+
+    model.pinned_entries[0] = main_index;
+    model.pinned_entries[1] = util_index;
+    model.pinned_count = 2;
+    model.preview_entry = readme_index;
+    seedActiveDocument(&model, readme_index, "# Fixture\n");
+
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const tree = try buildTree(arena_state.allocator(), &model);
+    const strip = findByLabel(tree.root, "Open file tabs").?;
+    const selected_tab = findByRoleAndLabel(tree.root, .tab, "README.md").?;
+    try testing.expectEqual(2 * main.editor_tab_width, strip.value_x);
+
+    var nodes: [256]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        tree.root,
+        native_sdk.geometry.RectF.init(0, 0, 600, main.window_height),
+        &nodes,
+    );
+    const strip_frame = layout.findById(strip.id).?.frame;
+    const selected_frame = layout.findById(selected_tab.id).?.frame;
+    try testing.expect(selected_frame.x >= strip_frame.x);
+    try testing.expect(selected_frame.maxX() <= strip_frame.maxX());
+}
+
 test "previous and next tab commands cycle the open tab order with wrapping" {
     var model = try fixtureModel();
     defer model.deinit();
@@ -716,10 +789,13 @@ test "previous and next tab commands cycle the open tab order with wrapping" {
 
     main.update(&model, .next_tab, &fx);
     try testing.expectEqual(readme_index, model.selected_entry.?);
+    try testing.expectEqual(2 * main.editor_tab_width, model.tabScrollX());
     main.update(&model, .next_tab, &fx);
     try testing.expectEqual(main_index, model.selected_entry.?);
+    try testing.expectEqual(@as(f32, 0), model.tabScrollX());
     main.update(&model, .previous_tab, &fx);
     try testing.expectEqual(readme_index, model.selected_entry.?);
+    try testing.expectEqual(2 * main.editor_tab_width, model.tabScrollX());
 
     model.selected_entry = null;
     main.update(&model, .next_tab, &fx);
@@ -1170,7 +1246,7 @@ test "the empty and loaded views expose the picker, tree, and highlighted code s
     const preview_tab = findByRoleAndLabel(tree.root, .tab, tsx_name).?;
     try testing.expect(preview_tab.state.selected);
     try testing.expectEqual(main.Msg{ .activate_tab = model.selected_entry.? }, tree.msgForPointer(preview_tab.id, .up).?);
-    try testing.expectEqual(canvas.WidgetKind.row, preview_tab.kind);
+    try testing.expectEqual(canvas.WidgetKind.stack, preview_tab.kind);
     try testing.expect(preview_tab.style.background != null);
     try testing.expect(preview_tab.style.radius == null);
     try testing.expectEqual(canvas.WidgetKind.stack, tab_strip.kind);

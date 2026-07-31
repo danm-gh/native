@@ -589,7 +589,7 @@
       },
       {
         "name": "language",
-        "doc": "code: literal lexer name. Supports Zig, JavaScript/TypeScript, JSX/TSX, JSON, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, and SQL; unknown names are a validation error."
+        "doc": "code: literal lexer name. Supports Zig, JavaScript/TypeScript, JSX/TSX, JSON, YAML, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, SQL, and Markdown; unknown names are a validation error."
       },
       {
         "name": "editable",

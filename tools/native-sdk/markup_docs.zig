@@ -177,7 +177,7 @@ pub const markdown_attr_docs = [_]Doc{
 
 pub const code_attr_docs = [_]Doc{
     .{ .name = "source", .doc = "code: one required {binding} producing source text (a []const u8 field or fn; arena fns work)." },
-    .{ .name = "language", .doc = "code: literal lexer name. Supports Zig, JavaScript/TypeScript, JSX/TSX, JSON, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, and SQL; unknown names are a validation error." },
+    .{ .name = "language", .doc = "code: literal lexer name. Supports Zig, JavaScript/TypeScript, JSX/TSX, JSON, YAML, shell, Python, Rust, C-family, Go, HTML/XML/SVG, CSS-family, SQL, and Markdown; unknown names are a validation error." },
     .{ .name = "editable", .doc = "code: true enables text editing while retaining syntax highlighting; pair it with on-input to apply TextInputEvent updates. Read-only by default." },
     .{ .name = "line-numbers", .doc = "code: opt into muted logical line numbers. Off by default; a wrapped logical line stays paired with its number." },
     .{ .name = "wrap", .doc = "code: true by default. false preserves logical lines and puts the highlighted content in one horizontal scroll region." },

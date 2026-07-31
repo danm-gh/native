@@ -1682,48 +1682,79 @@ fn emitVisibleWrappedEditableCodeLines(
         if (line_top > visible_bounds.maxY()) return;
 
         if (line_bottom >= visible_bounds.y) {
-            for (line_layout.runs) |run| {
-                if (run.text.len == 0) continue;
-                const local_bounds = text_spans_model.textSpanRunBounds(line_layout, run);
-                const run_bounds = geometry.RectF.init(
-                    content.x + local_bounds.x,
-                    line_top + local_bounds.y,
-                    local_bounds.width,
-                    local_bounds.height,
-                );
-                if (!run_bounds.intersects(visible_bounds)) continue;
-                const span = highlighted[run.span_index];
-                const absolute_x = content.x + run.x;
-                const visible = text_spans_model.textSpanRunVisibleSlice(
-                    span,
-                    run,
-                    layout_options,
-                    visible_bounds.x - absolute_x,
-                    visible_bounds.maxX() - absolute_x,
-                ) orelse continue;
-                if (!budget.hasCommand(builder)) return;
-                const admitted_text = codeTextPrefix(visible.text, budget.remainingText());
-                if (admitted_text.len == 0) return;
-                const color_ref = span.color orelse .syntax_plain;
-                try builder.drawText(.{
-                    .id = codeTextPaintCommandId(editableCodeRunCommandId(widget, logical_line, run), paint),
-                    .font_id = run.font_id,
-                    .size = run.size,
-                    .origin = pixelSnapTextPoint(tokens, geometry.PointF.init(
-                        absolute_x + visible.x,
-                        line_top + run.baseline,
-                    )),
-                    .color = paint.color orelse text_spans_model.textSpanColorValue(tokens.colors, color_ref),
-                    .text = admitted_text,
-                    .text_layout = .{
-                        .max_width = 0,
-                        .line_height = line_height,
-                        .wrap = .none,
-                        .alignment = .start,
-                        .measure = tokens.text_measure,
-                    },
-                });
-                budget.chargeText(admitted_text.len);
+            const first_visible_line: usize = if (visible_bounds.y > line_top and
+                std.math.isFinite(visible_bounds.y - line_top))
+                @intFromFloat(@floor((visible_bounds.y - line_top) / line_height))
+            else
+                0;
+            const last_visible_line: usize = if (visible_bounds.maxY() > line_top and
+                std.math.isFinite(visible_bounds.maxY() - line_top))
+                @intFromFloat(@floor((visible_bounds.maxY() - line_top) / line_height))
+            else
+                first_visible_line;
+            var page_first_line = first_visible_line -| 1;
+            while (true) {
+                const page_layout = if (page_first_line == 0)
+                    line_layout
+                else
+                    text_spans_model.layoutTextSpansFromLine(
+                        highlighted,
+                        layout_options,
+                        page_first_line,
+                        &line_runs,
+                    );
+                for (page_layout.runs) |run| {
+                    if (run.text.len == 0) continue;
+                    const local_bounds = text_spans_model.textSpanRunBounds(page_layout, run);
+                    const run_bounds = geometry.RectF.init(
+                        content.x + local_bounds.x,
+                        line_top + local_bounds.y,
+                        local_bounds.width,
+                        local_bounds.height,
+                    );
+                    if (!run_bounds.intersects(visible_bounds)) continue;
+                    const span = highlighted[run.span_index];
+                    const absolute_x = content.x + run.x;
+                    const visible = text_spans_model.textSpanRunVisibleSlice(
+                        span,
+                        run,
+                        layout_options,
+                        visible_bounds.x - absolute_x,
+                        visible_bounds.maxX() - absolute_x,
+                    ) orelse continue;
+                    if (!budget.hasCommand(builder)) return;
+                    const admitted_text = codeTextPrefix(visible.text, budget.remainingText());
+                    if (admitted_text.len == 0) return;
+                    const color_ref = span.color orelse .syntax_plain;
+                    try builder.drawText(.{
+                        .id = codeTextPaintCommandId(editableCodeRunCommandId(widget, logical_line, run), paint),
+                        .font_id = run.font_id,
+                        .size = run.size,
+                        .origin = pixelSnapTextPoint(tokens, geometry.PointF.init(
+                            absolute_x + visible.x,
+                            line_top + run.baseline,
+                        )),
+                        .color = paint.color orelse text_spans_model.textSpanColorValue(tokens.colors, color_ref),
+                        .text = admitted_text,
+                        .text_layout = .{
+                            .max_width = 0,
+                            .line_height = line_height,
+                            .wrap = .none,
+                            .alignment = .start,
+                            .measure = tokens.text_measure,
+                        },
+                    });
+                    budget.chargeText(admitted_text.len);
+                }
+
+                const next_first_line = page_first_line +| text_spans_model.max_text_span_lines_per_paragraph;
+                if (next_first_line <= page_first_line or
+                    next_first_line > last_visible_line or
+                    next_first_line >= line_layout.line_count)
+                {
+                    break;
+                }
+                page_first_line = next_first_line;
             }
         }
 

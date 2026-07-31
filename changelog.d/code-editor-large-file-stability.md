@@ -1,4 +1,5 @@
 fix: **Reliable large-code editing**: editable code now repaints only visible selected glyphs and caches longest-line width measurements, keeping large selections and steady-state no-wrap rendering inside bounded display-list and host-measurement budgets.
+- **Complete wrapped long lines**: scrolling a single logical line beyond 128 wrapped rows now pages its visible glyphs instead of leaving the remainder blank.
 - **Stable code-editor reads**: switching tabs no longer cancels a pinned file's load, and reopened secondary windows keep monotonic file-effect keys so late completions cannot populate a newer document.
 - **Unsaved-edit protection**: opening another folder or closing a secondary editor window now refuses while that window still has dirty documents.
 - **Steady editor tabs**: active and inactive tabs now share the same background and label alignment, so filenames no longer shift when selection changes.

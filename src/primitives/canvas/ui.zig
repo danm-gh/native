@@ -304,8 +304,8 @@ pub const VirtualWindowRecord = struct {
 
 pub const UiHandlerEvent = enum {
     press,
-    /// A multi-click press (click_count >= 2 on the release): the
-    /// double-click channel. Resolution lives in `msgForPointerClick`:
+    /// The second release in a multi-click chain: the double-click
+    /// channel. Resolution lives in `msgForPointerClick`:
     /// a double-click release prefers this handler and falls back to
     /// `.press`, so binding it is strictly additive — the first click
     /// of every double-click still dispatches the single-press message
@@ -1363,14 +1363,14 @@ pub fn Ui(comptime Msg: type) type {
             }
 
             /// `msgForPointer` with the pointer's click count: a release
-            /// whose count reached 2 prefers the widget's `on_double_press`
+            /// whose count is exactly 2 prefers the widget's `on_double_press`
             /// handler and falls back to the ordinary press resolution
             /// (so a double-click on a widget without the double channel
             /// behaves exactly like two single clicks). This is the
             /// dispatcher the runtime pointer path uses; the two-argument
             /// form stays the single-click entry point.
             pub fn msgForPointerClick(self: Tree, target_id: ObjectId, phase: canvas.WidgetPointerPhase, click_count: u8) ?Msg {
-                if (phase == .up and click_count >= 2) {
+                if (phase == .up and click_count == 2) {
                     if (self.msgFor(target_id, .double_press)) |msg| return msg;
                 }
                 return self.msgForPointer(target_id, phase);

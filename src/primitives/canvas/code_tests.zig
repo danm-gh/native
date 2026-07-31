@@ -947,6 +947,48 @@ test "wrapped editable code preserves syntax after the document exhausts the spa
     try testing.expectEqual(tokens.colors.syntax_literal, tail_color.?);
 }
 
+test "wrapped editable code paints the visible tail of an over-capacity logical line" {
+    const source = ("x" ** (text_spans.max_text_span_lines_per_paragraph * 2 + 8)) ++ "Z";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .language = .plain,
+        .editable = true,
+        .wrap = true,
+    }, source));
+    var editor = findByText(view.root, source).?;
+
+    var measured = CodeWidthMeasure{};
+    const provider = canvas.TextMeasureProvider{
+        .context = &measured,
+        .measure_fn = CodeWidthMeasure.width,
+        .measure_advances_fn = CodeWidthMeasure.advances,
+    };
+    const tokens = canvas.DesignTokens{ .text_measure = &provider };
+    const line_height = tokens.typography.body_size * 1.25;
+    editor.frame = geometry.RectF.init(
+        0,
+        0,
+        tokens.typography.body_size * 2,
+        line_height * 2,
+    );
+    editor.value = canvas.textInputMaxScrollOffsetForWidget(editor, tokens);
+    try testing.expect(editor.value > line_height * text_spans.max_text_span_lines_per_paragraph);
+
+    var commands: [64]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, tokens);
+
+    var saw_tail = false;
+    for (builder.displayList().commands) |command| {
+        if (command == .draw_text and std.mem.indexOfScalar(u8, command.draw_text.text, 'Z') != null) {
+            saw_tail = true;
+        }
+    }
+    try testing.expect(saw_tail);
+}
+
 test "editable code numbers the empty caret row after a terminal newline" {
     const source = "alpha\n";
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

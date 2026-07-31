@@ -3996,6 +3996,93 @@ fn retainedTextSelection(harness: *TestHarness(), node_index: usize) !canvas.Tex
     return retained.nodes[node_index].widget.text_selection orelse error.TestExpectedSelection;
 }
 
+test "multi-click chains stay on one target and one physical pointer" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-click-chain-identity", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 320, 200),
+    });
+    const nodes = [_]canvas.WidgetLayoutNode{
+        .{
+            .widget = .{ .id = 2, .kind = .button, .text = "First" },
+            .frame = geometry.RectF.init(0, 0, 20, 24),
+            .depth = 0,
+        },
+        .{
+            .widget = .{ .id = 3, .kind = .button, .text = "Second" },
+            .frame = geometry.RectF.init(20, 0, 20, 24),
+            .depth = 0,
+        },
+    };
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", .{ .nodes = &nodes });
+
+    const ms = std.time.ns_per_ms;
+    const clicks = [_]struct { kind: platform.GpuSurfaceInputKind, timestamp_ns: u64, x: f32, pointer_id: u64 }{
+        .{ .kind = .pointer_down, .timestamp_ns = 1_000 * ms, .x = 19, .pointer_id = 11 },
+        .{ .kind = .pointer_up, .timestamp_ns = 1_030 * ms, .x = 19, .pointer_id = 11 },
+        .{ .kind = .pointer_down, .timestamp_ns = 1_100 * ms, .x = 21, .pointer_id = 11 },
+    };
+    for (clicks) |click| {
+        try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = click.kind,
+            .timestamp_ns = click.timestamp_ns,
+            .pointer_id = click.pointer_id,
+            .x = click.x,
+            .y = 12,
+        } });
+    }
+    try std.testing.expectEqual(@as(u8, 1), harness.runtime.views[0].canvas_widget_click_count);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 3), harness.runtime.views[0].canvas_widget_click_target_id);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_up,
+        .timestamp_ns = 1_130 * ms,
+        .pointer_id = 11,
+        .x = 21,
+        .y = 12,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .timestamp_ns = 1_200 * ms,
+        .pointer_id = 11,
+        .x = 22,
+        .y = 12,
+    } });
+    try std.testing.expectEqual(@as(u8, 2), harness.runtime.views[0].canvas_widget_click_count);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .timestamp_ns = 1_300 * ms,
+        .pointer_id = 12,
+        .x = 22,
+        .y = 12,
+    } });
+    try std.testing.expectEqual(@as(u8, 1), harness.runtime.views[0].canvas_widget_click_count);
+    try std.testing.expectEqual(@as(u64, 12), harness.runtime.views[0].canvas_widget_click_pointer_id);
+}
+
 test "Shift-click extends a textarea selection from the placed caret" {
     const TestApp = struct {
         fn app(self: *@This()) App {

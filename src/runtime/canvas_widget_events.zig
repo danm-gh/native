@@ -330,14 +330,27 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                         // menu path before reaching here).
                         self.views[index].canvas_widget_click_count = 0;
                         self.views[index].canvas_widget_click_timestamp_ns = 0;
+                        self.views[index].canvas_widget_click_pointer_id = 0;
+                        self.views[index].canvas_widget_click_target_id = 0;
                         return;
                     }
                     const previous_count = self.views[index].canvas_widget_click_count;
                     const previous_timestamp = self.views[index].canvas_widget_click_timestamp_ns;
                     const previous_point = self.views[index].canvas_widget_click_point;
+                    const previous_pointer_id = self.views[index].canvas_widget_click_pointer_id;
+                    const previous_target_id = self.views[index].canvas_widget_click_target_id;
                     const point = pointer_event.pointer.point;
+                    const pointer_id = pointer_event.pointer.pointer_id;
+                    const target_id: canvas.ObjectId = if (pointer_event.press_target) |target|
+                        target.id
+                    else if (pointer_event.target) |target|
+                        target.id
+                    else
+                        0;
                     const chained = previous_count != 0 and
                         previous_timestamp != 0 and
+                        pointer_id == previous_pointer_id and
+                        target_id == previous_target_id and
                         input_event.timestamp_ns >= previous_timestamp and
                         input_event.timestamp_ns - previous_timestamp <= canvas_widget_multi_click_interval_ns and
                         @abs(point.x - previous_point.x) <= canvas_widget_multi_click_slop and
@@ -348,6 +361,8 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                     self.views[index].canvas_widget_click_count = count;
                     self.views[index].canvas_widget_click_timestamp_ns = input_event.timestamp_ns;
                     self.views[index].canvas_widget_click_point = point;
+                    self.views[index].canvas_widget_click_pointer_id = pointer_id;
+                    self.views[index].canvas_widget_click_target_id = target_id;
                     pointer_event.pointer.click_count = count;
                 },
                 .move, .up => {

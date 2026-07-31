@@ -1156,6 +1156,7 @@ test "markup anchors dropdown-menus and binds dismiss, hold, and double-press ha
     try testing.expect(tree.msgFor(crumb.id, .hold) != null);
     try testing.expectEqual(Msg.add, tree.msgForPointerClick(crumb.id, .up, 1).?);
     try testing.expectEqual(@as(u32, 0), tree.msgForPointerClick(crumb.id, .up, 2).?.toggle);
+    try testing.expectEqual(Msg.add, tree.msgForPointerClick(crumb.id, .up, 3).?);
     // A hold handler makes the element pressable, like on-press.
     try testing.expect(crumb.semantics.actions.press);
 

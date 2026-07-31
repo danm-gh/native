@@ -701,6 +701,11 @@ pub const RuntimeView = struct {
     canvas_widget_click_count: u8 = 0,
     canvas_widget_click_timestamp_ns: u64 = 0,
     canvas_widget_click_point: geometry.PointF = .{},
+    /// A chain belongs to one physical pointer and one resolved press/text
+    /// target. Nearby controls must never donate the first click of another
+    /// control's double-click gesture.
+    canvas_widget_click_pointer_id: u64 = 0,
+    canvas_widget_click_target_id: canvas.ObjectId = 0,
     /// The anchor RUN of an in-flight multi-click drag: the word (or
     /// line) selected by the initiating double (triple) click. Drag
     /// extension unions the run under the pointer with this range, so

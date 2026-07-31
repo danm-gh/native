@@ -887,6 +887,14 @@ pub const Widget = struct {
     /// lines during paint, so large documents do not consume the view's
     /// bounded span pool on offscreen syntax runs.
     code_language: code_model.Language = .plain,
+    /// Runtime-owned longest-line measurement for an editable no-wrap code
+    /// surface. The signature keeps the value honest across font/appearance
+    /// changes; source edits invalidate it before caret and scroll geometry
+    /// read it. These fields are renderer state, not builder options.
+    code_content_width: f32 = 0,
+    code_content_width_generation: u64 = 0,
+    code_content_width_font_id: u64 = 0,
+    code_content_width_size_bits: u32 = 0,
     /// Nonzero on bounded paragraph chunks that together present one
     /// selectable source-code document. The group id is the structural id
     /// of their internal parent; offsets order each chunk's exact source

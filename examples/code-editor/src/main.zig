@@ -265,7 +265,6 @@ pub const Model = struct {
 
     picker_serial: u64 = 0,
     next_file_key: u64 = 100,
-    active_read_key: u64 = 0,
     documents: [max_documents]Document = @splat(.{}),
     document_count: usize = 0,
 
@@ -292,7 +291,6 @@ pub const Model = struct {
         "scan_had_errors",
         "picker_serial",
         "next_file_key",
-        "active_read_key",
         "documents",
         "document_count",
         "status_storage",
@@ -469,10 +467,6 @@ pub const Model = struct {
     fn removeDocument(model: *Model, entry_index: u16) void {
         for (model.documents[0..model.document_count], 0..) |document, index| {
             if (document.entry_index == null or document.entry_index.? != entry_index) continue;
-            if (document.read_key != 0) {
-                // The caller cancels the effect before removing the slot.
-                std.debug.assert(document.read_key != model.active_read_key);
-            }
             model.documents[index].deinit();
             if (index + 1 < model.document_count) {
                 std.mem.copyForwards(
@@ -628,16 +622,18 @@ pub const BrowserSession = struct {
     browser: Model = .{},
 
     fn reset(session: *BrowserSession, index: usize) void {
+        const next_file_key = @max(session.browser.next_file_key, fileKeyBase(index));
         session.browser.deinit();
         session.* = .{
             .open = true,
-            .browser = .{ .next_file_key = fileKeyBase(index) },
+            .browser = .{ .next_file_key = next_file_key },
         };
     }
 
     fn close(session: *BrowserSession) void {
+        const next_file_key = session.browser.next_file_key;
         session.browser.deinit();
-        session.* = .{};
+        session.* = .{ .browser = .{ .next_file_key = next_file_key } };
     }
 };
 
@@ -843,7 +839,6 @@ fn previewEntry(model: *Model, fx: *Effects, index: u16) void {
                     }
                     if (document.read_key != 0) {
                         fx.cancel(document.read_key);
-                        if (model.active_read_key == document.read_key) model.active_read_key = 0;
                     }
                 }
                 model.removeDocument(previous);
@@ -1004,7 +999,6 @@ fn closeTabUnchecked(model: *Model, fx: *Effects, index: u16) void {
     if (model.documentForEntry(index)) |document| {
         if (document.read_key != 0) {
             fx.cancel(document.read_key);
-            if (model.active_read_key == document.read_key) model.active_read_key = 0;
         }
         if (document.save_key != 0) fx.cancel(document.save_key);
     }
@@ -1026,13 +1020,10 @@ fn activateFile(model: *Model, fx: *Effects, index: u16) void {
     document.source_truncated = false;
     model.next_file_key +%= 1;
     if (model.next_file_key == 0) model.next_file_key = 100;
-    if (model.active_read_key != 0) fx.cancel(model.active_read_key);
-    model.active_read_key = model.next_file_key;
     document.read_key = model.next_file_key;
 
     var path_buffer: [native_sdk.max_effect_file_path_bytes]u8 = undefined;
     const path = model.fullPath(entry, &path_buffer) orelse {
-        model.active_read_key = 0;
         document.read_key = 0;
         document.state = .failed;
         model.setStatus("That file path is too long to read.", .{});
@@ -1117,7 +1108,6 @@ fn applyFileResult(model: *Model, result: native_sdk.EffectFileResult) void {
         const entry = &model.entries[index];
         if (result.op == .read and result.key == document.read_key) {
             document.read_key = 0;
-            if (model.active_read_key == result.key) model.active_read_key = 0;
             switch (result.outcome) {
                 .ok, .truncated => {
                     document.adopt(result.bytes, result.outcome == .truncated);

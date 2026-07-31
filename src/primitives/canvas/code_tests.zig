@@ -67,6 +67,24 @@ fn codeFontSensitiveMeasure(context: ?*anyopaque, font_id: canvas.FontId, size: 
 
 const code_font_sensitive_measure = canvas.TextMeasureProvider{ .measure_fn = codeFontSensitiveMeasure };
 
+const CodeWidthMeasure = struct {
+    width_calls: usize = 0,
+    advance_calls: usize = 0,
+
+    fn width(context: ?*anyopaque, _: canvas.FontId, size: f32, text: []const u8) f32 {
+        const self: *CodeWidthMeasure = @ptrCast(@alignCast(context.?));
+        self.width_calls += 1;
+        return size * @as(f32, @floatFromInt(text.len));
+    }
+
+    fn advances(context: ?*anyopaque, _: canvas.FontId, size: f32, text: []const u8, out: []f32) bool {
+        const self: *CodeWidthMeasure = @ptrCast(@alignCast(context.?));
+        self.advance_calls += 1;
+        for (text, 0..) |byte, index| out[index] = if (byte == '\n') 0 else size;
+        return true;
+    }
+};
+
 fn expectCompleteSpanLayouts(widget: canvas.Widget) !void {
     if (widget.kind == .text and widget.spans.len > 0) {
         var runs: [text_spans.max_text_span_runs_per_paragraph]text_spans.TextSpanRun = undefined;
@@ -808,6 +826,41 @@ test "numbered editable code does not invent trailing horizontal overflow" {
     try testing.expectEqual(fitted_viewport.width, canvas.textInputContentWidthForWidget(editor, tokens));
 }
 
+test "editable code caches one batched longest-line measurement across geometry reads" {
+    var source: std.ArrayListUnmanaged(u8) = .empty;
+    defer source.deinit(testing.allocator);
+    for (0..1000) |index| {
+        var line_buffer: [48]u8 = undefined;
+        const line = try std.fmt.bufPrint(&line_buffer, "const value_{d} = true;\n", .{index});
+        try source.appendSlice(testing.allocator, line);
+    }
+
+    var measured = CodeWidthMeasure{};
+    const provider = canvas.TextMeasureProvider{
+        .context = &measured,
+        .measure_fn = CodeWidthMeasure.width,
+        .measure_advances_fn = CodeWidthMeasure.advances,
+    };
+    const tokens = canvas.DesignTokens{ .text_measure = &provider };
+    var editor = canvas.Widget{
+        .kind = .textarea,
+        .code_editor = true,
+        .text_no_wrap = true,
+        .text = source.items,
+        .frame = geometry.RectF.init(0, 0, 240, 80),
+    };
+
+    canvas.cacheTextInputContentWidthForWidget(&editor, tokens);
+    canvas.cacheTextInputContentWidthForWidget(&editor, tokens);
+    for (0..4) |_| {
+        _ = canvas.textInputMaxHorizontalScrollOffsetForWidget(editor, tokens);
+        _ = canvas.textInputContentWidthForWidget(editor, tokens);
+    }
+
+    try testing.expectEqual(@as(usize, 1), measured.advance_calls);
+    try testing.expectEqual(@as(usize, 0), measured.width_calls);
+}
+
 test "editable code highlights the caret row but not a text selection" {
     const source = "const first = 1;\nconst second = 2;\n";
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -1085,6 +1138,32 @@ test "large code retains all source while emitting only visible text" {
         try testing.expect(displayListTextBytes(display_list) <= canvas.max_display_list_text_bytes);
         try testing.expect(displayListTextBytes(display_list) < source.len);
     }
+}
+
+test "large editable code selection repaints only visible glyphs" {
+    const source = try testing.allocator.alloc(u8, 65_536);
+    defer testing.allocator.free(source);
+    @memset(source, 'x');
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .editable = true,
+        .wrap = false,
+        .height = 80,
+    }, source));
+    var editor = findByText(view.root, source).?;
+    editor.frame = geometry.RectF.init(0, 0, 320, 80);
+    editor.text_selection = .{ .anchor = 0, .focus = 5 };
+
+    var commands: [256]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, .{});
+
+    const text_bytes = displayListTextBytes(builder.displayList());
+    try testing.expect(text_bytes <= canvas.max_display_list_text_bytes);
+    try testing.expect(text_bytes < source.len);
 }
 
 test "direct tree code emission honors scroll viewports and later layout pages" {

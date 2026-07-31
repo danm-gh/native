@@ -162,6 +162,10 @@ pub const CanvasWidgetTextReconcileEntry = struct {
     text_composition: ?canvas.TextRange = null,
     value: f32 = 0,
     value_x: f32 = 0,
+    code_content_width: f32 = 0,
+    code_content_width_generation: u64 = 0,
+    code_content_width_font_id: u64 = 0,
+    code_content_width_size_bits: u32 = 0,
 };
 
 pub const CanvasWidgetSourceScrollEntry = struct {
@@ -614,6 +618,10 @@ pub fn collectCanvasWidgetTextReconcileEntries(
             .text_composition = node.widget.text_composition,
             .value = node.widget.value,
             .value_x = node.widget.value_x,
+            .code_content_width = node.widget.code_content_width,
+            .code_content_width_generation = node.widget.code_content_width_generation,
+            .code_content_width_font_id = node.widget.code_content_width_font_id,
+            .code_content_width_size_bits = node.widget.code_content_width_size_bits,
         };
         len += 1;
     }
@@ -821,7 +829,13 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
         // right after, so a resized or re-texted field never keeps a
         // stale offset).
         if (canvasWidgetEditableTextKind(copy.widget.kind)) copy.widget.value = entry.value;
-        if (copy.widget.code_editor) copy.widget.value_x = entry.value_x;
+        if (copy.widget.code_editor) {
+            copy.widget.value_x = entry.value_x;
+            copy.widget.code_content_width = entry.code_content_width;
+            copy.widget.code_content_width_generation = entry.code_content_width_generation;
+            copy.widget.code_content_width_font_id = entry.code_content_width_font_id;
+            copy.widget.code_content_width_size_bits = entry.code_content_width_size_bits;
+        }
         if (copy.widget.text_selection == null and copy.widget.text_composition == null) {
             copy.widget.text_selection = entry.text_selection;
             copy.widget.text_composition = entry.text_composition;
@@ -1105,6 +1119,7 @@ pub fn clampCanvasWidgetLayoutScrollOffsets(nodes: []canvas.WidgetLayoutNode, st
 pub fn clampCanvasWidgetLayoutTextOffsets(nodes: []canvas.WidgetLayoutNode, tokens: canvas.DesignTokens) void {
     for (nodes) |*node| {
         if (node.widget.kind == .textarea) {
+            canvas.cacheTextInputContentWidthForWidget(&node.widget, tokens);
             node.widget.value = canvas.clampedTextInputScrollOffsetForWidget(node.widget, tokens, node.widget.value);
             node.widget.value_x = if (node.widget.code_editor)
                 canvas.clampedTextInputHorizontalScrollOffsetForWidget(node.widget, tokens, node.widget.value_x)

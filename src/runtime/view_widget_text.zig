@@ -1321,6 +1321,11 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
 
         pub fn rewriteCanvasWidgetTextStorage(self: *RuntimeView, edited_index: usize, next_state: canvas.TextEditState) anyerror!void {
             try validateCanvasWidgetTextStorageRewrite(self, edited_index, next_state);
+            const text_changed = !std.mem.eql(
+                u8,
+                self.widget_layout_nodes[edited_index].widget.text,
+                next_state.text,
+            );
             var temp: [max_canvas_widget_text_bytes_per_view]u8 = undefined;
             var text_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange = undefined;
             var label_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange = undefined;
@@ -1346,6 +1351,13 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             }
             self.widget_layout_nodes[edited_index].widget.text_selection = next_state.selection;
             self.widget_layout_nodes[edited_index].widget.text_composition = next_state.composition;
+            if (text_changed) {
+                self.widget_layout_nodes[edited_index].widget.code_content_width_generation = 0;
+                canvas.cacheTextInputContentWidthForWidget(
+                    &self.widget_layout_nodes[edited_index].widget,
+                    self.widget_tokens,
+                );
+            }
         }
 
         /// Prove a retained text rewrite fits before any editor history is

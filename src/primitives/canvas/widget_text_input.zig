@@ -6,6 +6,7 @@ const token_model = @import("tokens.zig");
 const widget_model = @import("widgets.zig");
 const widget_access = @import("widget_access.zig");
 const widget_metrics = @import("widget_metrics.zig");
+const text_measure_cache = @import("text_measure_cache.zig");
 
 const FontId = @import("root.zig").FontId;
 const Builder = @import("commands.zig").Builder;
@@ -220,7 +221,10 @@ fn widgetTextInputMaxHorizontalScrollOffset(widget: Widget, tokens: DesignTokens
     // single-line extent it draws.
     const font_id = widgetTextInputFontId(widget, tokens);
     const text_width = if (widget.code_editor)
-        widestLogicalLineWidth(options.measure, font_id, widget.text, text_size)
+        if (codeContentWidthCacheCurrent(widget, font_id, text_size))
+            widget.code_content_width
+        else
+            widestLogicalLineWidth(options.measure, font_id, widget.text, text_size)
     else
         measureTextWidthForFont(options.measure, font_id, widgetTextInputPresentedText(widget), text_size);
     return @max(0, text_width + text_input_caret_reserve - viewport.width);
@@ -460,12 +464,38 @@ fn widgetTextInputFontId(widget: Widget, tokens: DesignTokens) FontId {
     return if (widget.code_editor) tokens.typography.mono_font_id else tokens.typography.font_id;
 }
 
+fn codeContentWidthCacheCurrent(widget: Widget, font_id: FontId, text_size: f32) bool {
+    return widget.code_content_width_generation == text_measure_cache.textMeasureGeneration() and
+        widget.code_content_width_font_id == font_id and
+        widget.code_content_width_size_bits == @as(u32, @bitCast(text_size)) and
+        widget.code_content_width >= 0 and
+        std.math.isFinite(widget.code_content_width);
+}
+
+/// Populate the retained longest-line width once per source/font generation.
+/// Runtime reconciliation carries this cache across unchanged app rebuilds;
+/// edits invalidate it before caret scrolling recomputes the new document.
+pub fn cacheTextInputContentWidthForWidget(widget: *Widget, tokens: DesignTokens) void {
+    if (widget.kind != .textarea or !widget.code_editor or !widget.text_no_wrap) return;
+    const text_size = widgetTextInputSize(widget.*, tokens);
+    const font_id = widgetTextInputFontId(widget.*, tokens);
+    if (codeContentWidthCacheCurrent(widget.*, font_id, text_size)) return;
+    widget.code_content_width = widestLogicalLineWidth(tokens.text_measure, font_id, widget.text, text_size);
+    widget.code_content_width_generation = text_measure_cache.textMeasureGeneration();
+    widget.code_content_width_font_id = font_id;
+    widget.code_content_width_size_bits = @bitCast(text_size);
+}
+
 fn widestLogicalLineWidth(
     measure: ?*const text_model.TextMeasureProvider,
     font_id: FontId,
     text: []const u8,
     text_size: f32,
 ) f32 {
+    if (measure) |provider| {
+        if (widestLogicalLineWidthBatched(provider, font_id, text, text_size)) |width| return width;
+    }
+
     var widest: f32 = 0;
     var start: usize = 0;
     while (start <= text.len) {
@@ -473,6 +503,58 @@ fn widestLogicalLineWidth(
         widest = @max(widest, measureTextWidthForFont(measure, font_id, text[start..end], text_size));
         if (end == text.len) break;
         start = end + 1;
+    }
+    return widest;
+}
+
+/// Measure many ordinary source lines in one provider round-trip. Chunks end
+/// at a newline so shaping never crosses a logical-line boundary. A single
+/// extraordinary line above the batched scratch bound takes one width call;
+/// the common 10,000-line document takes only a handful of batched calls.
+fn widestLogicalLineWidthBatched(
+    provider: *const text_model.TextMeasureProvider,
+    font_id: FontId,
+    text: []const u8,
+    text_size: f32,
+) ?f32 {
+    if (provider.measure_advances_fn == null) return null;
+    if (text.len == 0) return 0;
+
+    var widest: f32 = 0;
+    var chunk_start: usize = 0;
+    while (chunk_start < text.len) {
+        const limit_end = @min(
+            text.len,
+            chunk_start +| text_measure_cache.max_batched_advance_run_bytes,
+        );
+        var chunk_end = limit_end;
+        if (limit_end < text.len) {
+            const bounded = text[chunk_start..limit_end];
+            if (std.mem.lastIndexOfScalar(u8, bounded, '\n')) |newline| {
+                chunk_end = chunk_start + newline + 1;
+            } else {
+                const line_end = std.mem.indexOfScalarPos(u8, text, chunk_start, '\n') orelse text.len;
+                widest = @max(
+                    widest,
+                    measureTextWidthForFont(provider, font_id, text[chunk_start..line_end], text_size),
+                );
+                chunk_start = if (line_end < text.len) line_end + 1 else line_end;
+                continue;
+            }
+        }
+
+        const chunk = text[chunk_start..chunk_end];
+        const advances = text_measure_cache.textRunAdvances(provider, font_id, text_size, chunk) orelse return null;
+        var line_start: usize = 0;
+        for (chunk, 0..) |byte, index| {
+            if (byte != '\n') continue;
+            widest = @max(widest, text_measure_cache.advanceSliceWidth(advances, line_start, index));
+            line_start = index + 1;
+        }
+        if (line_start < chunk.len) {
+            widest = @max(widest, text_measure_cache.advanceSliceWidth(advances, line_start, chunk.len));
+        }
+        chunk_start = chunk_end;
     }
     return widest;
 }

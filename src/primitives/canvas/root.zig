@@ -720,6 +720,7 @@ pub const textInputClearButtonRect = widget_runtime.textInputClearButtonRect;
 pub const textInputClearButtonHitRect = widget_runtime.textInputClearButtonHitRect;
 pub const textInputContentExtentForWidget = widget_runtime.textInputContentExtentForWidget;
 pub const textInputContentWidthForWidget = widget_runtime.textInputContentWidthForWidget;
+pub const cacheTextInputContentWidthForWidget = widget_runtime.cacheTextInputContentWidthForWidget;
 pub const textInputMaxScrollOffsetForWidget = widget_runtime.textInputMaxScrollOffsetForWidget;
 pub const clampedTextInputScrollOffsetForWidget = widget_runtime.clampedTextInputScrollOffsetForWidget;
 pub const textInputMaxHorizontalScrollOffsetForWidget = widget_runtime.textInputMaxHorizontalScrollOffsetForWidget;

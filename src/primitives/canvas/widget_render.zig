@@ -321,7 +321,7 @@ fn emitWidgetDepthContent(builder: *Builder, widget: Widget, tokens: DesignToken
                         visible_bounds.normalized(),
                     );
                     if (!clipped.isEmpty()) {
-                        try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, clipped);
+                        try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, clipped, .{});
                     }
                 }
             } else {
@@ -683,7 +683,7 @@ fn emitWidgetLayoutNodeContent(
         .text => {
             if (isSyntaxCodeParagraph(paint_widget)) {
                 if (widgetLayoutNodeVisibleBounds(layout, node_index, paint_widget.frame)) |visible_bounds| {
-                    try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, visible_bounds);
+                    try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, visible_bounds, .{});
                 }
             } else {
                 try emitTextWidget(builder, paint_widget, tokens);
@@ -1156,16 +1156,15 @@ fn emitCodeEditorWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
             );
         }
     }
-    try emitVisibleCodeTextSpansWidget(builder, widget, tokens, widget.frame);
+    try emitVisibleCodeTextSpansWidget(builder, widget, tokens, widget.frame, .{});
     if (selection_range) |range| {
         if (!range.isCollapsed(widget.text.len)) {
-            try widget_render_controls.emitWidgetTextSelectedGlyphs(
+            try emitCodeEditorSelectedGlyphs(
                 builder,
                 widget,
                 draw_text,
                 layout_options,
                 range,
-                4,
                 tokens,
             );
         }
@@ -1208,6 +1207,36 @@ fn emitCodeEditorWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
         try emitVisibleEditableCodeLineNumberGutter(builder, widget, tokens, widget.frame, active_row);
     }
     try builder.popClip();
+}
+
+/// Repaint selected code from the same viewport-bounded syntax runs as the
+/// base pass. Ordinary text inputs can safely repeat their one small text
+/// command under each selection clip; an editor may retain hundreds of KiB,
+/// so repeating its full `DrawText` would overflow the 32 KiB display-list
+/// text store even when only a few visible glyphs are selected.
+fn emitCodeEditorSelectedGlyphs(
+    builder: *Builder,
+    widget: Widget,
+    text: text_model.DrawText,
+    options: TextLayoutOptions,
+    range: text_model.TextRange,
+    tokens: DesignTokens,
+) Error!void {
+    var rect_buffer: [4]text_model.TextSelectionRect = undefined;
+    const rects = text_model.layoutTextSelectionRects(text, options, range, &rect_buffer);
+    for (rects, 0..) |selection, ordinal| {
+        const visible = geometry.RectF.intersection(selection.rect, widget.frame);
+        if (visible.isEmpty()) continue;
+        try builder.pushClip(.{
+            .id = textSpanCommandId(0x5eed_59a2_0000_0017, widget.id, ordinal),
+            .rect = pixelSnapGeometryRect(tokens, selection.rect),
+        });
+        try emitVisibleCodeTextSpansWidget(builder, widget, tokens, visible, .{
+            .color = textSelectionTextColor(widget, tokens),
+            .selection_ordinal = ordinal,
+        });
+        try builder.popClip();
+    }
 }
 
 /// The visual row containing the rendered caret. It derives from the
@@ -1464,14 +1493,20 @@ fn codeTextPrefix(text: []const u8, max_len: usize) []const u8 {
 /// paragraph widgets for layout, selection, copy, and scroll extents, while
 /// the display list contains only line runs that intersect the current
 /// window/scroll clip. Long no-wrap runs are sliced horizontally as well.
+const CodeTextPaint = struct {
+    color: ?Color = null,
+    selection_ordinal: ?usize = null,
+};
+
 fn emitVisibleCodeTextSpansWidget(
     builder: *Builder,
     widget: Widget,
     tokens: DesignTokens,
     visible_bounds: geometry.RectF,
+    paint: CodeTextPaint,
 ) Error!void {
     if (widget.code_editor and widget.text_no_wrap) {
-        return emitVisibleEditableCodeLines(builder, widget, tokens, visible_bounds);
+        return emitVisibleEditableCodeLines(builder, widget, tokens, visible_bounds, paint);
     }
     var content = widget_metrics.widgetTextSpanContentFrame(widget, tokens);
     if (widget.code_editor) {
@@ -1504,11 +1539,13 @@ fn emitVisibleCodeTextSpansWidget(
 
     var gutter_content = content;
     if (widget.code_editor) gutter_content.x += widget.value_x;
-    try emitCodeLineNumberGutter(builder, widget, tokens, gutter_content, visible_bounds, layout_options, &budget);
+    if (paint.selection_ordinal == null) {
+        try emitCodeLineNumberGutter(builder, widget, tokens, gutter_content, visible_bounds, layout_options, &budget);
+    }
     // Editable code already emitted its textarea selection from the
     // scroll-aware input geometry. The static paragraph selector uses
     // unscrolled span frames and would duplicate it at the wrong offset.
-    if (!widget.code_editor) {
+    if (!widget.code_editor and paint.selection_ordinal == null) {
         try emitStaticTextSelectionBounded(builder, widget, tokens, budget.command_ceiling);
     }
     if (!budget.hasCommand(builder) or budget.remainingText() == 0) return;
@@ -1543,10 +1580,10 @@ fn emitVisibleCodeTextSpansWidget(
             if (!budget.hasCommand(builder)) return;
             const admitted_text = codeTextPrefix(visible.text, budget.remainingText());
             if (admitted_text.len == 0) return;
-            const color = text_spans_model.textSpanColorValue(tokens.colors, span.color.?);
+            const color = paint.color orelse text_spans_model.textSpanColorValue(tokens.colors, span.color.?);
             const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(absolute_x + visible.x, content.y + run.baseline));
             try builder.drawText(.{
-                .id = codeTextSpanRunCommandId(widget, run),
+                .id = codeTextPaintCommandId(codeTextSpanRunCommandId(widget, run), paint),
                 .font_id = run.font_id,
                 .size = run.size,
                 .origin = origin,
@@ -1583,6 +1620,7 @@ fn emitVisibleEditableCodeLines(
     widget: Widget,
     tokens: DesignTokens,
     visible_bounds: geometry.RectF,
+    paint: CodeTextPaint,
 ) Error!void {
     var content = widget_metrics.widgetTextSpanContentFrame(widget, tokens);
     content.x -= widget.value_x;
@@ -1683,14 +1721,14 @@ fn emitVisibleEditableCodeLines(
             if (admitted_text.len == 0) return;
             const color_ref = span.color orelse .syntax_plain;
             try builder.drawText(.{
-                .id = editableCodeRunCommandId(widget, logical_line, run),
+                .id = codeTextPaintCommandId(editableCodeRunCommandId(widget, logical_line, run), paint),
                 .font_id = run.font_id,
                 .size = run.size,
                 .origin = pixelSnapTextPoint(tokens, geometry.PointF.init(
                     absolute_x + visible.x,
                     line_top + run.baseline,
                 )),
-                .color = text_spans_model.textSpanColorValue(tokens.colors, color_ref),
+                .color = paint.color orelse text_spans_model.textSpanColorValue(tokens.colors, color_ref),
                 .text = admitted_text,
                 .text_layout = .{
                     .max_width = 0,
@@ -1962,6 +2000,15 @@ fn editableCodeRunCommandId(
     } else {
         hasher.update(run.text);
     }
+    const value = hasher.final();
+    return if (value == 0) 1 else value;
+}
+
+fn codeTextPaintCommandId(base_id: ObjectId, paint: CodeTextPaint) ObjectId {
+    const ordinal = paint.selection_ordinal orelse return base_id;
+    var hasher = std.hash.Wyhash.init(0x5eed_59a2_0000_0018);
+    hasher.update(std.mem.asBytes(&base_id));
+    hasher.update(std.mem.asBytes(&ordinal));
     const value = hasher.final();
     return if (value == 0) 1 else value;
 }

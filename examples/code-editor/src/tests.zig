@@ -658,6 +658,38 @@ test "single-click previews replace each other while double-click pins persisten
     try testing.expect(!tabs[1].selected);
 }
 
+test "switching tabs keeps pinned file reads alive" {
+    var model = try fixtureModel();
+    defer model.deinit();
+    const main_path = try std.fs.path.join(testing.allocator, &.{ "src", "main.zig" });
+    defer testing.allocator.free(main_path);
+    const main_index = model.findEntry(main_path).?;
+    const readme_index = model.findEntry("README.md").?;
+
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+
+    main.update(&model, .{ .preview_entry = main_index }, &fx);
+    const main_read_key = model.documents[0].read_key;
+    main.update(&model, .{ .pin_entry = main_index }, &fx);
+    main.update(&model, .{ .preview_entry = readme_index }, &fx);
+
+    try testing.expectEqual(@as(usize, 2), fx.pendingFileCount());
+    try testing.expectEqual(main_index, model.documents[0].entry_index.?);
+    try testing.expectEqual(main_read_key, model.documents[0].read_key);
+    try testing.expectEqual(main.PreviewState.loading, model.documents[0].state);
+
+    main.update(&model, .{ .file_done = .{
+        .key = main_read_key,
+        .op = .read,
+        .outcome = .ok,
+        .bytes = "pub fn main() void {}\n",
+    } }, &fx);
+    try testing.expectEqual(main.PreviewState.text, model.documents[0].state);
+    try testing.expectEqualStrings("pub fn main() void {}\n", model.documents[0].editor.text());
+}
+
 test "previous and next tab commands cycle the open tab order with wrapping" {
     var model = try fixtureModel();
     defer model.deinit();
@@ -963,6 +995,58 @@ test "new windows own independent folders and opening again replaces only the ac
     main.appUpdate(&app_model, .{ .close_window = 1 }, &fx);
     try testing.expect(!app_model.sessions[1].open);
     try testing.expectEqual(@as(usize, 0), main.editorWindows(&app_model, &scratch).len);
+}
+
+test "reopened window sessions never reuse in-flight file effect keys" {
+    var app_model = main.AppModel{};
+    app_model.init();
+    defer app_model.deinit();
+
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+
+    main.appUpdate(&app_model, .new_window, &fx);
+    var browser = &app_model.sessions[1].browser;
+    const old_root = "/old";
+    @memcpy(browser.root_storage[0..old_root.len], old_root);
+    browser.root_len = old_root.len;
+    browser.entry_count = 1;
+    browser.entries[0] = .{};
+    const old_name = "old.zig";
+    @memcpy(browser.entries[0].name_storage[0..old_name.len], old_name);
+    browser.entries[0].name_len = old_name.len;
+    @memcpy(browser.entries[0].relative_storage[0..old_name.len], old_name);
+    browser.entries[0].relative_len = old_name.len;
+    main.appUpdate(&app_model, .{ .preview_entry = 0 }, &fx);
+    const old_key = browser.documents[0].read_key;
+
+    main.appUpdate(&app_model, .{ .close_window = 1 }, &fx);
+    main.appUpdate(&app_model, .new_window, &fx);
+    browser = &app_model.sessions[1].browser;
+    const new_root = "/new";
+    @memcpy(browser.root_storage[0..new_root.len], new_root);
+    browser.root_len = new_root.len;
+    browser.entry_count = 1;
+    browser.entries[0] = .{};
+    const new_name = "new.zig";
+    @memcpy(browser.entries[0].name_storage[0..new_name.len], new_name);
+    browser.entries[0].name_len = new_name.len;
+    @memcpy(browser.entries[0].relative_storage[0..new_name.len], new_name);
+    browser.entries[0].relative_len = new_name.len;
+    main.appUpdate(&app_model, .{ .preview_entry = 0 }, &fx);
+    const new_key = browser.documents[0].read_key;
+
+    try testing.expect(new_key > old_key);
+    try testing.expectEqual(@as(usize, 2), fx.pendingFileCount());
+    main.appUpdate(&app_model, .{ .file_done = .{
+        .key = old_key,
+        .op = .read,
+        .outcome = .ok,
+        .bytes = "stale bytes from the closed window\n",
+    } }, &fx);
+    try testing.expectEqual(main.PreviewState.loading, browser.documents[0].state);
+    try testing.expectEqualStrings("", browser.documents[0].editor.text());
 }
 
 test "the empty and loaded views expose the picker, tree, and highlighted code surface" {

@@ -1,0 +1,2 @@
+fix: **Reliable large-code editing**: editable code now repaints only visible selected glyphs and caches longest-line width measurements, keeping large selections and steady-state no-wrap rendering inside bounded display-list and host-measurement budgets.
+- **Stable code-editor reads**: switching tabs no longer cancels a pinned file's load, and reopened secondary windows keep monotonic file-effect keys so late completions cannot populate a newer document.

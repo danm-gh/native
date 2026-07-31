@@ -508,7 +508,11 @@ const Mapper = struct {
         const out = try self.arena.alloc(Struct, items.items.len);
         for (items.items, 0..) |item, index| {
             const at = self.path("types.structs[{d}]", .{index});
-            const entry = try self.members(item, at, &.{ "name", "origin", "fields" });
+            // "synthesized" is an additive marker some emitters place on
+            // records they named themselves (the `<Container>_<member>`
+            // pattern); this reader re-derives the fact from the name
+            // pattern, so the marker is accepted and unused.
+            const entry = try self.members(item, at, &.{ "name", "origin", "synthesized", "fields" });
             entry.warnUnknown();
             const fields_value = try self.array(try entry.get("fields"), self.path("{s}.fields", .{at}));
             const fields = try self.arena.alloc(Field, fields_value.items.len);

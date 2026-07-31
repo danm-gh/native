@@ -24,13 +24,20 @@ const emit_facade_mod = @import("emit_facade.zig");
 const emit_profile_mod = @import("emit_profile.zig");
 
 const usage =
-    \\usage: corewire --sidecar <core.contract.json> (--out <core_shim.zig> | --facade <core_facade.ts> | --profile <core_profile.json> | --check)
+    \\usage: corewire --sidecar <core.contract.json> (--out <core_shim.zig> | --facade <core_facade.ts> | --profile <core_profile.json> | --check) [--f64-slot <path>]...
     \\
     \\Generate the Zig mirror module (core_shim.zig), the TypeScript
     \\projection (core_facade.ts), and/or the library-mode compiler profile
     \\(core_profile.json) for a compiled core from its contract sidecar, or
     \\validate the sidecar alone (--check). --out, --facade, and --profile
     \\combine; --check stands alone.
+    \\
+    \\--f64-slot <path> carries the named attested integer slot as f64 for
+    \\this whole invocation (facade, profile, and mirror alike): a slot
+    \\whose values reach the f64-exact boundary (2^53) has no honest i64
+    \\declaration on the compiled side, so the caller states the demotion
+    \\explicitly and both projections stay consistent. The path must name
+    \\an attested slot — a misspelling would silently demote nothing.
     \\
 ;
 
@@ -47,6 +54,7 @@ pub fn main(init: std.process.Init) !void {
     var facade_path: ?[]const u8 = null;
     var profile_path: ?[]const u8 = null;
     var check_only = false;
+    var f64_slots: std.ArrayListUnmanaged([]const u8) = .empty;
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -62,6 +70,9 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--profile") and index + 1 < args.len) {
             index += 1;
             profile_path = args[index];
+        } else if (std.mem.eql(u8, arg, "--f64-slot") and index + 1 < args.len) {
+            index += 1;
+            try f64_slots.append(arena, args[index]);
         } else if (std.mem.eql(u8, arg, "--check")) {
             check_only = true;
         } else {
@@ -144,7 +155,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     var diags = sidecar_mod.Diagnostics{ .arena = arena };
-    const parsed = sidecar_mod.read(arena, source, &diags) catch |err| switch (err) {
+    var parsed = sidecar_mod.read(arena, source, &diags) catch |err| switch (err) {
         error.Refused => {
             try diags.write(input, stderr);
             try stderr.flush();
@@ -152,6 +163,37 @@ pub fn main(init: std.process.Init) !void {
         },
         error.OutOfMemory => return err,
     };
+
+    // Caller-stated f64 demotions apply to the parsed contract before
+    // any projection, so the facade's encoders, the profile's
+    // declarations, and the attestation list stay consistent by
+    // construction: the slot's type-table spelling rewrites to f64 and
+    // its attestation entry drops.
+    if (f64_slots.items.len > 0) {
+        var kept: std.ArrayListUnmanaged(sidecar_mod.IntegerSlot) = .empty;
+        for (f64_slots.items) |slot_path| {
+            const listed = for (parsed.integer_slots) |slot| {
+                if (std.mem.eql(u8, slot.slot, slot_path)) break true;
+            } else false;
+            if (!listed) {
+                try stderr.print("corewire: --f64-slot {s} names no attested integer slot of this contract — a misspelling would silently demote nothing; check the contract's integer_slots\n", .{slot_path});
+                try stderr.flush();
+                std.process.exit(2);
+            }
+            if (!demoteSlotToF64(parsed, slot_path)) {
+                try stderr.print("corewire: --f64-slot {s} does not name a record field slot (Container.field) — only record-field slots demote today; a message-arm or helper slot demotion needs its own emitter support\n", .{slot_path});
+                try stderr.flush();
+                std.process.exit(2);
+            }
+        }
+        for (parsed.integer_slots) |slot| {
+            const demoted = for (f64_slots.items) |slot_path| {
+                if (std.mem.eql(u8, slot.slot, slot_path)) break true;
+            } else false;
+            if (!demoted) try kept.append(arena, slot);
+        }
+        parsed.integer_slots = kept.items;
+    }
 
     // `--check` runs the FULL pipeline (every projection) and discards
     // the text: a sidecar must never pass the checker and then refuse at
@@ -295,6 +337,37 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(1);
         };
     }
+}
+
+/// Rewrite one record-field slot's type-table spelling from i64 to f64
+/// (through one optional wrapper). Returns false when the path is not a
+/// `Container.field` record slot whose field spells i64.
+fn demoteSlotToF64(sidecar: sidecar_mod.Sidecar, slot_path: []const u8) bool {
+    const dot = std.mem.indexOfScalar(u8, slot_path, '.') orelse return false;
+    const container = slot_path[0..dot];
+    const field_name = slot_path[dot + 1 ..];
+    if (std.mem.indexOfScalar(u8, field_name, '.') != null) return false;
+    for (sidecar.types.structs) |entry| {
+        if (!std.mem.eql(u8, entry.name, container)) continue;
+        for (entry.fields) |*field| {
+            if (!std.mem.eql(u8, field.name, field_name)) continue;
+            const mutable: *sidecar_mod.Field = @constCast(field);
+            switch (field.type) {
+                .i64 => {
+                    mutable.type = .f64;
+                    return true;
+                },
+                .optional => |inner| {
+                    if (inner.* != .i64) return false;
+                    const mutable_inner: *sidecar_mod.TypeRef = @constCast(inner);
+                    mutable_inner.* = .f64;
+                    return true;
+                },
+                else => return false,
+            }
+        }
+    }
+    return false;
 }
 
 /// The facade path as the profile's entry spelling: relative to the

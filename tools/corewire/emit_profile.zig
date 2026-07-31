@@ -34,12 +34,14 @@ pub const Error = error{ Refused, OutOfMemory };
 pub const default_entry = "core_facade.ts";
 
 /// One export-map row: the marshalled signature of a facade export, by
-/// ABI suffix. The export name is the facade's FIXED projection
-/// spelling (`nsc_core_` + suffix — the facade declares under those
-/// names whatever the contract's prefix is, exactly as it fixes the
-/// Model/Msg spellings); the symbol takes the contract's own prefix.
+/// ABI suffix. The export name is the generated facade's own exported
+/// function (the plain suffix; the conditional channel entries take the
+/// facade's `abi_` spelling); the symbol takes the contract's prefix.
 const ExportSignature = struct {
     suffix: []const u8,
+    /// The facade's exported function name when it differs from the
+    /// suffix (the channel entries).
+    export_name: ?[]const u8 = null,
     params: []const []const u8,
     returns: []const u8,
 };
@@ -68,10 +70,10 @@ const export_signatures = [_]ExportSignature{
     // The wire-shaped conditional channel entries (present exactly when
     // the sidecar wires the channel): host-event params in, the channel
     // bytes envelope out.
-    .{ .suffix = "command_msg", .params = &.{"bytes"}, .returns = "bytes" },
-    .{ .suffix = "frame_msg", .params = &.{ "f64", "f64", "f64", "f64" }, .returns = "bytes" },
-    .{ .suffix = "key_msg", .params = &.{ "bytes", "u8", "u8", "u8", "u8" }, .returns = "bytes" },
-    .{ .suffix = "pinch_msg", .params = &.{ "f64", "bytes", "u32", "f64", "f64", "f64" }, .returns = "bytes" },
+    .{ .suffix = "command_msg", .export_name = "abi_command_msg", .params = &.{"bytes"}, .returns = "bytes" },
+    .{ .suffix = "frame_msg", .export_name = "abi_frame_msg", .params = &.{ "f64", "f64", "f64", "f64" }, .returns = "bytes" },
+    .{ .suffix = "key_msg", .export_name = "abi_key_msg", .params = &.{ "bytes", "u8", "u8", "u8", "u8" }, .returns = "bytes" },
+    .{ .suffix = "pinch_msg", .export_name = "abi_pinch_msg", .params = &.{ "f64", "bytes", "u32", "f64", "f64", "f64" }, .returns = "bytes" },
 };
 
 /// Suffixes that never enter the export map: the mode-provided symbols
@@ -209,16 +211,16 @@ const ProfileEmitter = struct {
 
         // The export map, in the sidecar's attested (canonical) order:
         // every suffix the object exports that is neither mode-provided
-        // nor identity-synthesized. The export name is the facade's
-        // fixed `nsc_core_` spelling; the symbol carries the contract's
-        // prefix.
+        // nor identity-synthesized. The export name is the generated
+        // facade's own exported function; the symbol carries the
+        // contract's prefix.
         var first = true;
         for (self.sidecar.abi.exports) |suffix| {
             if (nameListed(&unmapped_suffixes, suffix)) continue;
             const signature = signatureFor(suffix) orelse continue;
             if (!first) try self.raw(",\n");
             first = false;
-            try self.print("    {{ \"export\": {s}, \"symbol\": {s}, \"params\": [", .{ try self.symbol("nsc_core_", suffix), try self.symbol(prefix, suffix) });
+            try self.print("    {{ \"export\": {s}, \"symbol\": {s}, \"params\": [", .{ try self.jsonString(signature.export_name orelse suffix), try self.symbol(prefix, suffix) });
             for (signature.params, 0..) |class, index| {
                 try self.print("{s}\"{s}\"", .{ if (index == 0) "" else ", ", class });
             }
@@ -229,9 +231,13 @@ const ProfileEmitter = struct {
         // The contract-sidecar section: the same invocation that builds
         // the archive emits the sidecar at the declared path and
         // synthesizes the two identity getters from these constants.
-        // The facade declares its roots and behavioral entry points
-        // under the fixed projection spellings, whatever the contract
-        // calls them, so the designations here are those spellings.
+        // The designations name the generated facade's own exported
+        // declarations: the contract's root type spellings (the facade
+        // re-exports the author's declarations verbatim) and the
+        // wrapper entries whose return shapes restate the contract's
+        // shape flags. A subscribing contract designates its
+        // subscriptions wrapper; a non-subscribing one names none (the
+        // compiler refuses dangling designations).
         try self.print(
             \\  "sidecar": {{
             \\    "path": "core.contract.json",
@@ -240,13 +246,10 @@ const ProfileEmitter = struct {
             \\    "snapshot_format": {d},
             \\    "build_id_symbol": {s},
             \\    "abi_version_symbol": {s},
-            \\    "model": "Model",
-            \\    "msg": "Msg",
-            \\    "init_export": "initialModel",
-            \\    "update_export": "update",
-            \\    "subscriptions_export": "subscriptions",
-            \\    "source_hash": "module-graph"
-            \\  }},
+            \\    "model": {s},
+            \\    "msg": {s},
+            \\    "init_export": "init",
+            \\    "update_export": "coreUpdate",
             \\
         , .{
             self.sidecar.wire_version,
@@ -254,21 +257,26 @@ const ProfileEmitter = struct {
             self.sidecar.abi.snapshot_format,
             try self.symbol(prefix, "build_id"),
             try self.symbol(prefix, "abi_version"),
+            try self.jsonString(self.sidecar.model),
+            try self.jsonString(self.sidecar.msg.name),
         });
-        // Integer-slot declarations are RELEASE-PINNED DATA this profile
-        // deliberately leaves absent. The pinned release accepts a
-        // sidecar.integer_slots list, but its prover demands an inline
-        // wholeness proof at EVERY construction of a slot-declared
-        // record shape and does not trust reads of already-classed
-        // slots — verified live: a spread update (`{ ...model, x }`)
-        // refuses on every untouched integer field, a structurally
-        // identical draft type unifies with the declared shape and
-        // refuses the same way, and even this facade's own message
-        // constructors (`nsc_core_msg_<arm>(value: number)`) refuse on
-        // an integer-classed arm. Until slot reads carry their own
-        // class, the compiled pairing rides the co-emitted contract's
-        // f64 posture: the archive pairs with the sidecar the same
-        // invocation emitted, and integer values stay exact below 2^53.
+        if (self.sidecar.has_subscriptions) {
+            try self.raw("    \"subscriptions_export\": \"coreSubscriptions\",\n");
+        }
+        // The integer-slot declarations carry through from the contract:
+        // the compiler proves every declared slot whole at construction
+        // (the generated facade and the author's own update logic carry
+        // the inline proofs), and the co-emitted contract attests the
+        // same classes the reference lane derived.
+        if (self.sidecar.integer_slots.len == 0) {
+            try self.raw("    \"integer_slots\": []\n  },\n");
+        } else {
+            try self.raw("    \"integer_slots\": [\n");
+            for (self.sidecar.integer_slots, 0..) |slot, index| {
+                try self.print("      {{ \"slot\": {s}, \"class\": \"{t}\" }}{s}\n", .{ try self.jsonString(slot.slot), slot.class, if (index + 1 == self.sidecar.integer_slots.len) "" else "," });
+            }
+            try self.raw("    ]\n  },\n");
+        }
 
         // The determinism policy: deny-fences over the ambient surfaces
         // with the SDK's teachings, the shared async teaching, and the
@@ -366,22 +374,29 @@ test "profile emission is deterministic and carries the library-mode surface" {
     try testing.expect(std.mem.indexOf(u8, first, "\"sink_register_symbol\": \"nsc_core_set_panic_sink\"") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"collect_symbol\": \"nsc_core_collect\"") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"result_reset_symbol\": \"nsc_core_frame_reset\"") != null);
-    // The export map binds export name to symbol with the marshalled
-    // signature; mode symbols and identity getters stay out of it.
-    try testing.expect(std.mem.indexOf(u8, first, "{ \"export\": \"nsc_core_dispatch_number\", \"symbol\": \"nsc_core_dispatch_number\", \"params\": [\"u8\", \"f64\"], \"returns\": \"bytes\" }") != null);
-    try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"nsc_core_init\"") == null);
-    try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"nsc_core_build_id\"") == null);
+    // The export map binds the facade's exported function name to the
+    // prefixed symbol with the marshalled signature; mode symbols and
+    // identity getters stay out of it.
+    try testing.expect(std.mem.indexOf(u8, first, "{ \"export\": \"dispatch_number\", \"symbol\": \"nsc_core_dispatch_number\", \"params\": [\"u8\", \"f64\"], \"returns\": \"bytes\" }") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"init\"") == null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"export\": \"build_id\"") == null);
     // The sidecar section echoes the contract's generations and
-    // declares the SDK's emission path, identity-getter symbols, and
-    // integer-class obligations.
+    // declares the SDK's emission path, identity-getter symbols, the
+    // facade's designated entries, and the integer-slot declarations.
     try testing.expect(std.mem.indexOf(u8, first, "\"path\": \"core.contract.json\"") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"wire_version\": 3") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"build_id_symbol\": \"nsc_core_build_id\"") != null);
     try testing.expect(std.mem.indexOf(u8, first, "\"abi_version_symbol\": \"nsc_core_abi_version\"") != null);
-    // Integer-slot declarations stay absent at this pin (see the
-    // emitter's release-pinned note): the archive pairs with its own
-    // co-emitted contract's f64 posture.
-    try testing.expect(std.mem.indexOf(u8, first, "integer_slots") == null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"init_export\": \"init\"") != null);
+    try testing.expect(std.mem.indexOf(u8, first, "\"update_export\": \"coreUpdate\"") != null);
+    // minimal_valid_json has no subscriptions: the designation must not
+    // dangle (the compiler refuses a name that resolves to nothing).
+    try testing.expect(std.mem.indexOf(u8, first, "subscriptions_export") == null);
+    // The integer-slot declarations carry through from the contract.
+    try testing.expect(std.mem.indexOf(u8, first, "{ \"slot\": \"Model.count\", \"class\": \"i64\" }") != null);
+    // No provenance stub rides the profile (the compiler computes its
+    // own source hash over the module graph).
+    try testing.expect(std.mem.indexOf(u8, first, "source_hash") == null);
     // The determinism policy rides whole: fences with SDK teachings,
     // the shared async teaching, the trap remediations.
     try testing.expect(std.mem.indexOf(u8, first, "{ \"id\": \"stdlib.math.random\"") != null);
@@ -399,11 +414,13 @@ test "wired channels join the export map with their wire shapes" {
     source = try std.mem.replaceOwned(u8, arena, source, "\"helper_call\"]", "\"helper_call\", \"key_msg\", \"pinch_msg\"]");
     const generated = try profileFromJson(arena, source, default_entry);
     // The wire-shaped signatures: bytes as buffers, u8 modifier
-    // booleans, the pinch phase a u32 member index.
-    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_key_msg\", \"symbol\": \"nsc_core_key_msg\", \"params\": [\"bytes\", \"u8\", \"u8\", \"u8\", \"u8\"], \"returns\": \"bytes\" }") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_pinch_msg\", \"symbol\": \"nsc_core_pinch_msg\", \"params\": [\"f64\", \"bytes\", \"u32\", \"f64\", \"f64\", \"f64\"], \"returns\": \"bytes\" }") != null);
-    try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_command_msg") == null);
-    try testing.expect(std.mem.indexOf(u8, generated, "nsc_core_frame_msg") == null);
+    // booleans, the pinch phase a u32 member index. The export names
+    // take the facade's abi_ spellings; the symbols the contract's
+    // prefix.
+    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"abi_key_msg\", \"symbol\": \"nsc_core_key_msg\", \"params\": [\"bytes\", \"u8\", \"u8\", \"u8\", \"u8\"], \"returns\": \"bytes\" }") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"abi_pinch_msg\", \"symbol\": \"nsc_core_pinch_msg\", \"params\": [\"f64\", \"bytes\", \"u32\", \"f64\", \"f64\", \"f64\"], \"returns\": \"bytes\" }") != null);
+    try testing.expect(std.mem.indexOf(u8, generated, "abi_command_msg") == null);
+    try testing.expect(std.mem.indexOf(u8, generated, "abi_frame_msg") == null);
 }
 
 test "the profile tracks the contract's prefix and generations" {
@@ -416,9 +433,9 @@ test "the profile tracks the contract's prefix and generations" {
     try testing.expect(std.mem.indexOf(u8, generated, "\"entry\": \"my_facade.ts\"") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "\"prefix\": \"app2_\"") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "\"init_symbol\": \"app2_init\"") != null);
-    // Export names keep the facade's fixed projection spellings; only
-    // the symbols take the contract's prefix.
-    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"nsc_core_model_snapshot\", \"symbol\": \"app2_model_snapshot\"") != null);
+    // Export names keep the facade's own function spellings; only the
+    // symbols take the contract's prefix.
+    try testing.expect(std.mem.indexOf(u8, generated, "{ \"export\": \"model_snapshot\", \"symbol\": \"app2_model_snapshot\"") != null);
     try testing.expect(std.mem.indexOf(u8, generated, "\"export\": \"app2_") == null);
     try testing.expect(std.mem.indexOf(u8, generated, "\"build_id_symbol\": \"app2_build_id\"") != null);
 }

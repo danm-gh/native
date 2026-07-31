@@ -54,6 +54,20 @@ pub const CanvasWidgetTextHistoryAvailability = struct {
 
 const max_text_history_edits_per_shortcut = 3;
 
+/// One event-loop thread performs at most one retained widget edit at a time.
+/// Keep the maximal edit/rewrite workspaces in lazy per-thread storage: with
+/// practical code-file budgets these buffers no longer fit on mobile and
+/// Windows default stacks, while unused host threads still pay only the TLS
+/// pointer supplied by `LazyTls`.
+const CanvasWidgetTextEditScratch = struct {
+    edit_buffer: [max_canvas_widget_text_bytes_per_view]u8,
+    rewrite_buffer: [max_canvas_widget_text_bytes_per_view]u8,
+    text_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange,
+    label_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange,
+    command_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange,
+};
+const canvas_widget_text_edit_scratch = canvas.lazy_tls.LazyTls(CanvasWidgetTextEditScratch);
+
 pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
     return struct {
         pub fn applyCanvasWidgetTextEdit(self: *RuntimeView, target_id: canvas.ObjectId, edit: canvas.TextInputEvent) anyerror!?geometry.RectF {
@@ -64,19 +78,34 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             return applyCanvasWidgetTextEditWithHistory(self, target_id, edit, false);
         }
 
+        pub fn canvasWidgetTextEditNeedsLargeStorage(
+            self: *const RuntimeView,
+            target_id: canvas.ObjectId,
+            edit: canvas.TextInputEvent,
+        ) bool {
+            if (self.widget_text_bytes_heap_owned) return false;
+            _ = self.canvasWidgetNodeIndexById(target_id) orelse return false;
+            const inserted_len = switch (edit) {
+                .insert_text => |text| text.len,
+                .set_composition => |composition| composition.text.len,
+                else => 0,
+            };
+            return self.widget_text_len +| inserted_len > self.widget_text_bytes.len;
+        }
+
         fn applyCanvasWidgetTextEditWithHistory(self: *RuntimeView, target_id: canvas.ObjectId, edit: canvas.TextInputEvent, record_history: bool) anyerror!?geometry.RectF {
             const index = self.canvasWidgetNodeIndexById(target_id) orelse return null;
             const widget = self.widget_layout_nodes[index].widget;
             if (!canvasWidgetEditableTextKind(widget.kind) or widget.state.disabled) return null;
 
             const previous_bounds = widget.frame;
-            var edit_buffer: [max_canvas_widget_text_bytes_per_view]u8 = undefined;
+            const scratch = canvas_widget_text_edit_scratch.get();
             const current_state = canvas.TextEditState{
                 .text = widget.text,
                 .selection = widget.text_selection orelse canvas.TextSelection.collapsed(widget.text.len),
                 .composition = widget.text_composition,
             };
-            const next_state = try current_state.apply(edit, &edit_buffer);
+            const next_state = try current_state.apply(edit, &scratch.edit_buffer);
             if (canvasWidgetTextEditUnchanged(current_state, next_state)) return null;
             try validateCanvasWidgetTextStorageRewrite(self, index, next_state);
 
@@ -1326,25 +1355,22 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 self.widget_layout_nodes[edited_index].widget.text,
                 next_state.text,
             );
-            var temp: [max_canvas_widget_text_bytes_per_view]u8 = undefined;
-            var text_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange = undefined;
-            var label_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange = undefined;
-            var command_ranges: [max_canvas_widget_nodes_per_view]WidgetTextStorageRange = undefined;
+            const scratch = canvas_widget_text_edit_scratch.get();
             var temp_len: usize = 0;
 
             for (self.widget_layout_nodes[0..self.widget_layout_node_count], 0..) |node, index| {
                 const text = if (index == edited_index) next_state.text else node.widget.text;
-                text_ranges[index] = try appendWidgetTextStorageRange(&temp, &temp_len, text);
-                label_ranges[index] = try appendWidgetTextStorageRange(&temp, &temp_len, node.widget.semantics.label);
-                command_ranges[index] = try appendWidgetTextStorageRange(&temp, &temp_len, node.widget.command);
+                scratch.text_ranges[index] = try appendWidgetTextStorageRange(&scratch.rewrite_buffer, &temp_len, text);
+                scratch.label_ranges[index] = try appendWidgetTextStorageRange(&scratch.rewrite_buffer, &temp_len, node.widget.semantics.label);
+                scratch.command_ranges[index] = try appendWidgetTextStorageRange(&scratch.rewrite_buffer, &temp_len, node.widget.command);
             }
 
-            @memcpy(self.widget_text_bytes[0..temp_len], temp[0..temp_len]);
+            @memcpy(self.widget_text_bytes[0..temp_len], scratch.rewrite_buffer[0..temp_len]);
             self.widget_text_len = temp_len;
             for (self.widget_layout_nodes[0..self.widget_layout_node_count], 0..) |*node, index| {
-                const text_range = text_ranges[index];
-                const label_range = label_ranges[index];
-                const command_range = command_ranges[index];
+                const text_range = scratch.text_ranges[index];
+                const label_range = scratch.label_ranges[index];
+                const command_range = scratch.command_ranges[index];
                 node.widget.text = self.widget_text_bytes[text_range.start..text_range.end];
                 node.widget.semantics.label = self.widget_text_bytes[label_range.start..label_range.end];
                 node.widget.command = self.widget_text_bytes[command_range.start..command_range.end];

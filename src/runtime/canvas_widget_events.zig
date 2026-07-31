@@ -2070,6 +2070,12 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 };
             keyboard_event.keyboard.edit = edit;
 
+            if (self.views[index].canvasWidgetTextEditNeedsLargeStorage(target.id, edit)) {
+                for (self.views[0 .. index + 1]) |*view| {
+                    try view.ensureLargeCanvasWidgetTextStorage(self.owned_allocator);
+                }
+            }
+
             const dirty = if (keyboard_event.history_replay)
                 try self.views[index].applyCanvasWidgetTextEditWithoutHistory(target.id, edit) orelse return
             else

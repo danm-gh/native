@@ -78,6 +78,52 @@ test "the builder's presented-text store mirrors the per-view draw-text budget" 
     );
 }
 
+test "closing an earlier view transfers a later view's expanded text storage" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-expanded-storage-compaction", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    try harness.start(app_state.app());
+
+    for ([_][]const u8{ "canvas-a", "canvas-b" }) |label| {
+        _ = try harness.runtime.createView(.{
+            .window_id = 1,
+            .label = label,
+            .kind = .gpu_surface,
+            .frame = geometry.RectF.init(0, 0, 240, 160),
+        });
+    }
+    const ordinary = canvas.Widget{ .id = 2, .kind = .text, .text = "ordinary" };
+    var ordinary_nodes: [1]canvas.WidgetLayoutNode = undefined;
+    const ordinary_layout = try canvas.layoutWidgetTree(ordinary, geometry.RectF.init(0, 0, 240, 160), &ordinary_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas-a", ordinary_layout);
+
+    const editor = canvas.Widget{
+        .id = 3,
+        .kind = .textarea,
+        .text = "expanded",
+        .text_no_wrap = true,
+        .code_editor = true,
+    };
+    var editor_nodes: [1]canvas.WidgetLayoutNode = undefined;
+    const editor_layout = try canvas.layoutWidgetTree(editor, geometry.RectF.init(0, 0, 240, 160), &editor_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas-b", editor_layout);
+    try std.testing.expect(harness.runtime.views[0].widget_text_bytes_heap_owned);
+    try std.testing.expect(harness.runtime.views[1].widget_text_bytes_heap_owned);
+
+    try harness.runtime.closeView(1, "canvas-a");
+    try std.testing.expectEqual(@as(usize, 1), harness.runtime.view_count);
+    try std.testing.expectEqualStrings("canvas-b", harness.runtime.views[0].label);
+    try std.testing.expect(harness.runtime.views[0].widget_text_bytes_heap_owned);
+    try std.testing.expectEqualStrings("expanded", harness.runtime.views[0].widgetLayoutTree().nodes[0].widget.text);
+}
+
 test "runtime exposes retained canvas widget text geometry" {
     const TestApp = struct {
         fn app(self: *@This()) App {

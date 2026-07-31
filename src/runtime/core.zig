@@ -183,7 +183,8 @@ pub const Runtime = struct {
     options: Options,
     /// The allocator that owns every runtime-lifetime heap allocation
     /// (registered canvas font bytes, registered canvas image slot
-    /// buffers, adopted media-surface texture buffers). Captured from
+    /// buffers, adopted media-surface texture buffers, and expanded live-view
+    /// text/history pools). Captured from
     /// `Options.allocator` at init precisely
     /// because `options` is public and mutable: allocation and free of
     /// owned storage can be a whole runtime lifetime apart, and they
@@ -517,10 +518,10 @@ pub const Runtime = struct {
         canvas.bumpTextMeasureGeneration();
     }
 
-    /// Release the runtime's heap-owned on-demand storage (registered
-    /// canvas font bytes, registered canvas image slot buffers, and
-    /// adopted media-surface texture buffers, allocated from the
-    /// init-frozen `owned_allocator`), return each registered font's
+    /// Release the runtime's heap-owned on-demand storage (expanded live-view
+    /// text/history pools, registered canvas font bytes, registered canvas
+    /// image slot buffers, and adopted media-surface texture buffers,
+    /// allocated from the init-frozen `owned_allocator`), return each registered font's
     /// host-side registration (through the unregister owner captured
     /// into the entry at registration time — host font state is
     /// per-process, this runtime's ids are not, and live `options` may
@@ -537,6 +538,15 @@ pub const Runtime = struct {
     /// host) call it to return the storage.
     pub fn deinit(self: *Runtime) void {
         self.disarmMediaSurfaceWakes();
+        for (self.views[0..self.view_count]) |*view| {
+            if (view.widget_text_bytes_heap_owned) self.owned_allocator.free(view.widget_text_bytes);
+            if (view.canvas_widget_text_history_bytes_heap_owned) self.owned_allocator.free(view.canvas_widget_text_history_bytes);
+            view.widget_text_bytes = &.{};
+            view.widget_text_bytes_heap_owned = false;
+            view.canvas_widget_text_history_bytes = &.{};
+            view.canvas_widget_text_history_bytes_heap_owned = false;
+        }
+        self.view_count = 0;
         if (self.targetless_ime_preedit.len > 0) {
             self.owned_allocator.free(self.targetless_ime_preedit);
             self.targetless_ime_preedit = &.{};

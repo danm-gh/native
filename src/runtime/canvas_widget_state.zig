@@ -28,6 +28,27 @@ const canvasWidgetAccessibilityActionSupported = widget_bridge.canvasWidgetAcces
 const platformWidgetAccessibilityActionKindFromCanvas = widget_bridge.platformWidgetAccessibilityActionKindFromCanvas;
 const canvasWidgetBooleanSelected = canvas_widget_runtime.canvasWidgetBooleanSelected;
 
+fn canvasWidgetLayoutNeedsLargeTextStorage(layout: canvas.WidgetLayoutTree) bool {
+    var text_len: usize = 0;
+    for (layout.nodes) |node| {
+        const widget = node.widget;
+        if (widget.code_editor) return true;
+        text_len +|= widget.text.len +| widget.icon.len +| widget.command.len +| widget.semantics.label.len;
+        for (widget.spans) |span| text_len +|= span.text.len +| span.link.len;
+        for (widget.context_menu) |item| text_len +|= item.label.len;
+        for (widget.chart.series) |series| text_len +|= series.label.len;
+        for (widget.chart.x_labels) |label| text_len +|= label.len;
+        if (text_len > canvas_limits.max_canvas_widget_inline_text_bytes_per_view) return true;
+    }
+    return false;
+}
+
+fn ensureCanvasWidgetLargeTextStorageThrough(runtime: anytype, index: usize) !void {
+    for (runtime.views[0 .. index + 1]) |*view| {
+        try view.ensureLargeCanvasWidgetTextStorage(runtime.owned_allocator);
+    }
+}
+
 pub fn RuntimeCanvasWidgetState(comptime Runtime: type) type {
     return struct {
         pub fn setCanvasWidgetLayout(self: *Runtime, window_id: platform.WindowId, label: []const u8, layout: canvas.WidgetLayoutTree) anyerror!platform.ViewInfo {
@@ -85,6 +106,9 @@ pub fn RuntimeCanvasWidgetState(comptime Runtime: type) type {
                 armed_tween_ids[0..armed_tween_count],
                 canvasWidgetPressedSplitId(self, index),
             );
+            if (canvasWidgetLayoutNeedsLargeTextStorage(reconciled_layout)) {
+                try ensureCanvasWidgetLargeTextStorageThrough(self, index);
+            }
             // Native scroll drivers: mark natively driven scroll
             // regions before the copy so rebuild-time clamping and display
             // emission both see the flag (engine scrollbar + engine clamp
@@ -831,6 +855,9 @@ pub fn RuntimeCanvasWidgetState(comptime Runtime: type) type {
             // field's editor never accepts a line break, whoever writes.
             const node = self.views[index].widgetLayoutTree().findById(id) orelse return error.InvalidCommand;
             const sanitized = canvas.sanitizedSingleLineTextInputEvent(node.widget.kind, edit) orelse return self.views[index].info();
+            if (self.views[index].canvasWidgetTextEditNeedsLargeStorage(id, sanitized)) {
+                try ensureCanvasWidgetLargeTextStorageThrough(self, index);
+            }
             const dirty = try self.views[index].applyCanvasWidgetTextEdit(id, sanitized) orelse return self.views[index].info();
             try CanvasWidgetEventMethods(Runtime).invalidateForCanvasWidgetDirty(self, index, dirty);
             _ = try CanvasWidgetDisplayMethods(Runtime).refreshCanvasWidgetDisplayListIfOwned(self, index);

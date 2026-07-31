@@ -997,6 +997,41 @@ test "new windows own independent folders and opening again replaces only the ac
     try testing.expectEqual(@as(usize, 0), main.editorWindows(&app_model, &scratch).len);
 }
 
+test "dirty documents block folder replacement and secondary window teardown" {
+    var app_model = main.AppModel{};
+    app_model.init();
+    defer app_model.deinit();
+
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+
+    main.appUpdate(&app_model, .new_window, &fx);
+    var browser = &app_model.sessions[1].browser;
+    browser.entry_count = 1;
+    browser.entries[0] = .{};
+    seedActiveDocument(browser, 0, "saved\n");
+    browser.documents[0].editor.apply(.{ .insert_text = "dirty\n" });
+    try testing.expect(browser.hasDirtyDocuments());
+
+    main.appUpdate(&app_model, .open_folder, &fx);
+    try testing.expectEqual(@as(u64, 0), browser.picker_serial);
+    try testing.expectEqualStrings("Save all files before opening another folder.", browser.status());
+
+    var replacement = testing.tmpDir(.{ .iterate = true });
+    defer replacement.cleanup();
+    try replacement.dir.writeFile(testing.io, .{ .sub_path = "replacement.zig", .data = "const replacement = true;\n" });
+    try testing.expectError(
+        error.UnsavedChanges,
+        main.scanOpenDirectory(browser, testing.io, testing.allocator, "/replacement", replacement.dir),
+    );
+    try testing.expectEqualStrings("saved\ndirty\n", browser.preview());
+
+    main.appUpdate(&app_model, .{ .close_window = 1 }, &fx);
+    try testing.expect(app_model.sessions[1].open);
+    try testing.expectEqualStrings("Save all files before closing this window.", browser.status());
+}
+
 test "reopened window sessions never reuse in-flight file effect keys" {
     var app_model = main.AppModel{};
     app_model.init();

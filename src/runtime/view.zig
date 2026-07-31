@@ -29,9 +29,7 @@ const max_canvas_visual_effects_per_view = canvas_limits.max_canvas_visual_effec
 const max_canvas_text_layouts_per_view = canvas_limits.max_canvas_text_layouts_per_view;
 const max_canvas_widget_nodes_per_view = canvas_limits.max_canvas_widget_nodes_per_view;
 const max_canvas_widget_semantics_per_view = canvas_limits.max_canvas_widget_semantics_per_view;
-const max_canvas_widget_text_bytes_per_view = canvas_limits.max_canvas_widget_text_bytes_per_view;
 const max_canvas_widget_source_text_entries_per_view = canvas_limits.max_canvas_widget_source_text_entries_per_view;
-const max_canvas_widget_text_history_bytes_per_view = canvas_limits.max_canvas_widget_text_history_bytes_per_view;
 const max_canvas_widget_text_history_entries_per_view = canvas_limits.max_canvas_widget_text_history_entries_per_view;
 
 const CanvasWidgetSourceTextEntry = canvas_widget_runtime.CanvasWidgetSourceTextEntry;
@@ -721,7 +719,11 @@ pub const RuntimeView = struct {
     canvas_widget_drag_regions: [canvas_limits.max_canvas_widget_window_drag_regions_per_view]platform.WindowDragRegion = undefined,
     canvas_widget_drag_region_count: usize = 0,
     canvas_widget_drag_regions_pushed: bool = false,
-    widget_text_bytes: [max_canvas_widget_text_bytes_per_view]u8 = undefined,
+    widget_text_inline_bytes: [canvas_limits.max_canvas_widget_inline_text_bytes_per_view]u8 = undefined,
+    /// Points at `widget_text_inline_bytes` for ordinary views and upgrades to
+    /// heap-owned large-file capacity only when a retained layout needs it.
+    widget_text_bytes: []u8 = &.{},
+    widget_text_bytes_heap_owned: bool = false,
     widget_text_len: usize = 0,
     widget_span_entries: [canvas_limits.max_canvas_widget_spans_per_view]canvas.TextSpan = undefined,
     widget_span_len: usize = 0,
@@ -760,7 +762,9 @@ pub const RuntimeView = struct {
     /// snapshot.
     canvas_widget_text_history_entries: [max_canvas_widget_text_history_entries_per_view]view_widget_text.CanvasWidgetTextHistoryEntry = undefined,
     canvas_widget_text_history_entry_count: usize = 0,
-    canvas_widget_text_history_bytes: [max_canvas_widget_text_history_bytes_per_view]u8 = undefined,
+    canvas_widget_text_history_inline_bytes: [canvas_limits.max_canvas_widget_inline_text_history_bytes_per_view]u8 = undefined,
+    canvas_widget_text_history_bytes: []u8 = &.{},
+    canvas_widget_text_history_bytes_heap_owned: bool = false,
     canvas_widget_text_history_byte_count: usize = 0,
     canvas_widget_text_history_next_serial: u64 = 1,
     /// Native textarea Up/Down retains its painted x coordinate while a
@@ -778,6 +782,7 @@ pub const RuntimeView = struct {
     const CanvasWidgetTextMethods = view_widget_text.RuntimeViewCanvasWidgetText(RuntimeView);
     pub const applyCanvasWidgetTextEdit = CanvasWidgetTextMethods.applyCanvasWidgetTextEdit;
     pub const applyCanvasWidgetTextEditWithoutHistory = CanvasWidgetTextMethods.applyCanvasWidgetTextEditWithoutHistory;
+    pub const canvasWidgetTextEditNeedsLargeStorage = CanvasWidgetTextMethods.canvasWidgetTextEditNeedsLargeStorage;
     pub const canvasWidgetKeyboardTextEdit = CanvasWidgetTextMethods.canvasWidgetKeyboardTextEdit;
     pub const canvasWidgetTextHistoryShortcut = CanvasWidgetTextMethods.canvasWidgetTextHistoryShortcut;
     pub const canvasWidgetTextHistoryAvailability = CanvasWidgetTextMethods.canvasWidgetTextHistoryAvailability;
@@ -1196,7 +1201,21 @@ pub const RuntimeView = struct {
     }
 
     pub fn copyRuntimeStateFrom(self: *RuntimeView, source: *const RuntimeView, scratch: *canvas_widget_runtime.CanvasWidgetCopyScratch) void {
+        const widget_text_bytes = self.widget_text_bytes;
+        const widget_text_bytes_heap_owned = self.widget_text_bytes_heap_owned;
+        const text_history_bytes = self.canvas_widget_text_history_bytes;
+        const text_history_bytes_heap_owned = self.canvas_widget_text_history_bytes_heap_owned;
         self.* = source.*;
+        self.widget_text_bytes = widget_text_bytes;
+        self.widget_text_bytes_heap_owned = widget_text_bytes_heap_owned;
+        self.canvas_widget_text_history_bytes = text_history_bytes;
+        self.canvas_widget_text_history_bytes_heap_owned = text_history_bytes_heap_owned;
+        if (self.canvas_widget_text_history_bytes.ptr != source.canvas_widget_text_history_bytes.ptr) {
+            @memcpy(
+                self.canvas_widget_text_history_bytes[0..source.canvas_widget_text_history_byte_count],
+                source.canvas_widget_text_history_bytes[0..source.canvas_widget_text_history_byte_count],
+            );
+        }
         self.label = copyInto(&self.label_storage, source.label) catch unreachable;
         self.parent = if (source.parent) |parent| copyInto(&self.parent_storage, parent) catch unreachable else null;
         self.role = copyInto(&self.role_storage, source.role) catch unreachable;
@@ -1209,5 +1228,22 @@ pub const RuntimeView = struct {
         self.copyWidgetLayoutTree(source.widgetLayoutTree(), scratch) catch unreachable;
         self.widget_revision = source.widget_revision;
         @memcpy(self.widget_scroll_states[0..source.widget_layout_node_count], source.widget_scroll_states[0..source.widget_layout_node_count]);
+    }
+
+    pub fn ensureLargeCanvasWidgetTextStorage(self: *RuntimeView, allocator: std.mem.Allocator) !void {
+        if (self.widget_text_bytes_heap_owned) return;
+        const text_bytes = try allocator.alloc(u8, canvas_limits.max_canvas_widget_text_bytes_per_view);
+        errdefer allocator.free(text_bytes);
+        const history_bytes = try allocator.alloc(u8, canvas_limits.max_canvas_widget_text_history_bytes_per_view);
+        errdefer allocator.free(history_bytes);
+        @memcpy(text_bytes[0..self.widget_text_len], self.widget_text_bytes[0..self.widget_text_len]);
+        @memcpy(
+            history_bytes[0..self.canvas_widget_text_history_byte_count],
+            self.canvas_widget_text_history_bytes[0..self.canvas_widget_text_history_byte_count],
+        );
+        self.widget_text_bytes = text_bytes;
+        self.widget_text_bytes_heap_owned = true;
+        self.canvas_widget_text_history_bytes = history_bytes;
+        self.canvas_widget_text_history_bytes_heap_owned = true;
     }
 };

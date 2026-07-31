@@ -36,6 +36,11 @@ const runtime_canvas_widget_events = @import("canvas_widget_events.zig");
 
 const context_menu_log = std.log.scoped(.zero_context_menu);
 
+const CanvasWidgetContextMenuTextScratch = struct {
+    group_buffer: [canvas_limits.max_canvas_widget_text_bytes_per_view]u8,
+};
+const canvas_widget_context_menu_text_scratch = canvas.lazy_tls.LazyTls(CanvasWidgetContextMenuTextScratch);
+
 /// Reserved item ids of the zero-code default menus.
 pub const default_item_cut: u32 = 1;
 pub const default_item_copy: u32 = 2;
@@ -398,8 +403,8 @@ pub fn RuntimeCanvasWidgetContextMenu(comptime Runtime: type) type {
                 .terminal => try applyDefaultTerminalAction(self, app, index, pending.target_id, event.item_id),
                 .static_copy => {
                     if (event.item_id != default_item_copy) return;
-                    var group_buffer: [canvas_limits.max_canvas_widget_text_bytes_per_view]u8 = undefined;
-                    const text = self.views[index].canvasWidgetCopyText(&group_buffer) orelse return;
+                    const group_buffer = &canvas_widget_context_menu_text_scratch.get().group_buffer;
+                    const text = self.views[index].canvasWidgetCopyText(group_buffer) orelse return;
                     self.writeClipboard(text) catch return;
                 },
             }

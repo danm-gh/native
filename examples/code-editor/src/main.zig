@@ -354,6 +354,13 @@ pub const Model = struct {
         return model.pinned_count > 0 or model.preview_entry != null;
     }
 
+    pub fn hasDirtyDocuments(model: *const Model) bool {
+        for (model.documents[0..model.document_count]) |*document| {
+            if (document.dirty()) return true;
+        }
+        return false;
+    }
+
     pub fn openTabs(model: *const Model, arena: std.mem.Allocator) []const OpenTab {
         const out = arena.alloc(OpenTab, model.pinned_count + @intFromBool(model.preview_entry != null)) catch return &.{};
         var count: usize = 0;
@@ -667,6 +674,10 @@ pub const AppModel = struct {
 
     fn closeSecondarySession(model: *AppModel, index: u8) void {
         if (index == 0 or index >= model.sessions.len) return;
+        if (model.sessions[index].browser.hasDirtyDocuments()) {
+            model.sessions[index].browser.setStatus("Save all files before closing this window.", .{});
+            return;
+        }
         model.sessions[index].close();
         if (model.active_session == index) model.active_session = 0;
         if (model.pending_focus_session == index) model.pending_focus_session = null;
@@ -732,7 +743,13 @@ pub fn appUpdate(model: *AppModel, msg: Msg, fx: *Effects) void {
 pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
     switch (msg) {
         .new_window, .close_window => unreachable,
-        .open_folder => model.picker_serial +%= 1,
+        .open_folder => {
+            if (model.hasDirtyDocuments()) {
+                model.setStatus("Save all files before opening another folder.", .{});
+                return;
+            }
+            model.picker_serial +%= 1;
+        },
         .folder_loaded => {},
         .folder_dialog_cancelled => model.setStatus("Folder selection cancelled.", .{}),
         .folder_dialog_failed => model.setStatus("The folder dialog could not be opened.", .{}),
@@ -1309,6 +1326,7 @@ fn remapModelEntryIndices(model: *Model, old_to_new: *const [max_entries]u16) vo
 /// hermetic in tests while `scanFolder` supplies the production path open.
 pub fn scanOpenDirectory(model: *Model, io: std.Io, allocator: std.mem.Allocator, root_path: []const u8, root_dir: std.Io.Dir) !void {
     if (root_path.len == 0 or root_path.len > model.root_storage.len) return error.PathTooLong;
+    if (model.hasDirtyDocuments()) return error.UnsavedChanges;
 
     // A scan replaces folder-scoped data, but the picker request serial must
     // remain monotonic. Resetting it makes the host mistake the completed

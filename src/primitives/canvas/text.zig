@@ -2,6 +2,12 @@ const text_atlas = @import("text_atlas.zig");
 const text_layout = @import("text_layout.zig");
 const text_interaction = @import("text_interaction.zig");
 
+/// Largest retained widget-text pool a view may expose. Text-event
+/// sanitization and defensive single-line presentation share this ceiling
+/// with the runtime so an insert the editor can accept is never too large for
+/// those correctness seams to rewrite.
+pub const max_widget_text_bytes_per_view: usize = 512 * 1024;
+
 pub const Glyph = text_atlas.Glyph;
 pub const GlyphAtlasKey = text_atlas.GlyphAtlasKey;
 pub const GlyphAtlasEntry = text_atlas.GlyphAtlasEntry;

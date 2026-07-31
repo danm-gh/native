@@ -250,7 +250,7 @@ pub fn widgetKindSingleLineTextEntry(kind: WidgetKind) bool {
 /// runtime's per-view widget-text budget
 /// (`max_canvas_widget_text_bytes_per_view`), the largest insert the
 /// editor could accept anyway.
-const max_sanitized_text_edit_bytes: usize = 65536;
+const max_sanitized_text_edit_bytes: usize = text_model.max_widget_text_bytes_per_view;
 const SanitizedTextEditScratch = struct {
     bytes: [max_sanitized_text_edit_bytes]u8,
 };
@@ -1043,4 +1043,16 @@ test "sanitizedSingleLineTextInputEvent strips composition text and shifts the p
     // A textarea preview keeps its newline.
     const multi = sanitizedSingleLineTextInputEvent(.textarea, .{ .set_composition = .{ .text = "a\nb" } }).?;
     try testing.expectEqualStrings("a\nb", multi.set_composition.text);
+}
+
+test "sanitizedSingleLineTextInputEvent sanitizes inserts above the former 64 KiB ceiling" {
+    const testing = std.testing;
+    const input = try testing.allocator.alloc(u8, 65537);
+    defer testing.allocator.free(input);
+    @memset(input, 'a');
+    input[32768] = '\n';
+
+    const sanitized = sanitizedSingleLineTextInputEvent(.text_field, .{ .insert_text = input }).?;
+    try testing.expectEqual(@as(usize, input.len - 1), sanitized.insert_text.len);
+    try testing.expect(std.mem.indexOfAny(u8, sanitized.insert_text, "\r\n") == null);
 }

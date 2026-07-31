@@ -496,6 +496,8 @@ pub fn RuntimeWindowViewRuntime(comptime Runtime: type) type {
                 .keyboard_active = windowKeyboardActive(self, options.window_id),
                 .open = true,
             };
+            self.views[index].widget_text_bytes = &self.views[index].widget_text_inline_bytes;
+            self.views[index].canvas_widget_text_history_bytes = &self.views[index].canvas_widget_text_history_inline_bytes;
             self.views[index].label = try copyInto(&self.views[index].label_storage, options.label);
             self.views[index].parent = if (options.parent) |parent| try copyInto(&self.views[index].parent_storage, parent) else null;
             self.views[index].role = try copyInto(&self.views[index].role_storage, options.role);
@@ -667,6 +669,13 @@ pub fn RuntimeWindowViewRuntime(comptime Runtime: type) type {
                 self.views[cursor].copyRuntimeStateFrom(next, &self.canvas_widget_copy_scratch);
             }
             self.view_count -= 1;
+            const released = &self.views[self.view_count];
+            if (released.widget_text_bytes_heap_owned) self.owned_allocator.free(released.widget_text_bytes);
+            if (released.canvas_widget_text_history_bytes_heap_owned) self.owned_allocator.free(released.canvas_widget_text_history_bytes);
+            released.widget_text_bytes = &.{};
+            released.widget_text_bytes_heap_owned = false;
+            released.canvas_widget_text_history_bytes = &.{};
+            released.canvas_widget_text_history_bytes_heap_owned = false;
         }
 
         pub fn removeViewsForWindow(self: *Runtime, window_id: platform.WindowId) void {

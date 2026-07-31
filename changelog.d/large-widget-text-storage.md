@@ -1,0 +1,1 @@
+fix: **Safe large widget text**: views keep their ordinary 64 KiB text pools inline and allocate practical source-file capacity only when a large layout or edit needs it, while edit, presentation, and context-menu workspaces stay off constrained native stacks and large single-line pastes continue stripping line breaks.

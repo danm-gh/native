@@ -86,12 +86,12 @@ pub fn widgetTextInputTextNeedsPresentation(widget: Widget) bool {
 /// scroll measures) substitute into. Every entry point re-derives it,
 /// and within one widget's computation repeated derivations write
 /// identical bytes, so the aliasing is harmless. Sized to the runtime's
-/// per-view widget-text budget (65536). Nothing EMITTED may retain a
+/// per-view widget-text budget. Nothing EMITTED may retain a
 /// slice into it: render emitters persist presented bytes into the
 /// display-list builder via `persistWidgetTextInputPresentedText`, whose
 /// storage lives exactly as long as the emitted commands do.
 const WidgetTextPresentationScratch = struct {
-    slot: [65536]u8,
+    slot: [text_model.max_widget_text_bytes_per_view]u8,
 };
 const widget_text_presentation_scratch = @import("lazy_tls.zig").LazyTls(WidgetTextPresentationScratch);
 
@@ -112,6 +112,18 @@ fn presentedSingleLineText(text: []const u8) []const u8 {
         scratch.slot[index] = if (byte == '\n' or byte == '\r') ' ' else byte;
     }
     return scratch.slot[0..text.len];
+}
+
+test "single-line presentation rewrites values above the former 64 KiB ceiling" {
+    const input = try std.testing.allocator.alloc(u8, 65537);
+    defer std.testing.allocator.free(input);
+    @memset(input, 'a');
+    input[32768] = '\n';
+
+    const presented = widgetTextInputPresentedText(.{ .kind = .input, .text = input });
+    try std.testing.expectEqual(input.len, presented.len);
+    try std.testing.expectEqual(@as(u8, ' '), presented[32768]);
+    try std.testing.expect(std.mem.indexOfAny(u8, presented, "\r\n") == null);
 }
 
 /// Persist presented bytes into the display-list BUILDER so an emitted

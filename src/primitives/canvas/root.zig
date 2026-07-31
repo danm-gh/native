@@ -204,6 +204,7 @@ pub const TextCaretDirection = text_model.TextCaretDirection;
 pub const TextCaretMove = text_model.TextCaretMove;
 pub const TextCompositionUpdate = text_model.TextCompositionUpdate;
 pub const TextInputEvent = text_model.TextInputEvent;
+pub const max_widget_text_bytes_per_view = text_model.max_widget_text_bytes_per_view;
 pub const TextEditState = text_model.TextEditState;
 pub const TextBuffer = text_model.TextBuffer;
 

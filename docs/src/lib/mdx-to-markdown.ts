@@ -17,6 +17,8 @@ import { docsPath } from "./site";
  * - `<ComponentPreview ... />` (an engine-rendered image) is dropped.
  * - `<CodeToggle>` wrappers are unwrapped: the fenced samples inside are
  *   plain markdown already, so only the tags drop.
+ * - MDX string expressions used to print literal braces become their visible
+ *   text (for example, `{'{id}'}` becomes `{id}`).
  * - Filenamed fences (```ts:src/core.ts) become a labeled `path`: line
  *   above a plain ```ts fence.
  *
@@ -63,7 +65,7 @@ export function mdxToCleanMarkdown(raw: string): string {
     // them before the standalone-component state machine so a line such as
     // `<Experimental /> Mobile ...` cannot be mistaken for an unterminated JSX
     // block and swallow the rest of the document.
-    renderedLine = renderInlineComponents(renderedLine);
+    renderedLine = renderMdxStringExpressions(renderInlineComponents(renderedLine));
     trimmed = renderedLine.trim();
 
     if (jsxBlock === null && (trimmed.startsWith("export ") || trimmed.startsWith("import "))) {
@@ -122,6 +124,15 @@ function renderInlineComponents(line: string): string {
   rendered = rendered.replace(/<Experimental\s*\/>/g, "Experimental");
   return rendered.replace(/<Tier\s+([^>]*?)\s*\/>/g, (_match, attrs: string) =>
     renderSupportTier(attrs),
+  );
+}
+
+/** Resolve text-only MDX expressions while fenced code remains byte-for-byte. */
+function renderMdxStringExpressions(line: string): string {
+  return line.replace(
+    /\{"([^"\\\r\n]*)"\}|\{'([^'\\\r\n]*)'\}/g,
+    (_match, doubleQuoted: string | undefined, singleQuoted: string | undefined) =>
+      doubleQuoted ?? singleQuoted ?? "",
   );
 }
 

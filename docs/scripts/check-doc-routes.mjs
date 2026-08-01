@@ -72,6 +72,12 @@ function assertCleanMarkdown(source, markdown, route) {
   if (unresolved) {
     throw new Error(`${route}: unresolved MDX component in Markdown output: ${unresolved}`);
   }
+  const unresolvedExpression = prose.match(/\{"[^"\\\r\n]*"\}|\{'[^'\\\r\n]*'\}/)?.[0];
+  if (unresolvedExpression) {
+    throw new Error(
+      `${route}: unresolved MDX string expression in Markdown output: ${unresolvedExpression}`,
+    );
+  }
 
   const renderedHeadings = new Set(headings(markdown));
   for (const heading of headings(source)) {

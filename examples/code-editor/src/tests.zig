@@ -117,6 +117,14 @@ fn fixtureModel() !main.Model {
 
     var model = main.Model{};
     try main.scanOpenDirectory(&model, testing.io, testing.allocator, "/fixture", tmp.dir);
+    var src_dir = try tmp.dir.openDir(testing.io, "src", .{ .iterate = true });
+    defer src_dir.close(testing.io);
+    try main.loadOpenDirectoryChildren(&model, testing.io, model.findEntry("src").?, src_dir);
+    var lib_dir = try tmp.dir.openDir(testing.io, "src/lib", .{ .iterate = true });
+    defer lib_dir.close(testing.io);
+    try main.loadOpenDirectoryChildren(&model, testing.io, model.findEntry("src/lib").?, lib_dir);
+    model.entries[model.findEntry("src").?].expanded = false;
+    model.entries[model.findEntry("src/lib").?].expanded = false;
     return model;
 }
 
@@ -267,6 +275,41 @@ test "folder scanning does not report an exact-cap directory as truncated" {
     try main.scanOpenDirectory(&model, testing.io, testing.allocator, "/over-cap", tmp.dir);
     try testing.expectEqual(main.max_entries, model.entry_count);
     try testing.expect(model.scan_truncated);
+}
+
+test "folder expansion preserves root siblings when a deep subtree fills the cap" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(testing.io, "a-large");
+    for (0..main.max_entries) |index| {
+        var name_buffer: [48]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buffer, "a-large/file-{d:0>3}.txt", .{index});
+        try tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = "" });
+    }
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "z-root-file.txt", .data = "" });
+
+    var model = main.Model{};
+    defer model.deinit();
+    try main.scanOpenDirectory(&model, testing.io, testing.allocator, "/root-first", tmp.dir);
+
+    try testing.expectEqual(@as(usize, 2), model.entry_count);
+    try testing.expect(!model.scan_truncated);
+    const large_index = model.findEntry("a-large").?;
+    var fx = main.Effects.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+    main.update(&model, .{ .toggle_entry = large_index }, &fx);
+    try testing.expectEqual(large_index, model.pending_expand_entry.?);
+    try testing.expect(!model.entries[large_index].expanded);
+    var large_dir = try tmp.dir.openDir(testing.io, "a-large", .{ .iterate = true });
+    defer large_dir.close(testing.io);
+    try main.loadOpenDirectoryChildren(&model, testing.io, large_index, large_dir);
+    model.pending_expand_entry = null;
+
+    try testing.expectEqual(main.max_entries, model.entry_count);
+    try testing.expect(model.scan_truncated);
+    try testing.expect(model.findEntry("a-large") != null);
+    try testing.expect(model.findEntry("z-root-file.txt") != null);
 }
 
 test "tree depth moves each row's icon and label together" {
@@ -485,6 +528,7 @@ test "filesystem rename keeps directory descendants and open documents attached"
     var model = main.Model{};
     defer model.deinit();
     try main.scanFolder(&model, testing.io, testing.allocator, root_path);
+    try main.loadDirectoryChildren(&model, testing.io, model.findEntry("src").?);
     const src_index = model.findEntry("src").?;
     const old_main_path = try std.fs.path.join(testing.allocator, &.{ "src", "main.zig" });
     defer testing.allocator.free(old_main_path);

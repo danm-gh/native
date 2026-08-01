@@ -4,6 +4,7 @@ fix: **Reliable large-code editing**: editable code now repaints only visible se
 - **Unsaved-edit protection**: opening another folder or closing a secondary editor window now refuses while that window still has dirty documents.
 - **Steady editor tabs**: active and inactive tabs now share the same background and label alignment, so filenames no longer shift when selection changes.
 - **Balance explorer rows**: file-tree hover and selection backgrounds now keep even visual gutters beside the sidebar edge and split handle while preserving compact label alignment.
+- **Complete repository roots**: the explorer now indexes a folder when it expands instead of spending its bounded tree budget in an eager depth-first walk, so large subtrees cannot hide root files or unexplored sibling folders; `.next` and `.pnpm-store` remain visible but are not recursively indexed.
 - **Familiar file opening**: Command+Down Arrow now opens the selected tree file as a persistent tab; Command+Enter remains available to the focused control.
 - **Visible active tabs**: inactive tabs retain their bottom divider, and opening, clicking, or keyboard-cycling to a tab now minimally scrolls it into view horizontally without shifting an already visible tab.
 - **Distinct new windows**: Command+N now opens each editor window slightly down and to the right of the active window so the new window is immediately apparent.

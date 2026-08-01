@@ -2,8 +2,8 @@
 //!
 //! The small `CodeEditorApp` wrapper is the host boundary: after the
 //! elm-style app requests a folder, it presents `Runtime.showOpenDialog`
-//! with `allow_directories`, copies the chosen path, and performs one
-//! bounded directory scan with the `std.Io` supplied by `main`.
+//! with `allow_directories`, copies the chosen path, and loads the bounded
+//! explorer tree one expanded directory at a time with `std.Io`.
 //! The complete view lives in `code-editor.native`; this file owns the
 //! Model/Msg/update loop and the narrow platform/filesystem seams. Debug
 //! builds hot-reload the markup without losing the selected folder.
@@ -27,8 +27,8 @@ pub const titlebar_natural_height: f32 = 52;
 pub const tree_row_inset: f32 = 4;
 pub const tree_depth_indent: f32 = 16;
 
-/// The folder scan is deliberately bounded: a source browser should not
-/// freeze its UI loop because somebody selected a monorepo or `/`.
+/// The explored tree is deliberately bounded: a source browser should not
+/// exhaust its view/model budgets because somebody selected a monorepo or `/`.
 pub const max_entries: usize = 128;
 pub const max_scan_depth: usize = 12;
 pub const max_root_path_bytes: usize = 512;
@@ -107,6 +107,7 @@ pub const Entry = struct {
     depth: u8 = 1,
     parent: ?u16 = null,
     expanded: bool = false,
+    children_loaded: bool = false,
     /// Scratch identity stamped immediately before an in-place re-sort so
     /// every tab/document index can follow the same entry afterward.
     sort_identity: u16 = 0,
@@ -119,16 +120,36 @@ pub const Entry = struct {
         return entry.relative_storage[0..entry.relative_len];
     }
 
-    fn set(entry: *Entry, walker_entry: std.Io.Dir.Walker.Entry) !void {
-        if (walker_entry.basename.len > entry.name_storage.len or walker_entry.path.len > entry.relative_storage.len) {
+    fn setRoot(entry: *Entry, dir_entry: std.Io.Dir.Entry) !void {
+        if (dir_entry.name.len > entry.name_storage.len or dir_entry.name.len > entry.relative_storage.len) {
             return error.PathTooLong;
         }
-        @memcpy(entry.name_storage[0..walker_entry.basename.len], walker_entry.basename);
-        entry.name_len = walker_entry.basename.len;
-        @memcpy(entry.relative_storage[0..walker_entry.path.len], walker_entry.path);
-        entry.relative_len = walker_entry.path.len;
-        entry.kind = if (walker_entry.kind == .directory) .directory else .file;
-        entry.depth = @intCast(@min(walker_entry.depth(), std.math.maxInt(u8)));
+        @memcpy(entry.name_storage[0..dir_entry.name.len], dir_entry.name);
+        entry.name_len = dir_entry.name.len;
+        @memcpy(entry.relative_storage[0..dir_entry.name.len], dir_entry.name);
+        entry.relative_len = dir_entry.name.len;
+        entry.kind = if (dir_entry.kind == .directory) .directory else .file;
+        entry.depth = 1;
+        entry.children_loaded = entry.kind != .directory or skipDirectory(dir_entry.name);
+    }
+
+    fn setChild(entry: *Entry, parent_entry: *const Entry, dir_entry: std.Io.Dir.Entry) !void {
+        const parent_path = parent_entry.relativePath();
+        const relative_len = parent_path.len + 1 + dir_entry.name.len;
+        if (dir_entry.name.len > entry.name_storage.len or relative_len > entry.relative_storage.len) {
+            return error.PathTooLong;
+        }
+        @memcpy(entry.name_storage[0..dir_entry.name.len], dir_entry.name);
+        entry.name_len = dir_entry.name.len;
+        @memcpy(entry.relative_storage[0..parent_path.len], parent_path);
+        entry.relative_storage[parent_path.len] = std.fs.path.sep;
+        @memcpy(entry.relative_storage[parent_path.len + 1 .. relative_len], dir_entry.name);
+        entry.relative_len = relative_len;
+        entry.kind = if (dir_entry.kind == .directory) .directory else .file;
+        entry.depth = parent_entry.depth +| 1;
+        entry.children_loaded = entry.kind != .directory or
+            entry.depth >= max_scan_depth or
+            skipDirectory(dir_entry.name);
     }
 };
 
@@ -311,6 +332,8 @@ pub const Model = struct {
     pending_rename_entry: ?u16 = null,
     rename_buffer: RenameTextBuffer = .{},
     rename_serial: u64 = 0,
+    pending_expand_entry: ?u16 = null,
+    expand_serial: u64 = 0,
     scan_truncated: bool = false,
     scan_had_errors: bool = false,
     sidebar_fraction: f32 = 0.30,
@@ -341,6 +364,8 @@ pub const Model = struct {
         "pending_rename_entry",
         "rename_buffer",
         "rename_serial",
+        "pending_expand_entry",
+        "expand_serial",
         "scan_truncated",
         "scan_had_errors",
         "picker_serial",
@@ -646,6 +671,7 @@ pub const Msg = union(enum) {
     folder_loaded,
     folder_dialog_cancelled,
     folder_dialog_failed,
+    directory_loaded,
     select_entry: u16,
     preview_entry: u16,
     pin_entry: u16,
@@ -677,6 +703,7 @@ pub const Msg = union(enum) {
         "folder_loaded",
         "folder_dialog_cancelled",
         "folder_dialog_failed",
+        "directory_loaded",
         "rename_finished",
         "file_done",
         "chrome_changed",
@@ -688,6 +715,7 @@ pub const BrowserSession = struct {
     open: bool = false,
     handled_picker_serial: u64 = 0,
     handled_rename_serial: u64 = 0,
+    handled_expand_serial: u64 = 0,
     browser: Model = .{},
 
     fn reset(session: *BrowserSession, index: usize) void {
@@ -823,6 +851,7 @@ pub fn update(model: *Model, msg: Msg, fx: *Effects) void {
         .folder_loaded => {},
         .folder_dialog_cancelled => model.setStatus("Folder selection cancelled.", .{}),
         .folder_dialog_failed => model.setStatus("The folder dialog could not be opened.", .{}),
+        .directory_loaded => {},
         .select_entry => |index| selectEntry(model, index),
         .preview_entry => |index| previewEntry(model, fx, index),
         .pin_entry => |index| pinEntry(model, fx, index),
@@ -1137,8 +1166,20 @@ fn activateFile(model: *Model, fx: *Effects, index: u16) void {
 
 fn toggleEntry(model: *Model, index: u16) void {
     if (index >= model.entry_count) return;
-    var entry = &model.entries[index];
-    if (entry.kind == .directory) entry.expanded = !entry.expanded;
+    const entry = &model.entries[index];
+    if (entry.kind != .directory) return;
+    if (entry.expanded) {
+        entry.expanded = false;
+        return;
+    }
+    if (entry.children_loaded) {
+        entry.expanded = true;
+        return;
+    }
+    model.pending_expand_entry = index;
+    model.expand_serial +%= 1;
+    if (model.expand_serial == 0) model.expand_serial = 1;
+    model.setStatus("Loading {s}…", .{entry.relativePath()});
 }
 
 fn editCode(model: *Model, edit: canvas.TextInputEvent) void {
@@ -1462,7 +1503,6 @@ fn applyRenamedEntry(model: *Model, entry_index: u16, new_name: []const u8) !voi
     var new_path_storage: [max_relative_path_bytes]u8 = undefined;
     const new_path = renamedRelativePath(&model.entries[entry_index], new_name, &new_path_storage) orelse return error.PathTooLong;
     for (model.entries[0..model.entry_count], 0..) |*entry, index| {
-        entry.sort_identity = @intCast(index);
         if (index == entry_index) {
             @memcpy(entry.name_storage[0..new_name.len], new_name);
             entry.name_len = new_name.len;
@@ -1479,6 +1519,13 @@ fn applyRenamedEntry(model: *Model, entry_index: u16, new_name: []const u8) !voi
         entry.relative_len = new_path.len + suffix.len;
     }
 
+    sortEntriesAndRemap(model);
+}
+
+fn sortEntriesAndRemap(model: *Model) void {
+    for (model.entries[0..model.entry_count], 0..) |*entry, index| {
+        entry.sort_identity = @intCast(index);
+    }
     std.mem.sort(Entry, model.entries[0..model.entry_count], {}, entryLessThan);
     var old_to_new: [max_entries]u16 = undefined;
     for (model.entries[0..model.entry_count], 0..) |*entry, index| {
@@ -1494,6 +1541,7 @@ fn remapModelEntryIndices(model: *Model, old_to_new: *const [max_entries]u16) vo
     if (model.selected_entry) |index| model.selected_entry = old_to_new[index];
     if (model.preview_entry) |index| model.preview_entry = old_to_new[index];
     if (model.hovered_tab) |index| model.hovered_tab = old_to_new[index];
+    if (model.pending_expand_entry) |index| model.pending_expand_entry = old_to_new[index];
     for (model.pinned_entries[0..model.pinned_count]) |*index| index.* = old_to_new[index.*];
     for (model.documents[0..model.document_count]) |*document| {
         if (document.entry_index) |index| document.entry_index = old_to_new[index];
@@ -1503,6 +1551,7 @@ fn remapModelEntryIndices(model: *Model, old_to_new: *const [max_entries]u16) vo
 /// Scan an already-open directory. This seam keeps the filesystem behavior
 /// hermetic in tests while `scanFolder` supplies the production path open.
 pub fn scanOpenDirectory(model: *Model, io: std.Io, allocator: std.mem.Allocator, root_path: []const u8, root_dir: std.Io.Dir) !void {
+    _ = allocator;
     if (root_path.len == 0 or root_path.len > model.root_storage.len) return error.PathTooLong;
     if (model.hasPendingWrites()) return error.FileActivityPending;
     if (model.hasDirtyDocuments()) return error.UnsavedChanges;
@@ -1517,56 +1566,105 @@ pub fn scanOpenDirectory(model: *Model, io: std.Io, allocator: std.mem.Allocator
         .titlebar_height = model.titlebar_height,
         .picker_serial = model.picker_serial,
         .rename_serial = model.rename_serial,
+        .expand_serial = model.expand_serial,
         .next_file_key = model.next_file_key,
     };
     @memcpy(next.root_storage[0..root_path.len], root_path);
     next.root_len = root_path.len;
 
-    var walker = try root_dir.walkSelectively(allocator);
-    defer walker.deinit();
-
+    // Load only the root. Descendants are read when their directory expands,
+    // so one large subtree cannot spend the whole bounded model before the
+    // user can even see its root-level siblings.
+    var root_iterator = root_dir.iterate();
     while (true) {
-        const maybe_entry = walker.next(io) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => {
-                next.scan_had_errors = true;
-                continue;
-            },
+        const maybe_entry = root_iterator.next(io) catch {
+            next.scan_had_errors = true;
+            break;
         };
-        const walker_entry = maybe_entry orelse break;
+        const dir_entry = maybe_entry orelse break;
         if (next.entry_count == next.entries.len) {
             next.scan_truncated = true;
             break;
         }
-        const depth = walker_entry.depth();
-        const descend = walker_entry.kind == .directory and
-            depth < max_scan_depth and
-            !skipDirectory(walker_entry.basename);
 
         var entry = Entry{};
-        entry.set(walker_entry) catch {
+        entry.setRoot(dir_entry) catch {
             next.scan_had_errors = true;
             continue;
         };
         next.entries[next.entry_count] = entry;
         next.entry_count += 1;
-
-        if (descend) walker.enter(io, walker_entry) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => {
-                next.scan_had_errors = true;
-            },
-        };
     }
+
     std.mem.sort(Entry, next.entries[0..next.entry_count], {}, entryLessThan);
     assignParents(&next);
-    next.setStatus("{d} items{s}{s}", .{
+    next.setStatus("{d} root items{s}{s}", .{
         next.entry_count,
         if (next.scan_truncated) " · tree capped" else "",
         if (next.scan_had_errors) " · some folders unavailable" else "",
     });
     model.deinit();
     model.* = next;
+}
+
+/// Populate one directory's immediate children when its tree row expands.
+/// Entries keep fixed-capacity storage, but the budget now follows explored
+/// folders rather than disappearing into an eager depth-first walk.
+pub fn loadDirectoryChildren(model: *Model, io: std.Io, entry_index: u16) !void {
+    if (entry_index >= model.entry_count) return error.InvalidEntry;
+    const parent_entry = &model.entries[entry_index];
+    if (parent_entry.kind != .directory) return error.NotDir;
+    if (parent_entry.children_loaded) {
+        model.entries[entry_index].expanded = true;
+        return;
+    }
+
+    var full_path_storage: [native_sdk.max_effect_file_path_bytes]u8 = undefined;
+    const full_path = model.fullPath(parent_entry, &full_path_storage) orelse return error.PathTooLong;
+    var dir = try std.Io.Dir.cwd().openDir(io, full_path, .{ .iterate = true });
+    defer dir.close(io);
+
+    try loadOpenDirectoryChildren(model, io, entry_index, dir);
+}
+
+/// Open-directory seam for hermetic expansion tests.
+pub fn loadOpenDirectoryChildren(model: *Model, io: std.Io, entry_index: u16, dir: std.Io.Dir) !void {
+    if (entry_index >= model.entry_count) return error.InvalidEntry;
+    const parent_entry = &model.entries[entry_index];
+    if (parent_entry.kind != .directory) return error.NotDir;
+    if (parent_entry.children_loaded) {
+        model.entries[entry_index].expanded = true;
+        return;
+    }
+
+    var iterator = dir.iterate();
+    while (true) {
+        const maybe_entry = iterator.next(io) catch {
+            model.scan_had_errors = true;
+            break;
+        };
+        const dir_entry = maybe_entry orelse break;
+        if (model.entry_count == model.entries.len) {
+            model.scan_truncated = true;
+            break;
+        }
+
+        var child = Entry{};
+        child.setChild(parent_entry, dir_entry) catch {
+            model.scan_had_errors = true;
+            continue;
+        };
+        model.entries[model.entry_count] = child;
+        model.entry_count += 1;
+    }
+    model.entries[entry_index].children_loaded = true;
+    model.entries[entry_index].expanded = true;
+    sortEntriesAndRemap(model);
+    model.setStatus("{d} indexed items{s}{s}", .{
+        model.entry_count,
+        if (model.scan_truncated) " · tree capped" else "",
+        if (model.scan_had_errors) " · some folders unavailable" else "",
+    });
 }
 
 pub fn scanFolder(model: *Model, io: std.Io, allocator: std.mem.Allocator, root_path: []const u8) !void {
@@ -1576,7 +1674,15 @@ pub fn scanFolder(model: *Model, io: std.Io, allocator: std.mem.Allocator, root_
 }
 
 fn skipDirectory(name: []const u8) bool {
-    const skipped = [_][]const u8{ ".git", ".zig-cache", "zig-cache", "zig-out", "node_modules" };
+    const skipped = [_][]const u8{
+        ".git",
+        ".next",
+        ".pnpm-store",
+        ".zig-cache",
+        "node_modules",
+        "zig-cache",
+        "zig-out",
+    };
     for (skipped) |candidate| {
         if (std.mem.eql(u8, name, candidate)) return true;
     }
@@ -1760,6 +1866,7 @@ pub const CodeEditorApp = struct {
         self.routeEventToSession(runtime, event_value);
         try self.ui_app.app().event(runtime, event_value);
         try self.performPendingRename(runtime);
+        try self.performPendingDirectoryScan(runtime);
         self.closePendingMainWindow(runtime);
         self.focusPendingWindow(runtime);
         try self.presentPendingFolderDialog(runtime);
@@ -1818,6 +1925,24 @@ pub const CodeEditorApp = struct {
             performPendingRenameOnDisk(&session.browser, self.io);
             const window_id = self.windowIdForSession(runtime, index) orelse return;
             try self.ui_app.dispatch(runtime, window_id, .rename_finished);
+            return;
+        }
+    }
+
+    fn performPendingDirectoryScan(self: *CodeEditorApp, runtime: *native_sdk.Runtime) !void {
+        for (&self.ui_app.model.sessions, 0..) |*session, index| {
+            if (!session.open or session.browser.pending_expand_entry == null) continue;
+            const serial = session.browser.expand_serial;
+            if (serial == session.handled_expand_serial) continue;
+            session.handled_expand_serial = serial;
+            self.ui_app.model.active_session = @intCast(index);
+            const pending_index = session.browser.pending_expand_entry.?;
+            loadDirectoryChildren(&session.browser, self.io, pending_index) catch |err| {
+                session.browser.setStatus("Could not open that folder: {s}", .{@errorName(err)});
+            };
+            session.browser.pending_expand_entry = null;
+            const window_id = self.windowIdForSession(runtime, index) orelse return;
+            try self.ui_app.dispatch(runtime, window_id, .directory_loaded);
             return;
         }
     }

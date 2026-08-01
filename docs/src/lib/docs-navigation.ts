@@ -1,4 +1,5 @@
 import { componentPages } from "./components-pages";
+import { docsPath } from "./site";
 
 export type NavItem = {
   name: string;
@@ -10,7 +11,7 @@ export type NavSection = {
   items: NavItem[];
 };
 
-export const navSections: NavSection[] = [
+const unprefixedNavSections: NavSection[] = [
   {
     title: "Get Started",
     items: [
@@ -108,5 +109,11 @@ export const navSections: NavSection[] = [
     ],
   },
 ];
+
+/** All public docs links use the canonical /docs route space. */
+export const navSections: NavSection[] = unprefixedNavSections.map((section) => ({
+  ...section,
+  items: section.items.map((item) => ({ ...item, href: `${docsPath}${item.href}` })),
+}));
 
 export const allDocsPages: NavItem[] = navSections.flatMap((s) => s.items);

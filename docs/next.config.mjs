@@ -32,7 +32,7 @@ const nextConfig = {
   async redirects() {
     return [
       // The Philosophy page became the Introduction, the opening page of the docs.
-      { source: "/philosophy", destination: "/introduction", permanent: true },
+      { source: "/philosophy", destination: "/docs/introduction", permanent: true },
     ];
   },
 };

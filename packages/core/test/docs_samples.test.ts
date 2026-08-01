@@ -1,6 +1,6 @@
 // Docs honesty gate: every complete app-core sample in the docs transpiles.
 //
-// Scans docs/src/app/**/page.mdx for ```ts fences (with or without a
+// Scans docs/src/app/docs/**/page.mdx for ```ts fences (with or without a
 // :filename info-string suffix) and runs the full
 // pipeline (tsc semantics + subset rules + emission) over each block that
 // is a whole core — the discriminator is `export function update(`, the

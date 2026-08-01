@@ -877,7 +877,7 @@ test "a session recorded with a live producer replays fingerprint-identical with
 const media = @import("../root.zig");
 
 test "docs example: the typed producer callback is writable against the public exports" {
-    // docs/src/app/media-producers/page.mdx, "The mpv shape": the docs
+    // docs/src/app/docs/media-producers/page.mdx, "The mpv shape": the docs
     // machinery checks prose patterns, not Zig fences (the
     // test-docs-media-producer-contracts step pins the signature in the
     // page AND in this file), so this test is the compile-shaped mirror

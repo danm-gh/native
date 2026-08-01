@@ -1,9 +1,10 @@
 import vocab from "./component-vocab.json";
 import { componentPages } from "./components-pages";
+import { docsPath } from "./site";
 
 /**
  * Turn a docs page.mdx source into clean plain markdown for "Copy Page"
- * and the /md/<slug> route. The .mdx source is the truth; this strips the
+ * and the /<slug>.md route. The .mdx source is the truth; this strips the
  * MDX-only parts (imports, JSX components) and replaces the data-driven
  * components with the same content they render:
  *
@@ -126,7 +127,7 @@ function renderAttrTable(block: string): string {
 
 function renderComponentIndex(): string {
   return componentPages
-    .map((page) => `- [${page.name}](/components/${page.slug}) — ${page.blurb}`)
+    .map((page) => `- [${page.name}](${docsPath}/components/${page.slug}) — ${page.blurb}`)
     .join("\n");
 }
 

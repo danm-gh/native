@@ -805,6 +805,36 @@ fn sawLine(model: *const StreamModel) bool {
     return model.line_count > 0;
 }
 
+test "Windows background spawns run without an attached console" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var h = try Harness.create();
+    defer h.destroy();
+
+    // Ask the spawned process itself, rather than inferring from window
+    // enumeration: a GUI-subsystem host used to omit CREATE_NO_WINDOW, so a
+    // console-subsystem helper received a console even though Effects.spawn
+    // exposes only pipes. PowerShell's redirected stdout still works with no
+    // console and carries the direct GetConsoleWindow verdict back to us.
+    test_argv = &.{
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Add-Type -Namespace NativeSdk -Name ConsoleProbe -MemberDefinition '[System.Runtime.InteropServices.DllImport(\"kernel32.dll\")] public static extern System.IntPtr GetConsoleWindow();'; if ([NativeSdk.ConsoleProbe]::GetConsoleWindow() -eq [IntPtr]::Zero) { 'detached' } else { 'attached' }",
+    };
+    test_stdin = null;
+    try h.app_state.dispatch(&h.harness.runtime, 1, .start);
+    try waitForRealCompletion(&h, sawExit);
+
+    try std.testing.expectEqual(@as(usize, 1), h.app_state.model.line_count);
+    // Spawn line framing removes LF; a Windows child's CRLF leaves CR in the
+    // delivered bytes, matching the effect's byte-honest stream contract.
+    try std.testing.expectEqualStrings("detached\r", h.app_state.model.lineAt(0));
+    try std.testing.expectEqual(@as(i32, 0), h.app_state.model.exit_code);
+    try std.testing.expectEqual(effects_mod.EffectExitReason.exited, h.app_state.model.exit_reason.?);
+}
+
 test "real executor streams a process's stdout lines into the model" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
     var h = try Harness.create();

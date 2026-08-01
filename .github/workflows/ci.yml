@@ -160,6 +160,10 @@ jobs:
       # include path, or a conformance error in the embedded layer — is a
       # compile failure here, not a silent WebViewNotFound at runtime.
       - run: zig build test-webview-system-link -Dplatform=windows
+      # Effects.spawn is a pipe-backed background transport. Run its
+      # Windows-only PowerShell probe natively so removing CREATE_NO_WINDOW
+      # cannot leave the platform-neutral and Wine lanes green.
+      - run: zig build test-windows-effects-no-console
       # The registered-font receipt, natively on Windows: runs the
       # font-registry suite — registration validation, the glyph-budget
       # gate, present/reference pixel parity, and the Chinese-receipt

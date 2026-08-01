@@ -415,8 +415,10 @@ pub const NullPlatform = struct {
     /// `setWindowDragRegions` (the Windows `WM_NCHITTEST` seam), so
     /// tests assert what a hit-testing platform would consult. One
     /// mirror suffices: the runtime pushes per canvas view and the
-    /// tests drive a single canvas.
-    window_drag_regions: [16]types.WindowDragRegion = undefined,
+    /// tests drive a single canvas. Sized to the runtime's per-view
+    /// bound (`canvas_limits.max_canvas_widget_window_drag_regions_per_view`)
+    /// — a smaller mirror fails app batteries the real platforms accept.
+    window_drag_regions: [32]types.WindowDragRegion = undefined,
     window_drag_region_count: usize = 0,
     window_drag_region_push_count: usize = 0,
     window_count: usize = 0,

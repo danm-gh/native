@@ -282,3 +282,28 @@ test "layout installs mirror window-drag regions to hit-testing platforms" {
     _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", same_layout);
     try std.testing.expectEqual(@as(usize, 1), harness.null_platform.window_drag_region_push_count);
 }
+
+test "the null platform mirror holds the runtime's full per-view drag-region bound" {
+    // The runtime collects up to
+    // `canvas_limits.max_canvas_widget_window_drag_regions_per_view`
+    // regions per push; a smaller test-platform mirror fails app
+    // batteries the real platforms accept (a crumb-menu rebuild in a
+    // drag-region-heavy app reached 17 and died here at capacity 16).
+    const canvas_limits = @import("canvas_limits.zig");
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: DragTestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    var regions: [canvas_limits.max_canvas_widget_window_drag_regions_per_view]platform.WindowDragRegion = undefined;
+    for (&regions, 0..) |*region, index| {
+        region.* = .{
+            .frame = geometry.RectF.init(@floatFromInt(index * 10), 0, 8, 8),
+            .exclusion = false,
+        };
+    }
+    try harness.runtime.options.platform.services.setWindowDragRegions(1, "canvas", &regions);
+    try std.testing.expectEqual(regions.len, harness.null_platform.window_drag_region_count);
+}

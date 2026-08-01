@@ -104,13 +104,10 @@ export function transpileFile(entry: string, options: TranspileOptions = {}): Tr
     const diagnostics = infer.conflicts.map((c) => {
       const file = c.node.getSourceFile();
       const { line, column } = lineColumn(file, c.node.getStart());
-      return makeDiagnostic(
-        "NS1016",
-        `\`${c.slotLabel}\` must be an integer where it is used, but a fractional value flows into it.`,
-        file.fileName,
-        line,
-        column,
-      );
+      const site = c.byteStore
+        ? `\`${c.slotLabel}\` must be an integer to store into a \`Uint8Array\` element, but it is float-classed (number-array elements always are) — store an integer-classed value instead: an integer literal, a byte read, integer math over integer-classed operands (\`x & 0xff\`), or text built with \`asciiBytes\`.`
+        : `\`${c.slotLabel}\` must be an integer where it is used, but a fractional value flows into it.`;
+      return makeDiagnostic("NS1016", site, file.fileName, line, column);
     });
     return { ok: false, zig: null, diagnostics, warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
   }

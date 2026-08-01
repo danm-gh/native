@@ -124,13 +124,17 @@ export interface IntFloatConflict {
   readonly node: ts.Node;
   /// The integer-forced slot's source name, for the teaching message.
   readonly slotLabel: string;
+  /// The conflict is a float-classed value stored into a `Uint8Array`
+  /// element — taught with the byte-store wording (naming the integer
+  /// idioms) instead of the generic slot wording.
+  readonly byteStore: boolean;
 }
 
 export class IntInference {
   private readonly slots = new Map<ts.Node, Slot>();
   private readonly compareSites: CompareSite[] = [];
   private readonly mixSites: CompareSite[] = [];
-  private readonly demandSeeds: Contribution[] = [];
+  private readonly demandSeeds: { readonly c: Contribution; readonly byteStore: boolean }[] = [];
   readonly conflicts: IntFloatConflict[] = [];
 
   private readonly tast: TypedAst;
@@ -959,8 +963,8 @@ export class IntInference {
     slot.inflows.push(this.contribution(expr));
   }
 
-  private demand(expr: ts.Expression): void {
-    this.demandSeeds.push(this.contribution(expr));
+  private demand(expr: ts.Expression, byteStore = false): void {
+    this.demandSeeds.push({ c: this.contribution(expr), byteStore });
   }
 
   private collectFlows(): void {
@@ -1022,6 +1026,17 @@ export class IntInference {
           this.flowInto(decl, node.right);
         } else if (op === ts.SyntaxKind.EqualsToken && fieldAssignTarget(node.left) !== undefined) {
           this.flowInto(fieldAssignTarget(node.left), node.right);
+        } else if (
+          op === ts.SyntaxKind.EqualsToken &&
+          ts.isElementAccessExpression(node.left) &&
+          this.tast.isBytesTyped(node.left.expression)
+        ) {
+          // A store into a `Uint8Array` element narrows to the u8 slot, so
+          // the stored value is an integer-required position exactly like a
+          // bitwise operand — a float-classed value here has no byte-exact
+          // reading (the emitted narrowing reinterprets bits and would
+          // diverge silently from node's ToUint8).
+          this.demand(node.right, true);
         } else if (
           op === ts.SyntaxKind.PlusEqualsToken ||
           op === ts.SyntaxKind.MinusEqualsToken ||
@@ -1361,7 +1376,7 @@ export class IntInference {
         for (const x of c.slots) demandSlot(x, viaComparison);
       }
     };
-    for (const c of this.demandSeeds) {
+    for (const { c } of this.demandSeeds) {
       if (c.float) continue;
       for (const s of c.slots) demandSlot(s, false);
     }
@@ -1482,10 +1497,10 @@ export class IntInference {
   /// int/float conflict; report it instead of emitting mismatched Zig.
   private collectConflicts(): void {
     const seen = new Set<ts.Node>();
-    const report = (node: ts.Node, slotLabel: string): void => {
+    const report = (node: ts.Node, slotLabel: string, byteStore = false): void => {
       if (seen.has(node)) return;
       seen.add(node);
-      this.conflicts.push({ node, slotLabel });
+      this.conflicts.push({ node, slotLabel, byteStore });
     };
     for (const s of this.slots.values()) {
       if (s.demanded) {
@@ -1500,11 +1515,11 @@ export class IntInference {
         }
       }
     }
-    // Index/bitwise positions themselves: a float-valued expression can
-    // never become the usize the memory site needs.
-    for (const c of this.demandSeeds) {
+    // Index/bitwise/byte-store positions themselves: a float-valued
+    // expression can never become the integer the memory site needs.
+    for (const { c, byteStore } of this.demandSeeds) {
       if (c.float || c.slots.some((x) => this.finalClassOf(x) === "f64")) {
-        report(c.site, c.site.getText().replace(/\s+/g, " "));
+        report(c.site, c.site.getText().replace(/\s+/g, " "), byteStore);
       }
     }
     for (const site of this.mixSites) {

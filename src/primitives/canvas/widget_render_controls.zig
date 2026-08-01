@@ -46,6 +46,10 @@ const textInputClearButtonRect = widget_text_input.textInputClearButtonRect;
 const widgetButtonTextSize = widget_metrics.widgetButtonTextSize;
 const widgetBodyTextSize = widget_metrics.widgetBodyTextSize;
 const widgetLabelTextSize = widget_metrics.widgetLabelTextSize;
+const widgetTabTriggerTextSize = widget_metrics.widgetTabTriggerTextSize;
+const widgetTabTriggerInset = widget_metrics.widgetTabTriggerInset;
+const widgetTabTriggerIconExtent = widget_metrics.widgetTabTriggerIconExtent;
+const widgetTabTriggerIconGap = widget_metrics.widgetTabTriggerIconGap;
 const widgetTypographySize = widget_metrics.widgetTypographySize;
 const widgetButtonInset = widget_metrics.widgetButtonInset;
 const widgetControlInset = widget_metrics.widgetControlInset;
@@ -837,12 +841,25 @@ pub fn emitListItemWidget(builder: *Builder, widget: Widget, tokens: DesignToken
     // so icon + label are one hit target with one tint, mirroring the
     // button's inline icon. The label shifts right by the shared metric
     // the intrinsic size also accounts for.
-    var text_frame = widget.frame;
+    // Flat tree rows carry their logical nesting in `tree_level`; give
+    // that semantic hierarchy its matching visual inset while leaving
+    // every ordinary list item untouched. Structural trees may keep the
+    // default zero level and author their nesting through child frames.
+    const tree_indent = if (widget.semantics.role == .treeitem and widget.tree_level > 1)
+        @min(widget.frame.width, widgetSizedDensityValue(widget, tokens, tokens.spacing.lg) * @as(f32, @floatFromInt(widget.tree_level - 1)))
+    else
+        0;
+    var text_frame = geometry.RectF.init(
+        widget.frame.x + tree_indent,
+        widget.frame.y,
+        @max(1, widget.frame.width - tree_indent),
+        widget.frame.height,
+    );
     const icon = icon_model.resolveOrMissing(widget.icon);
     if (icon) |resolved| {
         const icon_extent = widgetRowIconExtent(widget, tokens);
         const icon_frame = geometry.RectF.init(
-            widget.frame.x + text_inset,
+            text_frame.x + text_inset,
             widget.frame.y + (widget.frame.height - icon_extent) * 0.5,
             icon_extent,
             icon_extent,
@@ -850,9 +867,9 @@ pub fn emitListItemWidget(builder: *Builder, widget: Widget, tokens: DesignToken
         try emitVectorIcon(builder, widget.id, 4, icon_frame, content_color, resolved);
         const shift = icon_extent + widgetRowIconGap(widget, tokens);
         text_frame = geometry.RectF.init(
-            widget.frame.x + shift,
+            text_frame.x + shift,
             widget.frame.y,
-            @max(1, widget.frame.width - shift),
+            @max(1, text_frame.width - shift),
             widget.frame.height,
         );
     }
@@ -928,33 +945,29 @@ pub fn emitDataCellWidgetChrome(builder: *Builder, widget: Widget, tokens: Desig
 fn segmentedTriggerRadius(widget: Widget, visual: ControlVisualTokens, tokens: DesignTokens) Radius {
     if (widget.style.radius) |radius| return Radius.all(@max(0, radius));
     if (visual.radius) |radius| return Radius.all(@max(0, widgetSizedRadiusValue(widget, radius)));
+    // Primary underline triggers are square text hit targets; rounding
+    // is part of the house pill register (and the ignored secondary-tab
+    // variant), not the Geist primary Tabs shape.
+    if (tokens.controls.tabs_indicator == .underline) return Radius.all(0);
     const container = tokens.controls.tabs.radius orelse tokens.radius.lg;
     return Radius.all(@max(0, widgetSizedRadiusValue(widget, container) - widget_model.tabs_list_inset));
 }
 
-/// The selected-tab bar for the `.underline` tab register: a short
-/// filled rect hugging the trigger's label (measured width plus a 2px
-/// shoulder each side — the label's own breathing room, mirroring the
-/// house reference's tab padding), sunk to the BOTTOM of the TabsList
-/// container. The trigger sits `tabs_list_inset` above the container's
-/// edge, so the bar extends past the trigger frame by exactly that
-/// inset and covers the strip hairline — the underline and the track
-/// line meet, which is the register's signature. Null in the `.pill`
-/// register; shared with invalidation so damage covers the overhang.
+/// The selected-tab bar for the `.underline` tab register: the trigger
+/// itself hugs its content with the register's 2px side inset, so its
+/// full width is the exact primary indicator width (including a leading
+/// icon and its 6px gap when present). It lands on the trigger's bottom
+/// edge and covers the TabsList hairline where they meet. Null in the
+/// `.pill` register; shared with invalidation.
 pub fn segmentedControlUnderlineRect(widget: Widget, tokens: DesignTokens) ?geometry.RectF {
     if (tokens.controls.tabs_indicator != .underline) return null;
     const frame = widget.frame.normalized();
     if (frame.isEmpty()) return null;
     const thickness = @min(frame.height, widgetSizedDensityValue(widget, tokens, tokens.metrics.tabs_indicator_thickness));
-    const text_size = widgetLabelTextSize(widget, tokens);
-    const text_width = measureTextWidthForFont(tokens.text_measure, tokens.typography.font_id, widget.text, text_size);
-    // An icon-only or empty trigger underlines its full width — there
-    // is no label to hug.
-    const bar_width = if (text_width > 0) @min(frame.width, text_width + 4) else frame.width;
     return pixelSnapGeometryRect(tokens, geometry.RectF.init(
-        frame.x + (frame.width - bar_width) * 0.5,
-        frame.maxY() + widget_model.tabs_list_inset - thickness,
-        bar_width,
+        frame.x,
+        frame.maxY() - thickness,
+        frame.width,
         thickness,
     ));
 }
@@ -963,8 +976,8 @@ pub fn emitSegmentedControlWidget(builder: *Builder, widget: Widget, tokens: Des
     const selected = widget.state.selected or widget.value >= 0.5;
     const visual = selectionControlVisualTokens(widget, tokens);
     const radius = segmentedTriggerRadius(widget, visual, tokens);
-    const text_size = widgetLabelTextSize(widget, tokens);
-    const text_inset = widgetControlInset(widget, tokens, tokens.spacing.md);
+    const text_size = widgetTabTriggerTextSize(widget, tokens);
+    const text_inset = widgetTabTriggerInset(widget, tokens);
     switch (tokens.controls.tabs_indicator) {
         // The house tab-trigger treatment: the active segment lifts to
         // the page surface with a hairline border; inactive segments
@@ -1028,14 +1041,56 @@ pub fn emitSegmentedControlWidget(builder: *Builder, widget: Widget, tokens: Des
     // Inactive labels sit in the muted ink; in the underline register a
     // hovered (enabled) trigger previews the active ink — the register
     // has no hover WASH, so the type itself is the hover feedback.
-    const active_ink = widgetForegroundColor(widget, tokens, visual.foreground orelse tokens.colors.text);
+    const active_ink = if (tokens.controls.tabs_indicator == .underline)
+        widget.style.foreground orelse visual.foreground orelse tokens.colors.text
+    else
+        widgetForegroundColor(widget, tokens, visual.foreground orelse tokens.colors.text);
     const hover_preview = tokens.controls.tabs_indicator == .underline and widget.state.hovered and !widget.state.disabled;
+    const content_color = if (selected or hover_preview) active_ink else widgetForegroundColor(widget, tokens, visual.foreground orelse tokens.colors.text_muted);
+    // Primary icon tabs use the same regular ink, 16px glyph, and 6px
+    // icon-to-label gap as the Geist reference. Keep this inside the
+    // underline arm so the default theme's pill tabs remain byte-for-byte
+    // unchanged, including their historical text-only command stream.
+    if (tokens.controls.tabs_indicator == .underline and widget.icon.len > 0) {
+        const resolved = icon_model.resolveOrMissing(widget.icon).?;
+        const icon_extent = widgetTabTriggerIconExtent(widget, tokens);
+        const icon_y = widget.frame.y + (widget.frame.height - icon_extent) * 0.5;
+        if (widget.text.len == 0) {
+            try emitVectorIcon(builder, widget.id, 5, geometry.RectF.init(
+                widget.frame.x + (widget.frame.width - icon_extent) * 0.5,
+                icon_y,
+                icon_extent,
+                icon_extent,
+            ), content_color, resolved);
+            return;
+        }
+        const gap = widgetTabTriggerIconGap(tokens);
+        const text_width = measureTextWidthForFont(tokens.text_measure, tokens.typography.font_id, widget.text, text_size);
+        const available = @max(0, widget.frame.width - text_inset * 2);
+        const content_width = @min(available, icon_extent + gap + text_width);
+        const start_x = widget.frame.x + text_inset + @max(0, (available - content_width) * 0.5);
+        const icon_x = if (widget.icon_placement == .trailing) start_x + content_width - icon_extent else start_x;
+        const text_x = if (widget.icon_placement == .trailing) start_x else start_x + icon_extent + gap;
+        const text_max_x = if (widget.icon_placement == .trailing) icon_x - gap else widget.frame.maxX() - text_inset;
+        try emitVectorIcon(builder, widget.id, 5, geometry.RectF.init(icon_x, icon_y, icon_extent, icon_extent), content_color, resolved);
+        const text_frame = geometry.RectF.init(text_x, widget.frame.y, @max(1, text_max_x - text_x), widget.frame.height);
+        try builder.drawText(.{
+            .id = widgetPartId(widget.id, 3),
+            .font_id = tokens.typography.font_id,
+            .size = text_size,
+            .origin = pixelSnapTextPoint(tokens, boundedTextOrigin(text_frame, text_size, 0)),
+            .color = content_color,
+            .text = widget.text,
+            .text_layout = boundedTextLayout(text_frame, text_size, 0, .start, .none, widget.text_overflow, tokens),
+        });
+        return;
+    }
     try builder.drawText(.{
         .id = widgetPartId(widget.id, 3),
         .font_id = tokens.typography.font_id,
         .size = text_size,
         .origin = pixelSnapTextPoint(tokens, boundedTextOrigin(widget.frame, text_size, text_inset)),
-        .color = if (selected or hover_preview) active_ink else widgetForegroundColor(widget, tokens, visual.foreground orelse tokens.colors.text_muted),
+        .color = content_color,
         .text = widget.text,
         .text_layout = boundedTextLayout(widget.frame, text_size, text_inset, .center, .none, widget.text_overflow, tokens),
     });

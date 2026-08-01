@@ -94,6 +94,15 @@ pub fn designTokens(color_scheme: ColorScheme, contrast: ColorContrast) DesignTo
             // the primary ink under the active label (see the tabs
             // entries in `controlTokens` below).
             .tabs_indicator_thickness = 2,
+            // Primary Tabs are a 50px, full-width ruled row. Each
+            // trigger hugs 14px regular text with 2px shoulders and the
+            // list adds no pill-style outer inset; these fields are read
+            // only by the underline register, so house tabs keep their
+            // existing control ladder and 3px container hug.
+            .tabs_list_inset = 0,
+            .tabs_trigger_height = 50,
+            .tabs_trigger_inset = 2,
+            .tabs_label_size_step = 1,
             // The underline register's inter-trigger gap: measured at a
             // 24px flex gap between triggers on the reference strip
             // (28px optical once each trigger's 2px horizontal padding

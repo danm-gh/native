@@ -572,6 +572,16 @@ pub const ControlMetricTokens = struct {
     /// active trigger's label. Unused by the house `.pill` register —
     /// the default only matters once a theme opts into underlines.
     tabs_indicator_thickness: f32 = 2,
+    /// Geometry of an `.underline` tab strip. These values are ignored
+    /// by the house `.pill` register, whose container inset and trigger
+    /// sizing stay on the ordinary control ladder. An underline strip
+    /// uses a full-height 50px trigger, 2px of horizontal breathing room
+    /// around its content, no outer list inset, and a one-step lift from
+    /// the label type rung (13 -> 14 in the Geist pack).
+    tabs_list_inset: f32 = 0,
+    tabs_trigger_height: f32 = 50,
+    tabs_trigger_inset: f32 = 2,
+    tabs_label_size_step: f32 = 1,
     /// The inter-trigger gap of the `.underline` tab register (see
     /// `ControlTokens.tabs_indicator`), applied only when the author
     /// left the strip's gap at 0. Unused by the house `.pill` register —
@@ -1381,6 +1391,10 @@ pub const ControlMetricTokenOverrides = struct {
     slider_thumb_width: ?f32 = null,
     slider_thumb_height: ?f32 = null,
     tabs_indicator_thickness: ?f32 = null,
+    tabs_list_inset: ?f32 = null,
+    tabs_trigger_height: ?f32 = null,
+    tabs_trigger_inset: ?f32 = null,
+    tabs_label_size_step: ?f32 = null,
     tabs_gap: ?f32 = null,
     button_group_gap: ?f32 = null,
     spinner_style: ?SpinnerStyleToken = null,

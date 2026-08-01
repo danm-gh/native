@@ -234,6 +234,37 @@ pub fn widgetControlInset(widget: Widget, tokens: DesignTokens, base: f32) f32 {
     return densityValue(tokens, widgetSizedTokenValue(widget, tokens, base));
 }
 
+/// Tab-trigger metrics split at the register boundary. House pill tabs
+/// keep using the shared label/control ladder exactly as before; the
+/// underline register owns the taller, label-hugging geometry measured
+/// from the Geist primary Tabs component.
+pub fn widgetTabTriggerTextSize(widget: Widget, tokens: DesignTokens) f32 {
+    if (tokens.controls.tabs_indicator == .pill) return widgetLabelTextSize(widget, tokens);
+    return widgetTypographySize(widget, @max(8, tokens.typography.label_size + tokens.metrics.tabs_label_size_step));
+}
+
+pub fn widgetTabTriggerHeight(widget: Widget, tokens: DesignTokens) f32 {
+    if (tokens.controls.tabs_indicator == .pill) return widgetControlHeight(widget, tokens);
+    return widgetSizedDensityValue(widget, tokens, @max(0, tokens.metrics.tabs_trigger_height));
+}
+
+pub fn widgetTabTriggerInset(widget: Widget, tokens: DesignTokens) f32 {
+    if (tokens.controls.tabs_indicator == .pill) return widgetControlInset(widget, tokens, tokens.spacing.md);
+    return widgetControlInset(widget, tokens, @max(0, tokens.metrics.tabs_trigger_inset));
+}
+
+pub fn widgetTabTriggerIconExtent(widget: Widget, tokens: DesignTokens) f32 {
+    return widgetTabTriggerTextSize(widget, tokens) + tokens.metrics.icon_text_step;
+}
+
+pub fn widgetTabTriggerIconGap(tokens: DesignTokens) f32 {
+    return densityValue(tokens, tokens.metrics.button_icon_gap);
+}
+
+pub fn underlineTabsListInset(tokens: DesignTokens) f32 {
+    return densityValue(tokens, @max(0, tokens.metrics.tabs_list_inset));
+}
+
 pub fn widgetSizedDensityValue(widget: Widget, tokens: DesignTokens, value: f32) f32 {
     return densityValue(tokens, value) * widgetSizeScale(widget);
 }

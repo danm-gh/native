@@ -948,6 +948,97 @@ test "underline tab strips separate triggers by the tabs metric gap" {
     try std.testing.expectApproxEqAbs(@as(f32, 0), pill_layout.nodes[2].frame.x - pill_layout.nodes[1].frame.maxX(), 0.001);
 }
 
+test "geist primary tabs use the measured row while house tabs remain unchanged" {
+    const triggers = [_]Widget{
+        .{ .id = 2, .kind = .segmented_control, .text = "Apple", .state = .{ .selected = true, .disabled = true } },
+        .{ .id = 3, .kind = .segmented_control, .text = "Orange" },
+        .{ .id = 4, .kind = .segmented_control, .text = "Files", .icon = "folder" },
+    };
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 1,
+        .frame = geometry.RectF.init(0, 0, 240, 50),
+        .children = &triggers,
+    });
+
+    const geist = DesignTokens.theme(.{ .pack = .geist });
+    var geist_nodes: [4]WidgetLayoutNode = undefined;
+    const geist_layout = try layoutWidgetTreeWithTokens(strip, strip.frame, geist, &geist_nodes);
+    try std.testing.expectEqual(geometry.RectF.init(0, 0, geist_layout.nodes[1].frame.width, 50), geist_layout.nodes[1].frame);
+    try std.testing.expectApproxEqAbs(@as(f32, 24), geist_layout.nodes[2].frame.x - geist_layout.nodes[1].frame.maxX(), 0.001);
+
+    var commands: [24]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try geist_layout.emitDisplayList(&builder, geist);
+    const list = builder.displayList();
+    switch (list.findCommandById(widgetPartId(1, 2)).?.command) {
+        .fill_rect => |rail| try std.testing.expectEqualDeep(geometry.RectF.init(0, 49, 240, 1), rail.rect),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (list.findCommandById(widgetPartId(2, 2)).?.command) {
+        .fill_rect => |indicator| try std.testing.expectEqualDeep(geometry.RectF.init(0, 48, geist_layout.nodes[1].frame.width, 2), indicator.rect),
+        else => return error.TestUnexpectedResult,
+    }
+    // Disabled does not dim the selected primary tab in the reference.
+    switch (list.findCommandById(widgetPartId(2, 3)).?.command) {
+        .draw_text => |label| {
+            try std.testing.expectEqual(@as(f32, 14), label.size);
+            try std.testing.expectEqualDeep(Color.rgb8(23, 23, 23), label.color);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(list.findCommandById(widgetPartId(4, 5)) != null or list.findCommandById(widgetPartId(4, 6)) != null);
+
+    // The identical authored tree under the default register retains
+    // its canonical 3px pill hug, 32px trigger, 13px label, and gap 0.
+    const house = DesignTokens{};
+    var house_nodes: [4]WidgetLayoutNode = undefined;
+    const house_layout = try layoutWidgetTreeWithTokens(strip, strip.frame, house, &house_nodes);
+    try std.testing.expectEqual(@as(f32, 3), house_layout.nodes[1].frame.x);
+    try std.testing.expectEqual(@as(f32, 32), house_layout.nodes[1].frame.height);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), house_layout.nodes[2].frame.x - house_layout.nodes[1].frame.maxX(), 0.001);
+    var house_commands: [24]CanvasCommand = undefined;
+    var house_builder = Builder.init(&house_commands);
+    try house_layout.emitDisplayList(&house_builder, house);
+    switch (house_builder.displayList().findCommandById(widgetPartId(2, 3)).?.command) {
+        .draw_text => |label| try std.testing.expectEqual(@as(f32, 13), label.size),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // A theme-agnostic stack may carry the pill register's old hug
+    // width. Geist translates that primary TabsList to the containing
+    // width so the closing rail continues after the last trigger; the
+    // identical house tree keeps its authored pill width.
+    var nested_strip = strip;
+    nested_strip.frame = geometry.RectF.init(0, 0, 148, 50);
+    const nested_children = [_]Widget{nested_strip};
+    const host = Widget{
+        .kind = .stack,
+        .frame = geometry.RectF.init(0, 0, 352, 80),
+        .children = &nested_children,
+    };
+    var nested_geist_nodes: [5]WidgetLayoutNode = undefined;
+    const nested_geist = try layoutWidgetTreeWithTokens(host, host.frame, geist, &nested_geist_nodes);
+    try std.testing.expectEqual(@as(f32, 352), nested_geist.nodes[1].frame.width);
+    var nested_geist_commands: [24]CanvasCommand = undefined;
+    var nested_geist_builder = Builder.init(&nested_geist_commands);
+    try nested_geist.emitDisplayList(&nested_geist_builder, geist);
+    switch (nested_geist_builder.displayList().findCommandById(widgetPartId(1, 2)).?.command) {
+        .fill_rect => |rail| try std.testing.expectEqualDeep(geometry.RectF.init(0, 49, 352, 1), rail.rect),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var nested_house_nodes: [5]WidgetLayoutNode = undefined;
+    const nested_house = try layoutWidgetTreeWithTokens(host, host.frame, house, &nested_house_nodes);
+    try std.testing.expectEqual(@as(f32, 148), nested_house.nodes[1].frame.width);
+    var nested_house_commands: [24]CanvasCommand = undefined;
+    var nested_house_builder = Builder.init(&nested_house_commands);
+    try nested_house.emitDisplayList(&nested_house_builder, house);
+    switch (nested_house_builder.displayList().findCommandById(widgetPartId(1, 1)).?.command) {
+        .fill_rounded_rect => |pill| try std.testing.expectEqual(@as(f32, 148), pill.rect.width),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "the bubble reaction pill straddles the bottom edge on the page plane" {
     const surfaces = @import("widget_render_surfaces.zig");
     const tokens = DesignTokens{};
@@ -1171,6 +1262,21 @@ test "list and menu items draw a leading vector icon with the label shifted righ
     try expectFillColor(label.color, icon_stroke.stroke.fill);
     const registered = canvas.icons.find("folder").?;
     try std.testing.expectEqual(registered.elements.ptr, icon_stroke.elements.ptr);
+
+    var tree_child = plain;
+    tree_child.semantics.role = .treeitem;
+    tree_child.tree_level = 2;
+    var tree_commands: [8]CanvasCommand = undefined;
+    var tree_builder = Builder.init(&tree_commands);
+    try emitWidgetTree(&tree_builder, tree_child, tokens);
+    const tree_label = switch (tree_builder.displayList().findCommandById(widgetPartId(70, 3)).?.command) {
+        .draw_text => |text| text,
+        else => return error.TestUnexpectedResult,
+    };
+    // A flat tree's semantic level is visible too: child rows shift one
+    // spacing rung while an ordinary list item remains exactly where it
+    // was. This is the component explorer's hierarchy cue.
+    try std.testing.expect(tree_label.origin.x > plain_label.origin.x);
 
     // menu_item keeps the same leading-icon slot contract even though
     // it draws with its own emitter (menu rows add the trailing
@@ -3295,8 +3401,8 @@ test "label-exact controls at intrinsic width never elide under geometry pixel s
     // edge, at both snap scales, across labels whose fractional widths
     // land on both sides of the rounding boundary.
     const kinds = [_]canvas.WidgetKind{
-        .toggle_button, .button,   .toggle, .segmented_control,
-        .menu_item,     .checkbox, .radio,  .switch_control,
+        .toggle_button, .button,   .toggle,    .segmented_control,
+        .menu_item,     .checkbox, .radio,     .switch_control,
         .tooltip,       .badge,    .list_item,
     };
     const labels = [_][]const u8{ "PID", "CPU", "Memory", "Name", "Filter processes", "Quarterly report" };

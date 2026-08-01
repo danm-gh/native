@@ -34,6 +34,12 @@ const booleanControlSelected = widget_access.booleanControlSelected;
 const widgetButtonTextSize = widget_metrics.widgetButtonTextSize;
 const widgetBodyTextSize = widget_metrics.widgetBodyTextSize;
 const widgetLabelTextSize = widget_metrics.widgetLabelTextSize;
+const widgetTabTriggerTextSize = widget_metrics.widgetTabTriggerTextSize;
+const widgetTabTriggerHeight = widget_metrics.widgetTabTriggerHeight;
+const widgetTabTriggerInset = widget_metrics.widgetTabTriggerInset;
+const widgetTabTriggerIconExtent = widget_metrics.widgetTabTriggerIconExtent;
+const widgetTabTriggerIconGap = widget_metrics.widgetTabTriggerIconGap;
+const underlineTabsListInset = widget_metrics.underlineTabsListInset;
 const widgetTypographySize = widget_metrics.widgetTypographySize;
 const widgetLineHeight = widget_metrics.widgetLineHeight;
 const widgetDefaultRowHeight = widget_metrics.widgetDefaultRowHeight;
@@ -71,7 +77,8 @@ pub fn layoutWidgetDepth(
     };
     len.* += 1;
 
-    const content = windowControlsClearedContent(frame.inset(widget.layout.padding), widget, tokens);
+    const layout_padding = if (widget.kind == .tabs) tabsLayoutPadding(widget, tokens) else widget.layout.padding;
+    const content = windowControlsClearedContent(frame.inset(layout_padding), widget, tokens);
     switch (widget.kind) {
         .row, .breadcrumb, .pagination, .radio_group, .toggle_group => try layoutAxisChildren(widget.children, content, .horizontal, index, depth, output, len, widget.layout, tokens),
         // Button groups flow like rows but at their register's effective
@@ -123,7 +130,7 @@ pub fn layoutWidgetDepth(
             const child_content = accordionContentFrame(widget, content, tokens, depth);
             for (widget.children) |child| {
                 if (child.layout.anchor != null) continue;
-                _ = try layoutWidgetDepth(child, stackChildFrame(child_content, child), index, depth + 1, output, len, tokens);
+                _ = try layoutWidgetDepth(child, stackChildFrame(child_content, child, tokens), index, depth + 1, output, len, tokens);
             }
         },
         .alert => {
@@ -133,13 +140,13 @@ pub fn layoutWidgetDepth(
             const child_content = alertContentFrame(widget, content, tokens);
             for (widget.children) |child| {
                 if (child.layout.anchor != null) continue;
-                _ = try layoutWidgetDepth(child, stackChildFrame(child_content, child), index, depth + 1, output, len, tokens);
+                _ = try layoutWidgetDepth(child, stackChildFrame(child_content, child, tokens), index, depth + 1, output, len, tokens);
             }
         },
         .stack, .bubble, .card, .dialog, .drawer, .sheet, .resizable, .panel, .popover => {
             for (widget.children) |child| {
                 if (child.layout.anchor != null) continue;
-                _ = try layoutWidgetDepth(child, stackChildFrame(content, child), index, depth + 1, output, len, tokens);
+                _ = try layoutWidgetDepth(child, stackChildFrame(content, child, tokens), index, depth + 1, output, len, tokens);
             }
         },
         // Span paragraphs and span-carrying table cells share the link
@@ -414,7 +421,26 @@ pub fn tabsGap(widget: Widget, tokens: DesignTokens) f32 {
 fn tabsLayoutStyle(widget: Widget, tokens: DesignTokens) WidgetLayoutStyle {
     var style = widget.layout;
     style.gap = tabsGap(widget, tokens);
+    style.padding = tabsLayoutPadding(widget, tokens);
+    // Primary underline triggers fill the strip's row just like their
+    // web reference. This also honors an author-constrained strip height
+    // without letting the intrinsic trigger spill past its rail.
+    if (tokens.controls.tabs_indicator == .underline) style.cross_alignment = .stretch;
     return style;
+}
+
+/// The builder stamps the house TabsList's canonical 3px hug before it
+/// knows which runtime theme pack will paint the tree. When the resolved
+/// register is underline, translate that canonical default to the
+/// underline register's own inset (0 for Geist). Any genuinely custom
+/// padding remains author-owned. The pill arm returns the stored padding
+/// byte-for-byte, preserving the default theme's layout.
+fn tabsLayoutPadding(widget: Widget, tokens: DesignTokens) geometry.InsetsF {
+    if (tokens.controls.tabs_indicator != .underline) return widget.layout.padding;
+    const padding = widget.layout.padding;
+    const canonical = widget_model.tabs_list_inset;
+    if (padding.top != canonical or padding.right != canonical or padding.bottom != canonical or padding.left != canonical) return padding;
+    return geometry.InsetsF.all(underlineTabsListInset(tokens));
 }
 
 fn layoutAxisChildren(
@@ -1069,7 +1095,7 @@ fn layoutScrollChildren(
     const scrolled_content = content.translate(geometry.OffsetF.init(-scroll_offset.dx, -scroll_offset.dy));
     for (children) |child| {
         if (child.layout.anchor != null) continue;
-        var child_frame = stackChildFrame(scrolled_content, child);
+        var child_frame = stackChildFrame(scrolled_content, child, tokens);
         // A `both` region must retain the same intrinsic width as a
         // horizontal-only shelf; otherwise its horizontal axis has no
         // content range even when its child paints a long no-wrap line.
@@ -1483,15 +1509,32 @@ pub fn widgetKindStacksChildren(kind: widget_model.WidgetKind) bool {
     };
 }
 
-fn stackChildFrame(content: geometry.RectF, child: Widget) geometry.RectF {
+fn stackChildFrame(content: geometry.RectF, child: Widget, tokens: DesignTokens) geometry.RectF {
     const width = if (child.frame.width > 0) child.frame.width else content.width;
     const height = if (child.frame.height > 0) child.frame.height else content.height;
-    return geometry.RectF.init(
+    var frame = geometry.RectF.init(
         content.x + child.frame.x,
         content.y + child.frame.y,
         clampIntrinsicAxis(width, child.layout.min_size.width, child.layout.max_size.width),
         clampIntrinsicAxis(height, child.layout.min_size.height, child.layout.max_size.height),
     );
+    // A primary underline TabsList is a full-width rule with
+    // content-hugging triggers, equivalent to the reference's
+    // `width: 100%`. Fixed frames in theme-agnostic trees often describe
+    // the house pill's hug width (the GPU catalog's 148px Small/Large
+    // specimen is one); carrying that width into the underline register
+    // clips the closing rail immediately after the last trigger. Stretch
+    // only the underline register to the remaining containing width.
+    // House pills return byte-for-byte above, and an explicit max width
+    // remains the author escape hatch for a deliberately bounded strip.
+    if (child.kind == .tabs and (child.variant == .default or child.variant == .primary) and tokens.controls.tabs_indicator == .underline) {
+        frame.width = clampIntrinsicAxis(
+            @max(0, content.maxX() - frame.x),
+            child.layout.min_size.width,
+            child.layout.max_size.width,
+        );
+    }
+    return frame;
 }
 
 /// Whether the accordion's EXTENT includes its content: only while
@@ -1730,10 +1773,12 @@ fn intrinsicAxisChildrenSize(widget: Widget, tokens: DesignTokens, axis: LayoutA
         else => nonNegative(widget.layout.gap),
     };
     const gap = child_gap * @as(f32, @floatFromInt(flow_count - 1));
-    return paddedIntrinsicSize(widget, switch (axis) {
+    const content_size = switch (axis) {
         .horizontal => geometry.SizeF.init(main_sum + gap, cross_max),
         .vertical => geometry.SizeF.init(cross_max, main_sum + gap),
-    });
+    };
+    if (widget.kind == .tabs) return paddedIntrinsicSizeWithPadding(widget, content_size, tabsLayoutPadding(widget, tokens));
+    return paddedIntrinsicSize(widget, content_size);
 }
 
 fn intrinsicOverlayChildrenSize(widget: Widget, tokens: DesignTokens, depth: usize) geometry.SizeF {
@@ -1799,6 +1844,10 @@ fn intrinsicOwnMinSize(widget: Widget) geometry.SizeF {
 
 fn paddedIntrinsicSize(widget: Widget, content: geometry.SizeF) geometry.SizeF {
     const padding = widget.layout.padding;
+    return paddedIntrinsicSizeWithPadding(widget, content, padding);
+}
+
+fn paddedIntrinsicSizeWithPadding(widget: Widget, content: geometry.SizeF, padding: geometry.InsetsF) geometry.SizeF {
     return geometry.SizeF.init(
         @max(content.width + padding.left + padding.right, widget.layout.min_size.width),
         @max(content.height + padding.top + padding.bottom, widget.layout.min_size.height),
@@ -2041,12 +2090,22 @@ fn intrinsicSpinnerWidgetSize(widget: Widget, tokens: DesignTokens) geometry.Siz
 }
 
 fn intrinsicSegmentedControlSize(widget: Widget, tokens: DesignTokens) geometry.SizeF {
-    const text_width = measuredTextWidth(tokens, widget.text, widgetLabelTextSize(widget, tokens));
+    const text_width = measuredTextWidth(tokens, widget.text, widgetTabTriggerTextSize(widget, tokens));
+    if (tokens.controls.tabs_indicator == .underline) {
+        const icon_width = if (widget.icon.len > 0)
+            widgetTabTriggerIconExtent(widget, tokens) + (if (widget.text.len > 0) widgetTabTriggerIconGap(tokens) else 0)
+        else
+            0;
+        return geometry.SizeF.init(
+            pixelSnapCeil(tokens, icon_width + text_width + widgetTabTriggerInset(widget, tokens) * 2),
+            widgetTabTriggerHeight(widget, tokens),
+        );
+    }
     // Ceil to the snap grid (`pixelSnapCeil`): a segment / tabs trigger
     // sized exactly to its measured label must survive render-time edge
     // snapping without eliding.
     const width = pixelSnapCeil(tokens, @max(widgetSizedDensityValue(widget, tokens, 44), text_width + widgetControlInset(widget, tokens, tokens.spacing.md) * 2));
-    return geometry.SizeF.init(width, widgetControlHeight(widget, tokens));
+    return geometry.SizeF.init(width, widgetTabTriggerHeight(widget, tokens));
 }
 
 fn intrinsicRowTextWidgetSize(widget: Widget, tokens: DesignTokens) geometry.SizeF {

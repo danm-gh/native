@@ -1199,7 +1199,7 @@ fn nativeCiYaml(allocator: std.mem.Allocator, names: TemplateNames, framework_pa
         \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - uses: actions/checkout@v4
-        \\      - uses: mlugg/setup-zig@v2
+        \\      - uses: vercel-labs/setup-zig@v1
         \\        with:
         \\          version: 0.16.0
         \\
@@ -1222,7 +1222,7 @@ fn nativeCiYaml(allocator: std.mem.Allocator, names: TemplateNames, framework_pa
         \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - uses: actions/checkout@v4
-        \\      - uses: mlugg/setup-zig@v2
+        \\      - uses: vercel-labs/setup-zig@v1
         \\        with:
         \\          version: 0.16.0
         \\
@@ -1298,7 +1298,7 @@ fn frontendCiYaml(allocator: std.mem.Allocator, names: TemplateNames) ![]const u
         \\    runs-on: ubuntu-latest
         \\    steps:
         \\      - uses: actions/checkout@v4
-        \\      - uses: mlugg/setup-zig@v2
+        \\      - uses: vercel-labs/setup-zig@v1
         \\        with:
         \\          version: 0.16.0
         \\      - name: Fetch native-sdk
@@ -3924,7 +3924,7 @@ test "writeDefaultApp emits Vite project files" {
     defer std.testing.allocator.free(ci_yaml_text);
     try expectBasicYaml(ci_yaml_text);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "zig build test -Dplatform=null -Dnative-sdk-path=\"$NATIVE_SDK_PATH\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "mlugg/setup-zig@v2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "vercel-labs/setup-zig@v1") != null);
     // Web-frontend workflows stop at logic tests: the automation smoke
     // recipe is native-app specific.
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "smoke:") == null);
@@ -4163,7 +4163,7 @@ test "writeDefaultApp --full ts-core emits a CI workflow with the node tier" {
     // automation smoke, no WebKitGTK for a native-rendered app.
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "  test:") != null);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "  smoke:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "mlugg/setup-zig@v2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "vercel-labs/setup-zig@v1") != null);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "zig build test -Dplatform=null") != null);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "libgtk-4-dev xvfb") != null);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "libwebkitgtk-6.0-dev") == null);
@@ -4190,7 +4190,7 @@ test "writeDefaultApp emits a CI workflow for native apps" {
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "jobs:") != null);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "  test:") != null);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "  smoke:") != null);
-    try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "mlugg/setup-zig@v2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "vercel-labs/setup-zig@v1") != null);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "version: 0.16.0") != null);
     try std.testing.expect(std.mem.indexOf(u8, ci_yaml_text, "zig build test -Dplatform=null") != null);
     // The smoke job builds with automation, launches under Xvfb, and drives

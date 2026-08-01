@@ -1,1 +1,0 @@
-fix: **YAML syntax highlighting**: code surfaces, Markdown fences, and the code-editor example now recognize `yaml` and `yml`, coloring mapping keys, scalars, document markers, anchors, tags, and comments.

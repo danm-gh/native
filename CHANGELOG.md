@@ -2,9 +2,54 @@
 
 All notable changes to the Native SDK (formerly zero-native) will be documented in this file.
 
-## 0.7.0
+## 0.7.1
 
 <!-- release:start -->
+
+### New Features
+
+- **Declarative folder-to-code editor example**: `examples/code-editor` authors its complete view in hot-reloadable `.native` markup, unifies its titlebar, file pane, tab-strip canvas, and editor background, centers the opened folder name beside a trailing ghost Save icon in a custom titlebar, opens or replaces the focused window's folder with Cmd+O, creates independent editor windows with Cmd+N, builds a clean bounded folders-first disclosure tree with outline-free selection-only Up/Down navigation, leaf-to-parent Left movement, Left/Right expansion, in-place disk-backed Enter rename, Cmd+Enter permanent tabs, and folder focus independent from the active editor, and presents editable syntax-highlighted files (including `.mjs` and large practical sources) in a resizable second pane with flat VS Code-style tabs whose active tab has no top accent and breaks the baseline to meet the editor, replaceable italic previews that pin when double-clicked, dirty dots, active/hover close buttons, native Close/Close Others tab menus, wrapping Cmd+Shift+[/] tab cycling, Cmd+W tab-or-empty-window closing, and serialized disk-backed Save/Cmd+S.
+- **Generated compiled-core facade**: `corewire --facade` now emits the complete compiler entry and matching profile from the contract sidecar, including explicit `--f64-slot` demotions, authored type provenance, and signed or unsigned integer proofs at every host ingress.
+- **Facade contract hardening**: generated entries preserve subdirectory module paths, reconstruct private reachable types without invalid imports, preserve Model-first resolution for homonymous unbound bindings, decode optional and composite record fields with a running cursor, prove nullable integer helpers, handle signed and unsigned text-selection sentinels consistently, and refuse legacy sidecars that lack the authored facts a facade requires.
+- **Effective sidecar projection**: `corewire --effective-sidecar` emits the contract after explicit slot demotions, and staged facade/profile/sidecar triples now describe one compiled layout.
+- **Editable highlighted code**: `ui.code` and `<code>` keep their read-only default, while `editable` plus `on-input` opts into a syntax-colored multiline editor in both retained and direct rendering, with selection, caret-row highlighting, IME, clipboard, undo/redo, indentation-aware Tab input (tabs or inferred 2–8-space widths, defaulting to two spaces), and no textarea chrome.
+- **Markdown source highlighting**: `markdown`/`md` joins the code lexer names with themed headings, lists, emphasis, links, inline and fenced code, and comments; the code-editor example selects it for Markdown files.
+- **Stable line-number gutter**: numbered code reserves at least three marker columns, so short files keep a useful gutter while larger line counts still expand it.
+- **Double-click messages in Native markup**: `on-double-press` exposes the canvas runtime's additive double-click channel to `.native` views, so the first click can select or preview and the second can perform or pin without a timer. Multi-click chains stay scoped to one control and physical pointer, and a third click returns to the ordinary press action instead of repeating the double action.
+
+### Improvements
+
+- **Composable code presentation**: `ui.code` and `<code>` now provide bare highlighted content without their own background, border, radius, shadow, or padding; wrap them in a panel or card when surface chrome is wanted. An enabled line-number gutter remains opaque while horizontally scrolling so source glyphs cannot clash with its pinned markers.
+- **Flat tree keyboard hierarchy**: `treeitem` rows can declare a one-based `tree-level`, letting Left/Right find logical parents and children in loop-rendered flat trees, while `on-change` can keep arrow-key selection distinct from pointer activation.
+
+### Bug Fixes
+
+- **Live code docs preview**: The Code component page now loads its real WASM-backed engine scene instead of silently remaining on the static screenshot fallback.
+- **Reliable large-code editing**: editable code now repaints only visible selected glyphs and caches longest-line width measurements, keeping large selections and steady-state no-wrap rendering inside bounded display-list and host-measurement budgets.
+- **Complete wrapped long lines**: scrolling a single logical line beyond 128 wrapped rows now pages its visible glyphs instead of leaving the remainder blank.
+- **Stable code-editor reads**: switching tabs no longer cancels a pinned file's load, and reopened secondary windows keep monotonic file-effect keys so late completions cannot populate a newer document.
+- **Unsaved-edit protection**: opening another folder or closing a secondary editor window now refuses while that window still has dirty documents.
+- **Steady editor tabs**: active and inactive tabs now share the same background and label alignment, so filenames no longer shift when selection changes.
+- **Balance explorer rows**: file-tree hover and selection backgrounds now keep even visual gutters beside the sidebar edge and split handle while preserving compact label alignment.
+- **Complete repository roots**: the explorer now indexes a folder when it expands instead of spending its bounded tree budget in an eager depth-first walk, so large subtrees cannot hide root files or unexplored sibling folders; `.next` and `.pnpm-store` remain visible but are not recursively indexed.
+- **Familiar file opening**: Command+Down Arrow now opens the selected tree file as a persistent tab; Command+Enter remains available to the focused control.
+- **Visible active tabs**: inactive tabs retain their bottom divider, and opening, clicking, or keyboard-cycling to a tab now minimally scrolls it into view horizontally without shifting an already visible tab.
+- **Distinct new windows**: Command+N now opens each editor window slightly down and to the right of the active window so the new window is immediately apparent.
+- **Clear empty-window title**: editor windows now show “Code Explorer” in the title bar until a folder is opened.
+- **Stable editable-code repainting**: syntax-highlighted editors now keep unique retained command IDs while edited text and highlighted spans occupy different runtime storage, preventing a selected editor from crashing when the app deactivates.
+- **Safe large widget text**: views keep their ordinary 64 KiB text pools inline and allocate practical source-file capacity only when a large layout or edit needs it, while edit, presentation, and context-menu workspaces stay off constrained native stacks and large single-line pastes continue stripping line breaks.
+- **Folder-only macOS open dialogs**: `allow_directories = true` now matches Linux and Windows by selecting directories rather than allowing files alongside them in AppKit and CEF hosts.
+- **Code-editor presentation polish**: JavaScript and TypeScript object keys and typed bindings now use the same syntax color as variables, while CSS declaration names retain their property color; numbered editors also use their full trailing width so fitting lines do not produce false horizontal scrolling.
+- **Complete JSX and TSX syntax highlighting**: JSX-family code blocks now combine JavaScript or TypeScript token coloring with JSX tags and attributes instead of treating the whole file as plain HTML outside `{…}` expressions.
+- **YAML syntax highlighting**: code surfaces, Markdown fences, and the code-editor example now recognize `yaml` and `yml`, coloring mapping keys, scalars, document markers, anchors, tags, and comments.
+
+### Contributors
+
+- @ctate
+
+<!-- release:end -->
+
+## 0.7.0
 
 ### New Features
 
@@ -18,8 +63,6 @@ All notable changes to the Native SDK (formerly zero-native) will be documented 
 ### Contributors
 
 - @ctate
-
-<!-- release:end -->
 
 ## 0.6.3
 

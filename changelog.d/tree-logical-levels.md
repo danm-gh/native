@@ -1,1 +1,0 @@
-improvement: **Flat tree keyboard hierarchy**: `treeitem` rows can declare a one-based `tree-level`, letting Left/Right find logical parents and children in loop-rendered flat trees, while `on-change` can keep arrow-key selection distinct from pointer activation.

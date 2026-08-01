@@ -1,3 +1,0 @@
-feature: **Editable highlighted code**: `ui.code` and `<code>` keep their read-only default, while `editable` plus `on-input` opts into a syntax-colored multiline editor in both retained and direct rendering, with selection, caret-row highlighting, IME, clipboard, undo/redo, indentation-aware Tab input (tabs or inferred 2–8-space widths, defaulting to two spaces), and no textarea chrome.
-- **Markdown source highlighting**: `markdown`/`md` joins the code lexer names with themed headings, lists, emphasis, links, inline and fenced code, and comments; the code-editor example selects it for Markdown files.
-- **Stable line-number gutter**: numbered code reserves at least three marker columns, so short files keep a useful gutter while larger line counts still expand it.

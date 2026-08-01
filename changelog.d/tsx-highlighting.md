@@ -1,1 +1,0 @@
-fix: **Complete JSX and TSX syntax highlighting**: JSX-family code blocks now combine JavaScript or TypeScript token coloring with JSX tags and attributes instead of treating the whole file as plain HTML outside `{…}` expressions.

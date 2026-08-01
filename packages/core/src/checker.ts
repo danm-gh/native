@@ -1965,7 +1965,21 @@ export class SubsetChecker {
             this.report("NS1002", "`new Promise` starts asynchronous work.", node);
           } else if (name === "Date") {
             this.report("NS1005", "`new Date` reads ambient wall-clock state.", node);
-          } else if (name !== "Uint8Array") {
+          } else if (name === "Uint8Array") {
+            // NS1063 — the initializer-list constructor has no v1 mapping
+            // (its elements are float-classed number-array members); the
+            // sized form plus integer stores is the byte-exact spelling.
+            let arg = node.arguments?.[0];
+            while (
+              arg &&
+              (ts.isParenthesizedExpression(arg) || ts.isAsExpression(arg) || ts.isSatisfiesExpression(arg))
+            ) {
+              arg = arg.expression;
+            }
+            if (arg && ts.isArrayLiteralExpression(arg)) {
+              this.report("NS1063", "`new Uint8Array([...])` fills a byte buffer from a number-array literal.", node);
+            }
+          } else {
             const decl = this.tast.declarationOf(node.expression);
             const cls = this.table.classes.get(name);
             const supported = decl !== null && ts.isClassDeclaration(decl) && cls !== undefined && cls.decl === decl;

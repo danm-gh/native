@@ -394,6 +394,12 @@ export const rules = {
     fix: "Declare `Model` as an interface record (`export interface Model { ... }`) and `Msg` as a kind-tagged union (`export type Msg = { kind: \"...\" } | ...`).",
     why: "The generated wiring commits `Model` as the reference-stored record root and dispatches `Msg` by its declaration-order kind tags; any other shape under those names has no dispatch or commit path and would fail deep inside the emitted module instead of teaching here.",
   },
+  NS1063: {
+    id: "NS1063",
+    title: "byte buffers allocate by size, not from array literals",
+    fix: "Allocate the buffer sized and store each byte — `const b = new Uint8Array(4); b[0] = 137;` — or build text with `asciiBytes(\"...\")` from \"@native-sdk/core\".",
+    why: "A `Uint8Array` initializer list is a number array, whose elements are float-classed with no byte-exact native mapping; sized allocation with integer stores (and the asciiBytes intrinsic for text) builds the same bytes identically under node and native.",
+  },
   // NS9xxx: internal emit-time verification. A checker gap becomes a loud
   // internal error naming the construct, never silent misbehavior.
   NS9001: {

@@ -24,7 +24,7 @@ pub const window_height: f32 = 720;
 pub const window_min_width: f32 = 760;
 pub const window_min_height: f32 = 480;
 pub const titlebar_natural_height: f32 = 52;
-pub const tree_row_inset: f32 = 12;
+pub const tree_row_inset: f32 = 4;
 pub const tree_depth_indent: f32 = 16;
 
 /// The folder scan is deliberately bounded: a source browser should not

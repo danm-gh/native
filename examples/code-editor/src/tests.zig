@@ -296,6 +296,12 @@ test "tree depth moves each row's icon and label together" {
     const nested_icon = layout.findById(nested_row.children[1].id).?.frame;
     const root_label = layout.findById(root_row.children[2].id).?.frame;
     const nested_label = layout.findById(nested_row.children[2].id).?.frame;
+    const sidebar_frame = layout.findById(findByLabel(tree.root, "Code editor sidebar").?.id).?.frame;
+    const tree_frame = layout.findById(findByLabel(tree.root, "Files and folders").?.id).?.frame;
+    const root_row_frame = layout.findById(root_row.id).?.frame;
+    try testing.expectApproxEqAbs(@as(f32, 6), root_row_frame.x - sidebar_frame.x, 0.01);
+    try testing.expectApproxEqAbs(tree_frame.x, root_row_frame.x, 0.01);
+    try testing.expectApproxEqAbs(sidebar_frame.maxX(), root_row_frame.maxX(), 0.01);
     try testing.expectApproxEqAbs(main.tree_depth_indent, nested_icon.x - root_icon.x, 0.01);
     try testing.expectApproxEqAbs(main.tree_depth_indent, nested_label.x - root_label.x, 0.01);
 }

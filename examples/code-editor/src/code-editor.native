@@ -21,34 +21,45 @@
       <split grow="1" value="{sidebar_fraction}" on-resize="sidebar_resized">
         <column min-width="220" background="background" label="Code editor sidebar">
           <scroll grow="1" overscroll="none">
-            <tree label="Files and folders">
-              <for each="visible" key="relative_path" as="v">
-                <if test="{v.directory}">
-                  <list-item height="32" gap="8" cross="center" selected="{v.selected}" expanded="{v.expanded}" tree-level="{v.tree_level}" focus-ring="background" on-press="select_entry:{v.index}" on-change="select_entry:{v.index}" on-toggle="toggle_entry:{v.index}" on-submit="begin_rename:{v.index}" role="treeitem" label="{v.name}">
-                    <spacer width="{v.indent}" />
-                    <if test="{v.renaming}">
-                      <text-field height="28" grow="1" text="{renameText}" autofocus="true" on-input="edit_rename" on-submit="commit_rename" label="Rename item" />
+            <!-- The split divider owns a 9px hit band after this pane, with
+                 its hairline centered in that band. Keep the tree flush to
+                 the pane's trailing edge so the visible hairline balances
+                 this 6px leading gutter instead of doubling it. -->
+            <column>
+              <spacer height="6" />
+              <row>
+                <spacer width="6" />
+                <tree grow="1" label="Files and folders">
+                  <for each="visible" key="relative_path" as="v">
+                    <if test="{v.directory}">
+                      <list-item height="32" gap="8" cross="center" selected="{v.selected}" expanded="{v.expanded}" tree-level="{v.tree_level}" focus-ring="background" on-press="select_entry:{v.index}" on-change="select_entry:{v.index}" on-toggle="toggle_entry:{v.index}" on-submit="begin_rename:{v.index}" role="treeitem" label="{v.name}">
+                        <spacer width="{v.indent}" />
+                        <if test="{v.renaming}">
+                          <text-field height="28" grow="1" text="{renameText}" autofocus="true" on-input="edit_rename" on-submit="commit_rename" label="Rename item" />
+                        </if>
+                        <else>
+                          <icon name="{v.icon}" width="16" height="16" />
+                          <text grow="1" wrap="false">{v.name}</text>
+                        </else>
+                      </list-item>
                     </if>
                     <else>
-                      <icon name="{v.icon}" width="16" height="16" />
-                      <text grow="1" wrap="false">{v.name}</text>
+                      <list-item height="32" gap="8" cross="center" selected="{v.selected}" tree-level="{v.tree_level}" focus-ring="background" on-press="preview_entry:{v.index}" on-change="select_entry:{v.index}" on-double-press="pin_entry:{v.index}" on-submit="begin_rename:{v.index}" role="treeitem" label="{v.name}">
+                        <spacer width="{v.indent}" />
+                        <if test="{v.renaming}">
+                          <text-field height="28" grow="1" text="{renameText}" autofocus="true" on-input="edit_rename" on-submit="commit_rename" label="Rename item" />
+                        </if>
+                        <else>
+                          <icon name="{v.icon}" width="16" height="16" />
+                          <text grow="1" wrap="false">{v.name}</text>
+                        </else>
+                      </list-item>
                     </else>
-                  </list-item>
-                </if>
-                <else>
-                  <list-item height="32" gap="8" cross="center" selected="{v.selected}" tree-level="{v.tree_level}" focus-ring="background" on-press="preview_entry:{v.index}" on-change="select_entry:{v.index}" on-double-press="pin_entry:{v.index}" on-submit="begin_rename:{v.index}" role="treeitem" label="{v.name}">
-                    <spacer width="{v.indent}" />
-                    <if test="{v.renaming}">
-                      <text-field height="28" grow="1" text="{renameText}" autofocus="true" on-input="edit_rename" on-submit="commit_rename" label="Rename item" />
-                    </if>
-                    <else>
-                      <icon name="{v.icon}" width="16" height="16" />
-                      <text grow="1" wrap="false">{v.name}</text>
-                    </else>
-                  </list-item>
-                </else>
-              </for>
-            </tree>
+                  </for>
+                </tree>
+              </row>
+              <spacer height="6" />
+            </column>
           </scroll>
         </column>
 

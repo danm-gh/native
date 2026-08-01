@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - uses: actions/setup-node@v4
@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - uses: actions/setup-node@v4
@@ -80,7 +80,7 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - run: zig build test-webview-system-link
@@ -107,7 +107,7 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       # Percentile perf check: 5 cold launches asserting p90
@@ -129,7 +129,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - name: Install WebKitGTK dependencies
@@ -150,7 +150,7 @@ jobs:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       # Builds the WebView example with the system engine, compiling the
@@ -180,7 +180,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - uses: actions/setup-node@v4
@@ -219,7 +219,7 @@ jobs:
             step: test-examples-native-shard-4
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - uses: actions/setup-node@v4
@@ -238,7 +238,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       # Declare-to-use, proven on real Windows executables: the
@@ -270,7 +270,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       # Deliberately NO libwebkitgtk-6.0-dev: ui-inbox declares no web
@@ -296,7 +296,7 @@ jobs:
       # C diagnostics on failure, which is exactly the escalation this
       # step pins against. The throwaway cache dir keeps the compile
       # cold: on a cache hit zig replays nothing, stderr included, so a
-      # warm cache (setup-zig restores one) would hide the diagnostics
+      # warm compiler cache would hide the diagnostics
       # this step exists to catch.
       - name: WebKitGTK stub compile is diagnostic-free
         run: |
@@ -352,7 +352,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - uses: actions/setup-node@v4
@@ -382,7 +382,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - name: Install Wine, Xvfb, and xdotool
@@ -418,7 +418,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - name: Install Wine and Xvfb
@@ -437,7 +437,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - run: zig build test-examples-frontends
@@ -447,7 +447,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - run: zig build test-examples-mobile
@@ -457,7 +457,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: mlugg/setup-zig@v2
+      - uses: vercel-labs/setup-zig@v1
         with:
           version: 0.16.0
       - uses: actions/setup-node@v4

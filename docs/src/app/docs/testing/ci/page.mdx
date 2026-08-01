@@ -53,7 +53,7 @@ Both jobs fetch the framework into that path when it is missing, so the app's `b
 The `test` job is tier 1:
 
 ```yaml
-- uses: mlugg/setup-zig@v2
+- uses: vercel-labs/setup-zig@v1
   with:
     version: 0.16.0
 - run: zig build test -Dplatform=null

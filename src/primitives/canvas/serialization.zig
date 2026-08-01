@@ -979,7 +979,8 @@ fn writeGlyphsJson(glyphs: []const Glyph, writer: anytype) !void {
 // Compact binary gpu-surface packet encoding (wire format v4).
 //
 // The version this comment names, the `binary_packet_version` constant
-// below, and the host decoder's spec comment (appkit_host.m) must agree;
+// below, and both host decoders' spec comments (appkit_host.m and the
+// Windows gpu_surface_renderer.cpp) must agree;
 // the `test-wire-format-version-prose` build check pins all three, so
 // bumping the constant without updating the prose fails the suite.
 //
@@ -987,11 +988,10 @@ fn writeGlyphsJson(glyphs: []const Glyph, writer: anytype) !void {
 // formatting, and no glyph arrays (the packet host draws text through the
 // system text stack from the run's UTF-8 text plus the engine-measured
 // lines, so glyph payloads — the bulk of a text-heavy JSON packet — never
-// ride the wire). The AppKit host decoder
-// (`NativeSdkPacketDictionaryFromBinary` in appkit_host.m) pins the same
-// layout and tag tables independently; a disagreement fails the host
-// decode loudly (refused present -> recorded fallback) instead of drawing
-// garbage. Bump `binary_packet_version` on ANY layout change.
+// ride the wire). The AppKit and Windows host decoders pin the same layout
+// and tag tables independently; a disagreement fails host decode loudly
+// (refused present -> recorded fallback) instead of drawing garbage. Bump
+// `binary_packet_version` on ANY layout change.
 //
 // v2 (from v1): every header carries a retained-state `generation`, every
 // command rides behind an explicit retain `key` (its ObjectId, or a

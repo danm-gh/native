@@ -27,6 +27,8 @@
 #include <thread>
 #include <vector>
 
+#include "gpu_surface_renderer.h"
+
 /* NATIVE_SDK_ALLOW_WEBVIEW2_STUB is the build graph's declaration that
  * this app uses no web layer, and it wins over header visibility: on a
  * machine where the WebView2 SDK headers happen to be reachable through
@@ -225,6 +227,12 @@ struct WindowsEvent {
     uint64_t frame_interval_ns;
     int nonblank;
     uint32_t sample_color;
+    /* Concrete presenter and host-side cost for the most recent packet
+     * accepted since the prior frame event. backend: 0 software/GDI,
+     * 1 retained Direct2D. */
+    int gpu_backend;
+    uint64_t packet_decode_ns;
+    uint64_t packet_draw_ns;
     /* Nonzero when the frame completed logically while the top-level
      * window was minimized (heartbeat pacing; nothing painted): its
      * timestamp is pacing policy, never a latency endpoint. */
@@ -421,7 +429,12 @@ struct NativeView {
     bool visible = true;
     bool enabled = true;
     bool explicit_text = false;
-    /* gpu_surface (software canvas) state */
+    /* Retained Direct2D packet presenter. Transparent top-level windows
+     * intentionally leave this unused and take the alpha-correct pixel
+     * fallback because UpdateLayeredWindow cannot compose child HWNDs. */
+    std::shared_ptr<WindowsGpuSurface> gpu_surface;
+    /* Software-pixel fallback state (unrepresentable packet commands,
+     * transparent top-level windows, or Direct2D device loss/resync). */
     std::vector<uint8_t> gpu_bgra;
     int gpu_buf_width = 0;
     int gpu_buf_height = 0;
@@ -454,6 +467,9 @@ struct NativeView {
     double gpu_emitted_scale = 0;
     int gpu_nonblank = 0;
     uint32_t gpu_sample_color = 0;
+    int gpu_backend = 0;
+    uint64_t gpu_packet_decode_ns = 0;
+    uint64_t gpu_packet_draw_ns = 0;
     int gpu_pointer_down = 0;
     /* TrackMouseEvent(TME_LEAVE) armed for the current hover session:
      * set on the first WM_MOUSEMOVE, cleared by the WM_MOUSELEAVE it
@@ -635,6 +651,7 @@ struct Host {
     bool running = false;
     std::map<uint64_t, Window> windows;
     std::map<std::string, ChildWebView> webviews;
+    std::shared_ptr<WindowsGpuRenderer> gpu_renderer;
     std::map<std::string, NativeView> native_views;
     uint64_t next_child_order = 1;
     std::vector<std::string> allowed_origins;
@@ -1902,12 +1919,14 @@ static void destroyNativeViewsForWindow(Host *host, uint64_t window_id) {
 
 /* ---------------------------------------------------------------- gpu surface
  *
- * A gpu_surface view is a plain Win32 child HWND driven by the CPU pixel
- * path: the runtime rasterizes canvas frames with the reference renderer
- * and hands RGBA8 buffers to native_sdk_windows_present_gpu_surface_pixels,
- * which swizzles them into a top-down 32bpp BGRA DIB and invalidates the
- * child; WM_PAINT blits with SetDIBitsToDevice (StretchDIBits while a
- * resize is in flight). Frame events are DEMAND-DRIVEN through one
+ * A gpu_surface view is a plain Win32 child HWND with a retained hardware
+ * Direct2D presenter. The normal path decodes compact binary draw packets,
+ * patches a compatible GPU bitmap inside the packet's dirty regions, and
+ * lets WM_PAINT copy that bitmap to the child target. Unrepresentable
+ * commands, transparent layered top-level windows, and unavailable GPU
+ * devices retain the exact reference-rendered pixel path; that fallback
+ * swizzles and invalidates only the dirty device-pixel rows when its prior
+ * buffer is still valid. Frame events are DEMAND-DRIVEN through one
  * scheduler per surface (the macOS host's design): runtime frame
  * requests and pixel presents each arm a single grid-anchored one-shot
  * WM_TIMER emission, so an armed animation loop sees one
@@ -2396,6 +2415,33 @@ static void syncHiddenCaptionColor(Host *host, Window &window, const NativeView 
     dwm.set_window_attribute(window.hwnd, kDwmwaUseImmersiveDarkMode, &dark, sizeof(dark));
 }
 
+/* Packet presentation never reads the GPU target back merely to color
+ * the DWM caption. The renderer resolves a representative solid fill at
+ * the sample point from its retained command list and returns ARGB. */
+static void syncHiddenCaptionColorFromPacket(Host *host, Window &window, const NativeView &view) {
+    if (!host || !view.gpu_surface || !windowUsesHiddenTitlebar(window) || !window.hwnd || !view.hwnd) return;
+    const DwmApi &dwm = dwmApi();
+    if (!dwm.set_window_attribute) return;
+    RECT cluster = {};
+    if (!captionButtonsClientRect(window.hwnd, &cluster)) return;
+    const POINT origin = childOriginInParentClient(view.hwnd, window.hwnd);
+    const double scale = gpuSurfaceScale(view.hwnd);
+    if (!(scale > 0)) return;
+    const double sample_x = std::max(0.0, ((double)cluster.left - origin.x - 8.0) / scale);
+    const double sample_y = std::max(0.0, (((double)cluster.top + cluster.bottom) * 0.5 - origin.y) / scale);
+    const uint32_t packed = view.gpu_surface->representativeColorAt(sample_x, sample_y);
+    const uint8_t red = (uint8_t)((packed >> 16) & 0xff);
+    const uint8_t green = (uint8_t)((packed >> 8) & 0xff);
+    const uint8_t blue = (uint8_t)(packed & 0xff);
+    const COLORREF color = RGB(red, green, blue);
+    if (window.hidden_caption_color_set && window.hidden_caption_color == color) return;
+    window.hidden_caption_color = color;
+    window.hidden_caption_color_set = true;
+    dwm.set_window_attribute(window.hwnd, kDwmwaCaptionColor, &color, sizeof(color));
+    const BOOL dark = (299 * red + 587 * green + 114 * blue) / 1000 < 128 ? TRUE : FALSE;
+    dwm.set_window_attribute(window.hwnd, kDwmwaUseImmersiveDarkMode, &dark, sizeof(dark));
+}
+
 static uint32_t gpuModifierFlags() {
     uint32_t flags = 0;
     if (keyDown(VK_CONTROL)) flags |= kShortcutModifierPrimary | kShortcutModifierControl;
@@ -2635,6 +2681,13 @@ static void gpuSurfaceEmitFrame(Host *host, NativeView &view, HWND hwnd) {
     gpuSurfaceAdvancePacingClock(view);
 
     view.gpu_frame_index += 1;
+    /* Capture-and-clear before dispatch: the engine can synchronously
+     * present its next packet while handling this event. Clearing after
+     * dispatch would erase that new packet's timing stamps. */
+    const uint64_t packet_decode_ns = view.gpu_packet_decode_ns;
+    const uint64_t packet_draw_ns = view.gpu_packet_draw_ns;
+    view.gpu_packet_decode_ns = 0;
+    view.gpu_packet_draw_ns = 0;
     WindowsEvent event = {};
     event.kind = kGpuSurfaceFrame;
     event.width = width;
@@ -2645,6 +2698,9 @@ static void gpuSurfaceEmitFrame(Host *host, NativeView &view, HWND hwnd) {
     event.frame_interval_ns = kGpuFrameIntervalNs;
     event.nonblank = view.gpu_nonblank;
     event.sample_color = view.gpu_sample_color;
+    event.gpu_backend = view.gpu_backend;
+    event.packet_decode_ns = packet_decode_ns;
+    event.packet_draw_ns = packet_draw_ns;
     /* Heartbeat-paced completions are not latency endpoints: their
      * timestamp measures the deliberate minimized cadence, not a paint
      * — the runtime skips input-latency stamping for them. */
@@ -2982,7 +3038,18 @@ static LRESULT CALLBACK gpuSurfaceProc(HWND hwnd, UINT message, WPARAM wparam, L
             PAINTSTRUCT paint = {};
             HDC dc = BeginPaint(hwnd, &paint);
             if (dc) {
-                paintGpuSurface(*view, hwnd, dc);
+                if (view->gpu_surface && view->gpu_surface->hasContent()) {
+                    if (!view->gpu_surface->paint(paint.rcPaint)) {
+                        /* Direct2D resource loss invalidates the retained
+                         * backing. Wake the runtime; its next patch is
+                         * refused and immediately resynced as a full
+                         * keyed present. */
+                        view->gpu_prompt_frame_pending = true;
+                        gpuSurfaceScheduleFrameEmission(host, *view);
+                    }
+                } else {
+                    paintGpuSurface(*view, hwnd, dc);
+                }
                 /* Hidden-titlebar parents: yield the caption-button
                  * cluster back to the DWM (see the helper's comment). */
                 punchHiddenCaptionButtonHole(host, *view, hwnd, dc);
@@ -5634,6 +5701,10 @@ Host *native_sdk_windows_create(const char *app_name, size_t app_name_len, const
      * RPC_E_CHANGED_MODE (an MTA got there first) leaves nothing to
      * balance. */
     host->com_initialized = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
+    /* One hardware Direct2D/DirectWrite resource domain for every canvas
+     * child. Creation can fail on an exceptionally old/disabled graphics
+     * stack; packet presents then refuse cleanly into the pixel fallback. */
+    host->gpu_renderer = createWindowsGpuRenderer();
     host->app_name = slice(app_name, app_name_len);
     host->window_title = slice(window_title, window_title_len);
     host->bundle_id = slice(bundle_id, bundle_id_len);
@@ -6395,6 +6466,9 @@ int native_sdk_windows_create_view(Host *host, uint64_t window_id, const char *l
     if (!hwnd) return 0;
 
     view.hwnd = hwnd;
+    if (view.kind == kViewGpuSurface && host->gpu_renderer && !window->second.transparent) {
+        view.gpu_surface = host->gpu_renderer->createSurface(hwnd);
+    }
     applyNativeViewState(view, true, display_text);
     if (view.kind == kViewProgressIndicator) {
         SendMessageW(view.hwnd, PBM_SETMARQUEE, TRUE, 30);
@@ -6478,13 +6552,84 @@ int native_sdk_windows_show_context_menu(Host *host, uint64_t window_id, const c
     return 1;
 }
 
+int native_sdk_windows_present_gpu_surface_packet_binary(Host *host, uint64_t window_id, const char *label, size_t label_len, double surface_width, double surface_height, double scale, uint8_t clear_r, uint8_t clear_g, uint8_t clear_b, uint8_t clear_a, int requires_render, size_t command_count, size_t unsupported_command_count, int representable, const uint8_t *packet, size_t packet_len) {
+    if (!host || label_len == 0) return -1;
+    auto found = host->native_views.find(nativeViewKey(window_id, slice(label, label_len)));
+    if (found == host->native_views.end() || found->second.kind != kViewGpuSurface || !found->second.hwnd) return -1;
+    NativeView &view = found->second;
+    auto owner = host->windows.find(view.window_id);
+    /* WS_EX_LAYERED top-level windows are presented as one alpha bitmap;
+     * Windows does not redirect child HWNDs into that bitmap. Preserve
+     * exact alpha semantics through the existing pixel compositor. */
+    if (owner != host->windows.end() && owner->second.transparent) return 0;
+    if (!view.gpu_surface && host->gpu_renderer) view.gpu_surface = host->gpu_renderer->createSurface(view.hwnd);
+    if (!view.gpu_surface) return 0;
+
+    WindowsGpuPacketPresent request;
+    request.surface_width = surface_width;
+    request.surface_height = surface_height;
+    request.scale = scale;
+    request.clear_rgba[0] = clear_r;
+    request.clear_rgba[1] = clear_g;
+    request.clear_rgba[2] = clear_b;
+    request.clear_rgba[3] = clear_a;
+    request.requires_render = requires_render != 0;
+    request.command_count = command_count;
+    request.unsupported_command_count = unsupported_command_count;
+    request.representable = representable != 0;
+    request.packet = packet;
+    request.packet_len = packet_len;
+    WindowsGpuPresentInfo info;
+    const int result = view.gpu_surface->present(request, &info);
+    if (result != 1) return result;
+    view.gpu_backend = 1;
+    view.gpu_packet_decode_ns = info.decode_ns;
+    view.gpu_packet_draw_ns = info.draw_ns;
+
+    if (info.did_render) {
+        /* The GPU target is now the sole glass baseline. Retire any old
+         * software fallback buffer so device loss cannot repaint stale
+         * pixels while the runtime is arranging a full resync. */
+        view.gpu_bgra.clear();
+        view.gpu_buf_width = 0;
+        view.gpu_buf_height = 0;
+        if (info.nonblank) {
+            view.gpu_nonblank = 1;
+            view.gpu_sample_color = info.sample_color;
+        }
+        if (owner != host->windows.end()) syncHiddenCaptionColorFromPacket(host, owner->second, view);
+        InvalidateRect(view.hwnd, info.has_dirty_rect ? &info.dirty_rect : nullptr, FALSE);
+    }
+
+    const bool first_present = !view.gpu_presented;
+    view.gpu_presented = true;
+    if (owner != host->windows.end() && !owner->second.shown) showWindowImplicit(owner->second);
+    if (first_present) view.gpu_prompt_frame_pending = true;
+    gpuSurfaceScheduleFrameEmission(host, view);
+    return 1;
+}
+
+int native_sdk_windows_upload_gpu_surface_image(Host *host, uint64_t id, size_t width, size_t height, const uint8_t *rgba8, size_t rgba8_len) {
+    if (!host || !host->gpu_renderer || width > UINT32_MAX || height > UINT32_MAX) return 0;
+    return host->gpu_renderer->uploadImage(id, static_cast<uint32_t>(width), static_cast<uint32_t>(height), rgba8, rgba8_len) ? 1 : 0;
+}
+
+int native_sdk_windows_remove_gpu_surface_image(Host *host, uint64_t id) {
+    if (!host || !host->gpu_renderer) return 0;
+    return host->gpu_renderer->removeImage(id) ? 1 : 0;
+}
+
+int native_sdk_windows_register_gpu_surface_font(Host *host, uint64_t id, const uint8_t *ttf, size_t ttf_len, uint64_t *token) {
+    if (!host || !host->gpu_renderer) return 0;
+    return host->gpu_renderer->registerFont(id, ttf, ttf_len, token) ? 1 : 0;
+}
+
+int native_sdk_windows_unregister_gpu_surface_font(Host *host, uint64_t id, uint64_t token) {
+    if (!host || !host->gpu_renderer) return 0;
+    return host->gpu_renderer->unregisterFont(id, token) ? 1 : 0;
+}
+
 int native_sdk_windows_present_gpu_surface_pixels(Host *host, uint64_t window_id, const char *label, size_t label_len, size_t width, size_t height, double scale, int has_dirty_rect, double dirty_x, double dirty_y, double dirty_width, double dirty_height, const uint8_t *rgba8, size_t rgba8_len) {
-    (void)scale;
-    (void)has_dirty_rect;
-    (void)dirty_x;
-    (void)dirty_y;
-    (void)dirty_width;
-    (void)dirty_height;
     if (!host || label_len == 0) return 0;
     auto found = host->native_views.find(nativeViewKey(window_id, slice(label, label_len)));
     if (found == host->native_views.end() || found->second.kind != kViewGpuSurface || !found->second.hwnd) return 0;
@@ -6492,6 +6637,10 @@ int native_sdk_windows_present_gpu_surface_pixels(Host *host, uint64_t window_id
     if (width > INT_MAX || height > INT_MAX) return 0;
     if (rgba8_len != width * height * 4) return 0;
     NativeView &view = found->second;
+    if (view.gpu_surface) view.gpu_surface->abandonContent();
+    view.gpu_backend = 0;
+    view.gpu_packet_decode_ns = 0;
+    view.gpu_packet_draw_ns = 0;
     auto owner = host->windows.find(view.window_id);
     const bool transparent_window = owner != host->windows.end() && owner->second.transparent;
 
@@ -6503,16 +6652,41 @@ int native_sdk_windows_present_gpu_surface_pixels(Host *host, uint64_t window_id
      * the redirection surface's alpha is 0 — the app's pixels must read
      * as opaque there or the whole header band would vanish under DWM
      * chrome (only the punched button hole yields on purpose). */
+    const bool same_buffer = view.gpu_buf_width == (int)width && view.gpu_buf_height == (int)height &&
+        view.gpu_bgra.size() == width * height * 4;
+    const bool partial_update = has_dirty_rect != 0 && same_buffer && scale > 0 && std::isfinite(scale) &&
+        std::isfinite(dirty_x) && std::isfinite(dirty_y) && std::isfinite(dirty_width) && std::isfinite(dirty_height);
     view.gpu_bgra.resize(width * height * 4);
     uint8_t *dst = view.gpu_bgra.data();
-    const size_t pixel_count = width * height;
-    for (size_t index = 0; index < pixel_count; index++) {
-        const uint8_t *src = rgba8 + index * 4;
-        const uint32_t alpha = transparent_window ? src[3] : 255;
-        dst[index * 4 + 0] = transparent_window ? (uint8_t)((src[2] * alpha + 127) / 255) : src[2];
-        dst[index * 4 + 1] = transparent_window ? (uint8_t)((src[1] * alpha + 127) / 255) : src[1];
-        dst[index * 4 + 2] = transparent_window ? (uint8_t)((src[0] * alpha + 127) / 255) : src[0];
-        dst[index * 4 + 3] = (uint8_t)alpha;
+    size_t x0 = 0;
+    size_t y0 = 0;
+    size_t x1 = width;
+    size_t y1 = height;
+    RECT dirty_pixels = {};
+    if (partial_update) {
+        const double normalized_x0 = std::min(dirty_x, dirty_x + dirty_width);
+        const double normalized_y0 = std::min(dirty_y, dirty_y + dirty_height);
+        const double normalized_x1 = std::max(dirty_x, dirty_x + dirty_width);
+        const double normalized_y1 = std::max(dirty_y, dirty_y + dirty_height);
+        x0 = (size_t)std::max(0.0, std::min((double)width, std::floor(normalized_x0 * scale)));
+        y0 = (size_t)std::max(0.0, std::min((double)height, std::floor(normalized_y0 * scale)));
+        x1 = (size_t)std::max(0.0, std::min((double)width, std::ceil(normalized_x1 * scale)));
+        y1 = (size_t)std::max(0.0, std::min((double)height, std::ceil(normalized_y1 * scale)));
+        dirty_pixels = { (LONG)x0, (LONG)y0, (LONG)x1, (LONG)y1 };
+    }
+    /* Swizzle only the device-pixel rows touched by the retained CPU
+     * raster. Unrepresentable commands still have an exact fallback,
+     * but a 20x40 hover no longer converts a multi-megapixel surface. */
+    for (size_t y_index = y0; y_index < y1; ++y_index) {
+        for (size_t x_index = x0; x_index < x1; ++x_index) {
+            const size_t index = y_index * width + x_index;
+            const uint8_t *src = rgba8 + index * 4;
+            const uint32_t alpha = transparent_window ? src[3] : 255;
+            dst[index * 4 + 0] = transparent_window ? (uint8_t)((src[2] * alpha + 127) / 255) : src[2];
+            dst[index * 4 + 1] = transparent_window ? (uint8_t)((src[1] * alpha + 127) / 255) : src[1];
+            dst[index * 4 + 2] = transparent_window ? (uint8_t)((src[0] * alpha + 127) / 255) : src[0];
+            dst[index * 4 + 3] = (uint8_t)alpha;
+        }
     }
     view.gpu_buf_width = (int)width;
     view.gpu_buf_height = (int)height;
@@ -6532,7 +6706,7 @@ int native_sdk_windows_present_gpu_surface_pixels(Host *host, uint64_t window_id
     }
 
     const bool layered_presented = owner != host->windows.end() && presentTransparentWindow(host, owner->second);
-    if (!layered_presented) InvalidateRect(view.hwnd, nullptr, FALSE);
+    if (!layered_presented) InvalidateRect(view.hwnd, partial_update ? &dirty_pixels : nullptr, FALSE);
     /* A present is the completion producer on the surface's single
      * frame-event scheduler: the completion event it arms is what
      * drives the runtime's frame loop (an armed animation presents,

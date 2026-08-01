@@ -42,6 +42,57 @@ function assertConfiguredRedirect(source, destination) {
   }
 }
 
+function proseLines(markdown) {
+  const lines = [];
+  let fence = null;
+  for (const line of markdown.split("\n")) {
+    const marker = line.trimStart().match(/^(```|~~~)/)?.[1];
+    if (marker) {
+      if (fence === marker) fence = null;
+      else if (fence === null) fence = marker;
+      continue;
+    }
+    if (fence === null) lines.push(line);
+  }
+  return lines;
+}
+
+function headings(markdown) {
+  return proseLines(markdown)
+    .map((line) => line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/))
+    .filter(Boolean)
+    .map((match) => `${match[1]} ${match[2]}`);
+}
+
+function assertCleanMarkdown(source, markdown, route) {
+  // Generic type spellings such as `Sub<Msg>` are legitimate inside inline
+  // code and must not be mistaken for unresolved MDX components.
+  const prose = proseLines(markdown).join("\n").replace(/`[^`\n]*`/g, "");
+  const unresolved = prose.match(/<[A-Z][A-Za-z0-9]*(?:\s|\/?>)/)?.[0];
+  if (unresolved) {
+    throw new Error(`${route}: unresolved MDX component in Markdown output: ${unresolved}`);
+  }
+
+  const renderedHeadings = new Set(headings(markdown));
+  for (const heading of headings(source)) {
+    if (!renderedHeadings.has(heading)) {
+      throw new Error(`${route}: Markdown output dropped source heading ${heading}`);
+    }
+  }
+
+  for (const component of source.matchAll(/<EjectSection\s+components=\{\[([\s\S]*?)\]\}\s*\/>/g)) {
+    if (!renderedHeadings.has("## Eject")) {
+      throw new Error(`${route}: EjectSection did not render its heading`);
+    }
+    for (const name of component[1].matchAll(/"([^"]+)"/g)) {
+      const command = `native eject component ${name[1]}`;
+      if (!markdown.includes(command)) {
+        throw new Error(`${route}: EjectSection did not render command ${command}`);
+      }
+    }
+  }
+}
+
 const pageFiles = [...mdxPages(sourceDir)];
 const canonicalPaths = new Set(
   pageFiles.map((page) => {
@@ -62,6 +113,7 @@ for (const page of pageFiles) {
   const canonicalUrl = `${siteUrl}${canonicalPath}`;
   const output = join(appOutputDir, "docs", slug);
   const html = readRequired(`${output}.html`, canonicalPath);
+  const source = readFileSync(page, "utf8");
 
   if (!html.includes(`<link rel="canonical" href="${canonicalUrl}"/>`)) {
     throw new Error(`${canonicalPath}: missing its exact canonical link tag`);
@@ -93,6 +145,8 @@ for (const page of pageFiles) {
   if (markdownMeta.headers?.link !== `<${canonicalUrl}>; rel="canonical"`) {
     throw new Error(`${canonicalPath}.md: missing its exact canonical HTTP Link header`);
   }
+  const markdown = readRequired(`${output}.md.body`, `${canonicalPath}.md`);
+  assertCleanMarkdown(source, markdown, `${canonicalPath}.md`);
 
   assertConfiguredRedirect(`/${slug}`, canonicalPath);
   assertConfiguredRedirect(`/${slug}.md`, `${canonicalPath}.md`);

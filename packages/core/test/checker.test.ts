@@ -1101,3 +1101,62 @@ export function update(model: Model, msg: Msg): Model {
 `);
   assert.ok(ruleIds(asserted).includes("NS1061"), `got ${ruleIds(asserted)}`);
 });
+
+test("NS1016: a float-classed value stored into a Uint8Array element refuses with the byte-store teaching", () => {
+  // Number-array elements are always float-classed; before this gate the
+  // store emitted a bit-reinterpreting narrow that diverged silently from
+  // node (116.0 stored byte 0).
+  const result = transpile(`
+${core}
+const codes: readonly number[] = [116, 101, 115];
+export function fill(out: Uint8Array): void {
+  for (let i = 0; i < codes.length; i++) { out[i] = codes[i]; }
+}
+`);
+  assert.equal(result.ok, false);
+  const d = result.diagnostics.find((x) => x.id === "NS1016");
+  assert.ok(d, JSON.stringify(result.diagnostics));
+  assert.ok(d.message.includes("store into a `Uint8Array` element"), d.message);
+  assert.ok(d.message.includes("integer-classed"), "the teaching names the working idiom");
+});
+
+test("NS1016: integer-classed byte-element stores still compile (byte reads, masks, literals)", () => {
+  const result = transpile(`
+${core}
+export function build(src: Uint8Array, n: number): Uint8Array {
+  const out = new Uint8Array(src.length + 2);
+  out[0] = 137;
+  for (let i = 0; i < src.length; i++) { out[i + 1] = src[i] & 0xff; }
+  out[src.length + 1] = n & 0xff;
+  return out;
+}
+`);
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics) + result.typeErrors.join("\n"));
+});
+
+test("NS1063: new Uint8Array with an array-literal argument teaches the sized form", () => {
+  const result = transpile(`
+${core}
+export function magic(): Uint8Array {
+  const b = new Uint8Array([137, 80, 78, 71]);
+  return b;
+}
+`);
+  assert.equal(result.ok, false);
+  const d = result.diagnostics.find((x) => x.id === "NS1063");
+  assert.ok(d, JSON.stringify(result.diagnostics));
+  assert.ok(d.message.includes("new Uint8Array(4)") || d.message.includes("b[0] = 137"), "the fix names the sized idiom");
+  assert.ok(d.message.includes("asciiBytes"), "the fix names the text intrinsic");
+});
+
+test("NS1063 stays quiet for the sized constructor plus element stores", () => {
+  const result = transpile(`
+${core}
+export function magic(): Uint8Array {
+  const b = new Uint8Array(4);
+  b[0] = 137; b[1] = 80; b[2] = 78; b[3] = 71;
+  return b;
+}
+`);
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics) + result.typeErrors.join("\n"));
+});

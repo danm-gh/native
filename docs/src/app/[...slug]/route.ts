@@ -4,11 +4,9 @@ import { mdxToCleanMarkdown } from "@/lib/mdx-to-markdown";
 import { siteUrl } from "@/lib/site";
 
 /**
- * Serve every canonical docs page as clean Markdown beside its HTML route, and
- * permanently redirect every legacy root-level HTML/Markdown URL into /docs,
- * including the former /md/<page path> endpoints. All routes are generated
- * from the page.mdx tree at build time, so a newly added page gets its canonical
- * Markdown sibling and every compatibility redirect.
+ * Serve every canonical docs page as clean Markdown beside its HTML route.
+ * Legacy URLs are config redirects so Next can preserve each request's query
+ * string; this route stays fully static and only emits the canonical siblings.
  */
 
 export const dynamic = "force-static";
@@ -26,12 +24,7 @@ export async function generateStaticParams(): Promise<{ slug: string[] }[]> {
       } else if (entry.name === "page.mdx" && slug.length > 0) {
         const markdownSlug = [...slug];
         markdownSlug[markdownSlug.length - 1] += ".md";
-        params.push(
-          { slug: ["docs", ...markdownSlug] },
-          { slug },
-          { slug: markdownSlug },
-          { slug: ["md", ...slug] },
-        );
+        params.push({ slug: ["docs", ...markdownSlug] });
       }
     }
   }
@@ -41,27 +34,7 @@ export async function generateStaticParams(): Promise<{ slug: string[] }[]> {
 
 export async function GET(_request: Request, context: { params: Promise<{ slug: string[] }> }) {
   const { slug } = await context.params;
-  if (slug[0] === "md") {
-    return new Response("Permanent Redirect\n", {
-      status: 308,
-      headers: {
-        Location: `/docs/${slug.slice(1).join("/")}.md`,
-        "Content-Type": "text/plain; charset=utf-8",
-      },
-    });
-  }
-
-  const canonical = slug[0] === "docs";
-  if (!canonical) {
-    return new Response("Permanent Redirect\n", {
-      status: 308,
-      headers: {
-        Location: `/docs/${slug.join("/")}`,
-        "Content-Type": "text/plain; charset=utf-8",
-      },
-    });
-  }
-
+  if (slug[0] !== "docs") return new Response("Not found", { status: 404 });
   const sourceSlug = slug.slice(1);
   const filename = sourceSlug.at(-1);
   if (!filename?.endsWith(".md") || filename === ".md") {

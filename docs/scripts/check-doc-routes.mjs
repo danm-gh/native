@@ -29,15 +29,16 @@ function readRequired(file, route) {
   return readFileSync(file, "utf8");
 }
 
-function assertRedirect(file, destination, route) {
-  const meta = JSON.parse(readRequired(file, route));
-  if (meta.status !== 308 || meta.headers?.location !== destination) {
+const routesManifest = JSON.parse(
+  readRequired(join(distDir, "routes-manifest.json"), "redirect manifest"),
+);
+
+function assertConfiguredRedirect(source, destination) {
+  const redirect = routesManifest.redirects.find((candidate) => candidate.source === source);
+  if (!redirect || redirect.statusCode !== 308 || redirect.destination !== destination) {
     throw new Error(
-      `${route}: expected a 308 redirect to ${destination}, got ${JSON.stringify(meta)}`,
+      `${source}: expected a query-preserving 308 config redirect to ${destination}, got ${JSON.stringify(redirect)}`,
     );
-  }
-  if (readRequired(file.replace(/\.meta$/, ".body"), route).length === 0) {
-    throw new Error(`${route}: zero-byte redirects break Next's prerender cache`);
   }
 }
 
@@ -93,24 +94,19 @@ for (const page of pageFiles) {
     throw new Error(`${canonicalPath}.md: missing its exact canonical HTTP Link header`);
   }
 
-  assertRedirect(
-    join(appOutputDir, `${slug}.meta`),
-    canonicalPath,
-    `/${slug}`,
-  );
-  assertRedirect(
-    join(appOutputDir, `${slug}.md.meta`),
-    `${canonicalPath}.md`,
-    `/${slug}.md`,
-  );
-  assertRedirect(
-    join(appOutputDir, "md", `${slug}.meta`),
-    `${canonicalPath}.md`,
-    `/md/${slug}`,
-  );
+  assertConfiguredRedirect(`/${slug}`, canonicalPath);
+  assertConfiguredRedirect(`/${slug}.md`, `${canonicalPath}.md`);
+  assertConfiguredRedirect(`/md/${slug}`, `${canonicalPath}.md`);
 
-  if (existsSync(join(appOutputDir, `${slug}.html`))) {
-    throw new Error(`/${slug}: legacy URL rendered duplicate HTML instead of redirecting`);
+  for (const legacyOutput of [
+    join(appOutputDir, `${slug}.html`),
+    join(appOutputDir, `${slug}.meta`),
+    join(appOutputDir, `${slug}.md.meta`),
+    join(appOutputDir, "md", `${slug}.meta`),
+  ]) {
+    if (existsSync(legacyOutput)) {
+      throw new Error(`/${slug}: legacy URL was prerendered instead of using its config redirect`);
+    }
   }
 }
 
@@ -143,5 +139,5 @@ for (const url of canonicalMarkdownUrls) {
 }
 
 console.log(
-  `docs route check passed: ${pages} canonical pages, Markdown siblings, and all legacy redirects verified`,
+  `docs route check passed: ${pages} canonical pages, Markdown siblings, and query-preserving legacy redirects verified`,
 );

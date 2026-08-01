@@ -237,6 +237,10 @@ struct WindowsEvent {
      * window was minimized (heartbeat pacing; nothing painted): its
      * timestamp is pacing policy, never a latency endpoint. */
     int occluded;
+    /* The presenter lost its retained device resources. The runtime must
+     * rebuild this completion as a full frame even when the scene itself
+     * is otherwise unchanged. */
+    int force_full_repaint;
     int input_kind;
     int button;
     double delta_x;
@@ -460,6 +464,11 @@ struct NativeView {
      * (its emission carries the nonblank verdict automation reads).
      * Neither can sustain a spin. Cleared when the emission fires. */
     bool gpu_prompt_frame_pending = false;
+    /* One-shot recovery request set by WM_PAINT after Direct2D target
+     * loss. It rides the next frame event and forces a fresh full packet;
+     * scheduling an ordinary idle completion would otherwise skip before
+     * the presenter can reject a patch and request a resync. */
+    bool gpu_force_full_repaint_pending = false;
     uint64_t gpu_last_emit_ns = 0;
     uint64_t gpu_frame_index = 0;
     double gpu_emitted_width = 0;
@@ -2673,6 +2682,7 @@ static void gpuSurfaceEmitFrame(Host *host, NativeView &view, HWND hwnd) {
      * (an armed animation re-requesting) returns to the minimized
      * heartbeat unless another input lands. */
     view.gpu_prompt_frame_pending = false;
+    const bool force_full_repaint = view.gpu_force_full_repaint_pending;
     const double scale = gpuSurfaceScale(hwnd);
     double width = 0;
     double height = 0;
@@ -2705,6 +2715,11 @@ static void gpuSurfaceEmitFrame(Host *host, NativeView &view, HWND hwnd) {
      * timestamp measures the deliberate minimized cadence, not a paint
      * — the runtime skips input-latency stamping for them. */
     event.occluded = gpuSurfaceOccludedPacingActive(host, view) ? 1 : 0;
+    event.force_full_repaint = force_full_repaint ? 1 : 0;
+    /* Clear immediately before the callback: presentation is synchronous
+     * and a new loss reported during that dispatch must survive for the
+     * next event. Geometry failure above keeps the recovery request armed. */
+    view.gpu_force_full_repaint_pending = false;
     emitGpuSurfaceEvent(host, view, event);
 }
 
@@ -3041,9 +3056,10 @@ static LRESULT CALLBACK gpuSurfaceProc(HWND hwnd, UINT message, WPARAM wparam, L
                 if (view->gpu_surface && view->gpu_surface->hasContent()) {
                     if (!view->gpu_surface->paint(paint.rcPaint)) {
                         /* Direct2D resource loss invalidates the retained
-                         * backing. Wake the runtime; its next patch is
-                         * refused and immediately resynced as a full
-                         * keyed present. */
+                         * backing. Wake the runtime and explicitly force a
+                         * full packet: an unchanged scene would otherwise
+                         * plan an idle frame and never call the presenter. */
+                        view->gpu_force_full_repaint_pending = true;
                         view->gpu_prompt_frame_pending = true;
                         gpuSurfaceScheduleFrameEmission(host, *view);
                     }

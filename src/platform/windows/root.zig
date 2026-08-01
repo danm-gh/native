@@ -86,6 +86,9 @@ const WindowsEvent = extern struct {
     /// window was minimized (heartbeat pacing; nothing painted) — its
     /// timestamp is pacing policy, never a latency endpoint.
     occluded: c_int,
+    /// Nonzero when the Direct2D presenter lost its retained resources and
+    /// this completion must rebuild the canvas from a full packet.
+    force_full_repaint: c_int,
     input_kind: c_int,
     button: c_int,
     delta_x: f64,
@@ -656,27 +659,7 @@ fn windowsCallback(context: ?*anyopaque, event: *const WindowsEvent) callconv(.c
             .window_id = event.window_id,
         } }),
         .tray_action => state.emit(.{ .tray_action = event.tray_item_id }),
-        .gpu_surface_frame => state.emit(.{ .gpu_surface_frame = .{
-            .window_id = event.window_id,
-            .label = event.view_label[0..event.view_label_len],
-            .size = geometry.SizeF.init(@floatCast(event.width), @floatCast(event.height)),
-            .scale_factor = @floatCast(event.scale),
-            .frame_index = event.frame_index,
-            .timestamp_ns = event.timestamp_ns,
-            .frame_interval_ns = event.frame_interval_ns,
-            .nonblank = event.nonblank != 0,
-            .sample_color = event.sample_color,
-            .packet_decode_ns = event.packet_decode_ns,
-            .packet_draw_ns = event.packet_draw_ns,
-            .occluded = event.occluded != 0,
-            .backend = if (event.gpu_backend == 1) .direct2d else .software,
-            .pixel_format = .bgra8_unorm,
-            .present_mode = .timer,
-            .alpha_mode = .@"opaque",
-            .color_space = .srgb,
-            .vsync = true,
-            .status = .ready,
-        } }),
+        .gpu_surface_frame => state.emit(.{ .gpu_surface_frame = gpuSurfaceFrameEventFromWindowsEvent(event) }),
         .gpu_surface_resize => state.emit(.{ .gpu_surface_resized = .{
             .window_id = event.window_id,
             .label = event.view_label[0..event.view_label_len],
@@ -704,6 +687,31 @@ fn windowsCallback(context: ?*anyopaque, event: *const WindowsEvent) callconv(.c
         } }),
         .context_menu_action => state.emit(.{ .context_menu_action = contextMenuActionEventFromWindowsEvent(event) }),
     }
+}
+
+fn gpuSurfaceFrameEventFromWindowsEvent(event: *const WindowsEvent) platform_mod.GpuSurfaceFrameEvent {
+    return .{
+        .window_id = event.window_id,
+        .label = event.view_label[0..event.view_label_len],
+        .size = geometry.SizeF.init(@floatCast(event.width), @floatCast(event.height)),
+        .scale_factor = @floatCast(event.scale),
+        .frame_index = event.frame_index,
+        .timestamp_ns = event.timestamp_ns,
+        .frame_interval_ns = event.frame_interval_ns,
+        .nonblank = event.nonblank != 0,
+        .sample_color = event.sample_color,
+        .packet_decode_ns = event.packet_decode_ns,
+        .packet_draw_ns = event.packet_draw_ns,
+        .occluded = event.occluded != 0,
+        .backend = if (event.gpu_backend == 1) .direct2d else .software,
+        .pixel_format = .bgra8_unorm,
+        .present_mode = .timer,
+        .alpha_mode = .@"opaque",
+        .color_space = .srgb,
+        .vsync = true,
+        .status = .ready,
+        .canvas_frame_full_repaint = event.force_full_repaint != 0,
+    };
 }
 
 /// Pure event mapping (no host calls), unit-testable on every build
@@ -1762,6 +1770,25 @@ test "windows supports native container and control kinds" {
     try std.testing.expect(isSupportedNativeViewKind(.icon_button));
     try std.testing.expect(isSupportedNativeViewKind(.list_item));
     try std.testing.expect(isSupportedNativeViewKind(.gpu_surface));
+}
+
+test "windows GPU frame maps Direct2D recovery to a full repaint" {
+    const label = "canvas";
+    var event = std.mem.zeroes(WindowsEvent);
+    event.window_id = 7;
+    event.view_label = label.ptr;
+    event.view_label_len = label.len;
+    event.width = 640;
+    event.height = 360;
+    event.scale = 2;
+    event.gpu_backend = 1;
+    event.force_full_repaint = 1;
+
+    const frame = gpuSurfaceFrameEventFromWindowsEvent(&event);
+    try std.testing.expectEqual(@as(platform_mod.WindowId, 7), frame.window_id);
+    try std.testing.expectEqualStrings(label, frame.label);
+    try std.testing.expectEqual(platform_mod.GpuSurfaceBackend.direct2d, frame.backend);
+    try std.testing.expect(frame.canvas_frame_full_repaint);
 }
 
 test "windows gpu surface input preserves key and text" {

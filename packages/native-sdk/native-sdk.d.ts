@@ -178,7 +178,7 @@ export type NativeSdkViewKind =
   | "progress_indicator"
   | "progressIndicator";
 
-export type NativeSdkGpuSurfaceBackend = "none" | "metal";
+export type NativeSdkGpuSurfaceBackend = "none" | "metal" | "direct2d" | "software";
 export type NativeSdkGpuSurfacePixelFormat = "none" | "bgra8_unorm";
 export type NativeSdkGpuSurfacePresentMode = "none" | "timer";
 export type NativeSdkGpuSurfaceAlphaMode = "none" | "opaque" | "premultiplied";

@@ -404,8 +404,8 @@ jobs:
             exit 1
           fi
       # Cross-compiles ui-inbox for x86_64-windows-gnu and drives the
-      # gpu_surface software path (child HWND + WM_TIMER + SetDIBitsToDevice)
-      # under Wine: snapshot ready, gpu_backend=software, gpu_nonblank=true,
+      # retained Direct2D packet path (child HWND + WM_TIMER) under Wine:
+      # snapshot ready, gpu_backend=direct2d, gpu_nonblank=true,
       # automation widget-click, and real XTEST pointer/keyboard input.
       # Wineprefix init happens inline in the script (measured 21s from
       # scratch in an ubuntu-24.04 container, so no cache step).

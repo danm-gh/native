@@ -1025,6 +1025,13 @@ private:
         image_bitmaps_.clear();
     }
 
+    void releaseImageBitmap(uint64_t id) {
+        auto found = image_bitmaps_.find(id);
+        if (found == image_bitmaps_.end()) return;
+        releaseCom(found->second.bitmap);
+        image_bitmaps_.erase(found);
+    }
+
     void releaseDeviceResources(bool drop_retained) {
         releaseImageBitmaps();
         releaseCom(blur_snapshot_);
@@ -1256,12 +1263,18 @@ private:
             parameters.maskAntialiasMode = D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
             parameters.opacity = 1.0f;
             backing_target_->PushLayer(parameters, layer);
+        } else if (command.image.fit == 2) {
+            /* Cover expands one destination axis past the requested frame.
+             * A zero-radius image still has a rectangular destination mask;
+             * without this clip the expanded bitmap paints over siblings. */
+            backing_target_->PushAxisAlignedClip(d2dRect(requested), D2D1_ANTIALIAS_MODE_ALIASED);
         }
         backing_target_->DrawBitmap(bitmap, d2dRect(destination),
             clamp01(command.opacity * command.image.opacity),
             command.image.sampling == 0 ? D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR : D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
             d2dRect(source));
         if (layer) backing_target_->PopLayer();
+        else if (command.image.fit == 2) backing_target_->PopAxisAlignedClip();
         releaseCom(layer);
         releaseCom(mask);
         return true;
@@ -1374,22 +1387,27 @@ private:
 
     bool drawShadow(const Command &command) {
         const Effect &effect = command.effect;
-        const unsigned steps = effect.blur > 0.25f ? 12u : 1u;
+        const float blur = std::max(0.0f, effect.blur);
+        const unsigned steps = blur > 0.25f ? 12u : 1u;
         float weight_sum = 0;
         for (unsigned index = 0; index < steps; ++index) weight_sum += static_cast<float>(index + 1);
         for (unsigned index = 0; index < steps; ++index) {
             const float inward = static_cast<float>(index + 1) / static_cast<float>(steps);
-            const float expansion = std::max(0.0f, effect.spread) + effect.blur * (1.0f - inward);
+            /* Spread is signed: negative values inset the shadow caster
+             * before the blur halo expands it. The default card/overlay
+             * tokens depend on that contraction. */
+            const float expansion = effect.spread + blur * (1.0f - inward);
             Rect rect = normalized(effect.rect);
             rect.x += effect.offset.x - expansion;
             rect.y += effect.offset.y - expansion;
             rect.width += expansion * 2;
             rect.height += expansion * 2;
+            if (rect.width <= 0 || rect.height <= 0) continue;
             Radius radius = effect.radius;
-            radius.top_left += expansion;
-            radius.top_right += expansion;
-            radius.bottom_right += expansion;
-            radius.bottom_left += expansion;
+            radius.top_left = std::max(0.0f, radius.top_left + expansion);
+            radius.top_right = std::max(0.0f, radius.top_right + expansion);
+            radius.bottom_right = std::max(0.0f, radius.bottom_right + expansion);
+            radius.bottom_left = std::max(0.0f, radius.bottom_left + expansion);
             ID2D1PathGeometry *geometry = nullptr;
             ID2D1SolidColorBrush *brush = nullptr;
             Color layer_color = effect.color;
@@ -1585,6 +1603,15 @@ private:
             else next.erase(meta.id);
         }
         image_cache_ = std::move(next);
+        /* The renderer-wide remove releases the shared pixels, but each
+         * surface owns its own Direct2D bitmap. Eviction must drop that COM
+         * resource too so lifetime registration churn stays high-water
+         * bounded rather than retaining one texture per historical id. */
+        for (const ImageAction &action : packet.image_actions) {
+            if (action.kind == 2 && image_cache_.find(action.id) == image_cache_.end()) {
+                releaseImageBitmap(action.id);
+            }
+        }
         return true;
     }
 

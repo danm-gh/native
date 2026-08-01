@@ -48,6 +48,10 @@ const canonicalPaths = new Set(
     return `/docs/${slug}`;
   }),
 );
+const canonicalUrls = new Set([...canonicalPaths].map((route) => `${siteUrl}${route}`));
+const canonicalMarkdownUrls = new Set(
+  [...canonicalPaths].map((route) => `${siteUrl}${route}.md`),
+);
 let pages = 0;
 
 for (const page of pageFiles) {
@@ -85,6 +89,9 @@ for (const page of pageFiles) {
   ) {
     throw new Error(`${canonicalPath}.md: expected a static text/markdown response`);
   }
+  if (markdownMeta.headers?.link !== `<${canonicalUrl}>; rel="canonical"`) {
+    throw new Error(`${canonicalPath}.md: missing its exact canonical HTTP Link header`);
+  }
 
   assertRedirect(
     join(appOutputDir, `${slug}.meta`),
@@ -96,6 +103,11 @@ for (const page of pageFiles) {
     `${canonicalPath}.md`,
     `/${slug}.md`,
   );
+  assertRedirect(
+    join(appOutputDir, "md", `${slug}.meta`),
+    `${canonicalPath}.md`,
+    `/md/${slug}`,
+  );
 
   if (existsSync(join(appOutputDir, `${slug}.html`))) {
     throw new Error(`/${slug}: legacy URL rendered duplicate HTML instead of redirecting`);
@@ -105,20 +117,31 @@ for (const page of pageFiles) {
 if (pages === 0) throw new Error("no docs page.mdx files found");
 
 const sitemap = readRequired(join(appOutputDir, "sitemap.xml.body"), "/sitemap.xml");
+const sitemapUrls = new Set([...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1]));
 for (const match of sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)) {
   const url = match[1];
-  if (url !== `${siteUrl}/` && !url?.startsWith(`${siteUrl}/docs/`)) {
-    throw new Error(`/sitemap.xml: legacy documentation URL ${url}`);
+  if (url !== `${siteUrl}/` && !canonicalUrls.has(url)) {
+    throw new Error(`/sitemap.xml: non-canonical documentation URL ${url}`);
   }
+}
+for (const url of canonicalUrls) {
+  if (!sitemapUrls.has(url)) throw new Error(`/sitemap.xml: missing canonical page ${url}`);
 }
 
 const llms = readRequired(join(appOutputDir, "llms.txt.body"), "/llms.txt");
+const llmsUrls = new Set();
 for (const line of llms.split("\n")) {
-  if (line.startsWith("- [") && !line.includes(`](${siteUrl}/docs/`)) {
+  if (!line.startsWith("- [")) continue;
+  const url = line.match(/^- \[[^\]]+\]\(([^)]+)\)$/)?.[1];
+  if (!url || !canonicalMarkdownUrls.has(url)) {
     throw new Error(`/llms.txt: non-canonical documentation link: ${line}`);
   }
+  llmsUrls.add(url);
+}
+for (const url of canonicalMarkdownUrls) {
+  if (!llmsUrls.has(url)) throw new Error(`/llms.txt: missing canonical page ${url}`);
 }
 
 console.log(
-  `docs route check passed: ${pages} canonical pages, Markdown siblings, and legacy redirect pairs verified`,
+  `docs route check passed: ${pages} canonical pages, Markdown siblings, and all legacy redirects verified`,
 );

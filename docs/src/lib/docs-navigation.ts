@@ -110,10 +110,30 @@ const unprefixedNavSections: NavSection[] = [
   },
 ];
 
-/** All public docs links use the canonical /docs route space. */
-export const navSections: NavSection[] = unprefixedNavSections.map((section) => ({
-  ...section,
-  items: section.items.map((item) => ({ ...item, href: `${docsPath}${item.href}` })),
-}));
+// Canonical pages that remain searchable and model-discoverable without
+// taking a permanent slot in the human navigation. The built-in overview is
+// a compatibility page that points readers into the component catalog.
+const unprefixedAdditionalDocsSections: NavSection[] = [
+  {
+    title: "Additional Guides",
+    items: [{ name: "Built-in Components", href: "/built-in-components" }],
+  },
+];
 
-export const allDocsPages: NavItem[] = navSections.flatMap((s) => s.items);
+function withDocsPrefix(sections: NavSection[]): NavSection[] {
+  return sections.map((section) => ({
+    ...section,
+    items: section.items.map((item) => ({ ...item, href: `${docsPath}${item.href}` })),
+  }));
+}
+
+/** All public docs links use the canonical /docs route space. */
+export const navSections: NavSection[] = withDocsPrefix(unprefixedNavSections);
+
+/** Complete canonical inventory for search, sitemap, and model discovery. */
+export const docsIndexSections: NavSection[] = [
+  ...navSections,
+  ...withDocsPrefix(unprefixedAdditionalDocsSections),
+];
+
+export const allDocsPages: NavItem[] = docsIndexSections.flatMap((s) => s.items);

@@ -791,6 +791,8 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
                         std.mem.eql(u8, attribute.name, "editable") or
                         std.mem.eql(u8, attribute.name, "on-input") or
                         std.mem.eql(u8, attribute.name, "line-numbers") or
+                        std.mem.eql(u8, attribute.name, "added-lines") or
+                        std.mem.eql(u8, attribute.name, "removed-lines") or
                         std.mem.eql(u8, attribute.name, "wrap") or
                         std.mem.eql(u8, attribute.name, "width") or
                         std.mem.eql(u8, attribute.name, "height") or
@@ -815,6 +817,8 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
             };
 
             var options: Ui.CodeOptions = .{};
+            var added_lines_storage: [canvas.code.max_diff_lines]usize = undefined;
+            var removed_lines_storage: [canvas.code.max_diff_lines]usize = undefined;
             if (comptime (node.attr("language") != null)) {
                 const name = comptime blk: {
                     const expression = markup.parseAttrExpression(node.attr("language").?) orelse fail(node, markup.code_language_message);
@@ -826,6 +830,20 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
             }
             if (comptime (node.attr("line-numbers") != null)) {
                 options.line_numbers = videoFlagValue(node, entries, comptime node.attr("line-numbers").?, ui, model, scope);
+            }
+            if (comptime (node.attr("added-lines") != null)) {
+                const spec = codeLineSpecAttr(node, entries, comptime node.attr("added-lines").?, ui, model, scope);
+                options.added_lines = canvas.code.parseLineNumberSpec(spec, &added_lines_storage) orelse blk: {
+                    ui.failed = true;
+                    break :blk added_lines_storage[0..0];
+                };
+            }
+            if (comptime (node.attr("removed-lines") != null)) {
+                const spec = codeLineSpecAttr(node, entries, comptime node.attr("removed-lines").?, ui, model, scope);
+                options.removed_lines = canvas.code.parseLineNumberSpec(spec, &removed_lines_storage) orelse blk: {
+                    ui.failed = true;
+                    break :blk removed_lines_storage[0..0];
+                };
             }
             if (comptime (node.attr("editable") != null)) {
                 options.editable = videoFlagValue(node, entries, comptime node.attr("editable").?, ui, model, scope);
@@ -861,6 +879,16 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
                 options.global_key = attrKey(node, entries, comptime node.attr("global-key").?, ui, model, scope, "keys must be integers or strings");
             }
             return ui.code(options, source);
+        }
+
+        fn codeLineSpecAttr(comptime node: markup.MarkupNode, comptime entries: []const ScopeEntry, comptime raw: []const u8, ui: *Ui, model: *const ModelT, scope: anytype) []const u8 {
+            const expression = comptime (markup.parseAttrExpression(raw) orelse fail(node, markup.code_diff_lines_message));
+            if (comptime expression == .literal) return expression.literal;
+            comptime requireVariant(exprVariant(node, entries, raw), &.{.string}, node, markup.code_diff_lines_message);
+            return switch (evalExpr(node, entries, raw, ui, model, scope)) {
+                .string => |text| text,
+                else => runtimeFail([]const u8, ui),
+            };
         }
 
         fn markdownLinkConstructor(comptime node: markup.MarkupNode, comptime raw: []const u8) Ui.LinkMsgFn {

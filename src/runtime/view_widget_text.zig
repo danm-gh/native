@@ -1378,7 +1378,9 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             self.widget_layout_nodes[edited_index].widget.text_selection = next_state.selection;
             self.widget_layout_nodes[edited_index].widget.text_composition = next_state.composition;
             if (text_changed) {
-                self.widget_layout_nodes[edited_index].widget.code_content_width_generation = 0;
+                if (!self.widget_layout_nodes[edited_index].widget.hasCodeDiff()) {
+                    self.widget_layout_nodes[edited_index].widget.code_content_width_generation = 0;
+                }
                 canvas.cacheTextInputContentWidthForWidget(
                     &self.widget_layout_nodes[edited_index].widget,
                     self.widget_tokens,

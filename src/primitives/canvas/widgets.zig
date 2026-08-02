@@ -264,6 +264,13 @@ pub const WidgetState = struct {
     invalid: bool = false,
 };
 
+/// Two 128-line masks for code-only diff presentation. `Widget` packs them
+/// into fields dormant on decorated code so ordinary widgets do not grow.
+pub const CodeDiffLines = struct {
+    added: u128,
+    removed: u128,
+};
+
 pub const WidgetRenderState = struct {
     /// Whether the app is active and this widget tree's window is key.
     /// Runtime focus ids stay retained while false so focus-visible
@@ -875,6 +882,8 @@ pub const Widget = struct {
     /// retained text, so selection/copy remains the exact source bytes.
     /// Stamped only by `Ui.code`; there is no generic builder/markup
     /// channel for turning arbitrary paragraphs into numbered code.
+    /// Bit 7 is an internal diff-metadata tag; `codeLineNumberDigits`
+    /// exposes only the authored digit count.
     code_line_number_digits: u8 = 0,
     /// Optional one-based logical depth for a flat sequence of tree rows.
     /// Zero keeps the structural nesting contract. A nonzero value lets a
@@ -1067,6 +1076,41 @@ pub const Widget = struct {
     /// serialization, or equality decisions.
     group_segment: WidgetGroupSegment = .none,
     children: []const Widget = &.{},
+
+    pub fn codeLineNumberDigits(self: Widget) u8 {
+        return self.code_line_number_digits & 0x7f;
+    }
+
+    pub fn hasCodeDiff(self: Widget) bool {
+        return self.code_line_number_digits & 0x80 != 0;
+    }
+
+    /// Code-only metadata occupies the otherwise unused no-wrap width-cache
+    /// words plus the ungrouped static-text offset. The high bit above tags
+    /// the union. This keeps Widget's common footprint unchanged; a diff
+    /// editor simply measures its longest line on demand instead of caching.
+    pub fn codeDiffLines(self: Widget) ?CodeDiffLines {
+        if (!self.hasCodeDiff()) return null;
+        const removed_low = @as(u64, @as(u32, @bitCast(self.code_content_width))) |
+            (@as(u64, self.code_content_width_size_bits) << 32);
+        return .{
+            .added = @as(u128, self.code_content_width_generation) |
+                (@as(u128, self.code_content_width_font_id) << 64),
+            .removed = @as(u128, removed_low) |
+                (@as(u128, self.static_text_group_offset) << 64),
+        };
+    }
+
+    pub fn setCodeDiffLines(self: *Widget, lines: CodeDiffLines) void {
+        std.debug.assert(self.static_text_group_id == 0);
+        self.code_line_number_digits |= 0x80;
+        self.code_content_width_generation = @truncate(lines.added);
+        self.code_content_width_font_id = @truncate(lines.added >> 64);
+        const removed_low: u64 = @truncate(lines.removed);
+        self.code_content_width = @bitCast(@as(u32, @truncate(removed_low)));
+        self.code_content_width_size_bits = @truncate(removed_low >> 32);
+        self.static_text_group_offset = @truncate(lines.removed >> 64);
+    }
 };
 
 pub const BuiltinComponentOptions = struct {

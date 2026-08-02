@@ -114,17 +114,22 @@ pub fn widgetTextSpanLayoutOptions(widget: Widget, tokens: DesignTokens, max_wid
 
 const min_code_line_number_digits: usize = 3;
 
-/// Width reserved before a numbered code paragraph: at least three muted
-/// monospace marker columns (or the largest marker when it is wider) plus
-/// the component's fixed marker-to-source gap. Marker bytes never live in
-/// `Widget.text`; paint selects them from a compile-time table.
+/// Width reserved before a decorated code paragraph: numbered blocks keep
+/// at least three muted monospace columns, while a diff without numbers
+/// keeps one +/- column. Marker bytes never live in `Widget.text`; paint
+/// selects them from a compile-time table.
 pub fn widgetCodeLineNumberGutterWidth(widget: Widget, tokens: DesignTokens) f32 {
-    if (widget.code_line_number_digits == 0) return 0;
+    const has_diff = widget.hasCodeDiff();
+    const line_number_digits = widget.codeLineNumberDigits();
+    if (line_number_digits == 0 and !has_diff) return 0;
     const zeros: [20]u8 = @splat('0');
-    const digits = @min(
-        @max(@as(usize, widget.code_line_number_digits), min_code_line_number_digits),
-        zeros.len,
-    );
+    const digits = if (line_number_digits == 0)
+        1
+    else
+        @min(
+            @max(@as(usize, line_number_digits), min_code_line_number_digits),
+            zeros.len,
+        );
     return text_model.measureTextWidthForFont(
         tokens.text_measure,
         tokens.typography.mono_font_id,

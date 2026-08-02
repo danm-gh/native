@@ -1038,6 +1038,38 @@ test "geist primary tabs use the measured row while house tabs remain unchanged"
         else => return error.TestUnexpectedResult,
     }
 
+    // Full-width is a minimum, not a cap. A deliberately wider Geist
+    // strip inside a horizontal viewport retains its authored overflow,
+    // including when the strip clips its own trigger content: the rail and
+    // the scroll semantics must cover the full scrollable width.
+    var wide_strip = nested_strip;
+    wide_strip.frame.width = 480;
+    wide_strip.layout.clip_content = true;
+    const wide_scroll_children = [_]Widget{wide_strip};
+    const wide_scroll = Widget{
+        .id = 7,
+        .kind = .scroll_view,
+        .frame = geometry.RectF.init(0, 0, 240, 50),
+        .scroll_axes = .horizontal,
+        .layout = .{ .clip_content = true },
+        .children = &wide_scroll_children,
+    };
+    var wide_scroll_nodes: [5]WidgetLayoutNode = undefined;
+    const wide_scroll_layout = try layoutWidgetTreeWithTokens(wide_scroll, wide_scroll.frame, geist, &wide_scroll_nodes);
+    try std.testing.expectEqual(@as(f32, 480), wide_scroll_layout.findById(1).?.frame.width);
+    var wide_scroll_commands: [32]CanvasCommand = undefined;
+    var wide_scroll_builder = Builder.init(&wide_scroll_commands);
+    try wide_scroll_layout.emitDisplayList(&wide_scroll_builder, geist);
+    switch (wide_scroll_builder.displayList().findCommandById(widgetPartId(1, 2)).?.command) {
+        .fill_rect => |rail| try std.testing.expectEqual(@as(f32, 480), rail.rect.width),
+        else => return error.TestUnexpectedResult,
+    }
+    var wide_scroll_semantics_buffer: [5]WidgetSemanticsNode = undefined;
+    const wide_scroll_semantics = try wide_scroll_layout.collectSemantics(&wide_scroll_semantics_buffer);
+    try std.testing.expect(wide_scroll_semantics[0].scroll.present);
+    try std.testing.expectEqual(@as(f32, 240), wide_scroll_semantics[0].scroll.viewport_extent);
+    try std.testing.expectEqual(@as(f32, 480), wide_scroll_semantics[0].scroll.content_extent);
+
     // Flow layout keeps the same contract. The row + growing spacer is
     // the common theme-agnostic shape used to make the house strip hug;
     // Geist gives the TabsList first claim on the row's flexible width,

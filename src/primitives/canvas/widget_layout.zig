@@ -1652,7 +1652,12 @@ fn stackChildFrame(content: geometry.RectF, child: Widget, tokens: DesignTokens)
     // remains the author escape hatch for a deliberately bounded strip.
     if (primaryUnderlineTabsFillWidth(child, tokens)) {
         frame.width = clampIntrinsicAxis(
-            @max(0, content.maxX() - frame.x),
+            // Full-width is a floor, not a replacement for authored
+            // overflow. A tab strip wider than a horizontal scroll
+            // viewport must keep that width so its rail and clipped
+            // trigger content remain reachable; only the narrow house
+            // hug grows to the containing width.
+            @max(frame.width, @max(0, content.maxX() - frame.x)),
             child.layout.min_size.width,
             child.layout.max_size.width,
         );

@@ -359,6 +359,11 @@ pub const WidgetAnchor = struct {
 
 pub const WidgetLayoutStyle = struct {
     padding: geometry.InsetsF = .{},
+    /// True when the widget-kind defaults supplied `padding`. Layout
+    /// resolution uses this provenance to translate a house default onto
+    /// another theme register without mistaking an equal author value for
+    /// the default. Author-created styles leave this false.
+    padding_is_kind_default: bool = false,
     gap: f32 = 0,
     grow: f32 = 0,
     main_alignment: WidgetMainAlignment = .start,
@@ -1508,6 +1513,7 @@ fn mergeLayoutDefaults(explicit: WidgetLayoutStyle, defaults: WidgetLayoutStyle)
         explicit.padding.bottom == 0 and explicit.padding.left == 0)
     {
         merged.padding = defaults.padding;
+        merged.padding_is_kind_default = true;
     }
     if (explicit.gap == 0) merged.gap = defaults.gap;
     if (explicit.cross_alignment == .stretch) merged.cross_alignment = defaults.cross_alignment;

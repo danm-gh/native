@@ -771,6 +771,7 @@ fn widgetStatesEqual(a: WidgetState, b: WidgetState) bool {
 
 fn widgetLayoutStylesEqual(a: WidgetLayoutStyle, b: WidgetLayoutStyle) bool {
     return insetsEqual(a.padding, b.padding) and
+        a.padding_is_kind_default == b.padding_is_kind_default and
         a.gap == b.gap and
         a.grow == b.grow and
         a.main_alignment == b.main_alignment and

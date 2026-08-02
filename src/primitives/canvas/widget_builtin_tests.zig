@@ -959,6 +959,7 @@ test "geist primary tabs use the measured row while house tabs remain unchanged"
         .frame = geometry.RectF.init(0, 0, 240, 50),
         .children = &triggers,
     });
+    try std.testing.expect(strip.layout.padding_is_kind_default);
 
     const geist = DesignTokens.theme(.{ .pack = .geist });
     var geist_nodes: [4]WidgetLayoutNode = undefined;
@@ -987,6 +988,22 @@ test "geist primary tabs use the measured row while house tabs remain unchanged"
         else => return error.TestUnexpectedResult,
     }
     try std.testing.expect(list.findCommandById(widgetPartId(4, 5)) != null or list.findCommandById(widgetPartId(4, 6)) != null);
+
+    // A numerically identical 3px author inset is not the builder
+    // default. Geist preserves it instead of translating it to the
+    // underline register's zero inset.
+    const explicitly_padded_strip = builtinComponentWidget(.tabs, .{
+        .id = 11,
+        .frame = geometry.RectF.init(0, 0, 240, 50),
+        .layout = .{ .padding = geometry.InsetsF.all(3) },
+        .children = &triggers,
+    });
+    try std.testing.expect(!explicitly_padded_strip.layout.padding_is_kind_default);
+    var explicitly_padded_nodes: [4]WidgetLayoutNode = undefined;
+    const explicitly_padded_layout = try layoutWidgetTreeWithTokens(explicitly_padded_strip, explicitly_padded_strip.frame, geist, &explicitly_padded_nodes);
+    try std.testing.expectEqual(@as(f32, 3), explicitly_padded_layout.nodes[1].frame.x);
+    try std.testing.expectEqual(@as(f32, 3), explicitly_padded_layout.nodes[1].frame.y);
+    try std.testing.expectEqual(@as(f32, 44), explicitly_padded_layout.nodes[1].frame.height);
 
     // The identical authored tree under the default register retains
     // its canonical 3px pill hug, 32px trigger, 13px label, and gap 0.
@@ -1037,6 +1054,15 @@ test "geist primary tabs use the measured row while house tabs remain unchanged"
         .fill_rounded_rect => |pill| try std.testing.expectEqual(@as(f32, 148), pill.rect.width),
         else => return error.TestUnexpectedResult,
     }
+
+    // Underline paint does not imply Geist's width:100% policy. A
+    // custom underline theme must opt into that layout metric, otherwise
+    // the same authored strip keeps its 148px hug.
+    var custom_underline = DesignTokens{};
+    custom_underline.controls.tabs_indicator = .underline;
+    var nested_custom_nodes: [5]WidgetLayoutNode = undefined;
+    const nested_custom = try layoutWidgetTreeWithTokens(host, host.frame, custom_underline, &nested_custom_nodes);
+    try std.testing.expectEqual(@as(f32, 148), nested_custom.nodes[1].frame.width);
 
     // Full-width is a minimum, not a cap. A deliberately wider Geist
     // strip inside a horizontal viewport retains its authored overflow,
@@ -1092,6 +1118,11 @@ test "geist primary tabs use the measured row while house tabs remain unchanged"
     const row_house = try layoutWidgetTreeWithTokens(row_host, row_host.frame, house, &row_house_nodes);
     try std.testing.expectEqual(@as(f32, 148), row_house.nodes[1].frame.width);
     try std.testing.expectEqual(@as(f32, 204), row_house.nodes[5].frame.width);
+
+    var row_custom_nodes: [6]WidgetLayoutNode = undefined;
+    const row_custom = try layoutWidgetTreeWithTokens(row_host, row_host.frame, custom_underline, &row_custom_nodes);
+    try std.testing.expectEqual(@as(f32, 148), row_custom.nodes[1].frame.width);
+    try std.testing.expectEqual(@as(f32, 204), row_custom.nodes[5].frame.width);
 
     // Anchored primary tabs consume no flow allocation, including the
     // second pass that totals clamped fill widths. The bounded flow tab
@@ -1979,7 +2010,12 @@ test "built-in component factory applies house composite defaults" {
         .layout = .{ .gap = 4 },
     });
     try std.testing.expectEqual(@as(f32, 3), custom_tabs.layout.padding.top);
+    try std.testing.expect(custom_tabs.layout.padding_is_kind_default);
     try std.testing.expectEqual(@as(f32, 4), custom_tabs.layout.gap);
+    const explicitly_padded_tabs = builtinComponentWidget(.tabs, .{
+        .layout = .{ .padding = geometry.InsetsF.all(3) },
+    });
+    try std.testing.expect(!explicitly_padded_tabs.layout.padding_is_kind_default);
     const padded_card = builtinComponentWidget(.card, .{
         .layout = .{ .padding = geometry.InsetsF.all(8) },
     });

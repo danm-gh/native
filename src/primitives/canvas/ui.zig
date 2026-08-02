@@ -3572,7 +3572,10 @@ pub fn Ui(comptime Msg: type) type {
         /// default gap. Explicit spacing always wins for its own field.
         fn applyKindDefaultLayout(kind: WidgetKind, options: ElementOptions, layout: *canvas.WidgetLayoutStyle) void {
             const defaults = canvas.widgetKindDefaultLayout(kind, options.size) orelse return;
-            if (options.padding == 0) layout.padding = defaults.padding;
+            if (options.padding == 0) {
+                layout.padding = defaults.padding;
+                layout.padding_is_kind_default = true;
+            }
             if (options.gap == 0) layout.gap = defaults.gap;
             if (layout.cross_alignment == .stretch and defaults.cross_alignment != .stretch) {
                 layout.cross_alignment = defaults.cross_alignment;

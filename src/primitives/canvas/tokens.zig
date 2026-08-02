@@ -579,6 +579,11 @@ pub const ControlMetricTokens = struct {
     /// around its content, no outer list inset, and a one-step lift from
     /// the label type rung (13 -> 14 in the Geist pack).
     tabs_list_inset: f32 = 0,
+    /// Whether a primary `.underline` TabsList expands across its parent.
+    /// Underline styling alone does not imply this layout policy: packs
+    /// opt in explicitly, so a custom underline theme keeps the authored
+    /// hug width unless it requests the full-width ruled-row treatment.
+    tabs_list_full_width: bool = false,
     tabs_trigger_height: f32 = 50,
     tabs_trigger_inset: f32 = 2,
     tabs_label_size_step: f32 = 1,
@@ -1392,6 +1397,7 @@ pub const ControlMetricTokenOverrides = struct {
     slider_thumb_height: ?f32 = null,
     tabs_indicator_thickness: ?f32 = null,
     tabs_list_inset: ?f32 = null,
+    tabs_list_full_width: ?bool = null,
     tabs_trigger_height: ?f32 = null,
     tabs_trigger_inset: ?f32 = null,
     tabs_label_size_step: ?f32 = null,

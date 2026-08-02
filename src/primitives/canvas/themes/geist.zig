@@ -100,6 +100,7 @@ pub fn designTokens(color_scheme: ColorScheme, contrast: ColorContrast) DesignTo
             // only by the underline register, so house tabs keep their
             // existing control ladder and 3px container hug.
             .tabs_list_inset = 0,
+            .tabs_list_full_width = true,
             .tabs_trigger_height = 50,
             .tabs_trigger_inset = 2,
             .tabs_label_size_step = 1,

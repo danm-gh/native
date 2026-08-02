@@ -445,9 +445,20 @@ fn layoutTabsChildren(
 ) Error!void {
     const style = tabsLayoutStyle(widget, tokens);
     if (tokens.controls.tabs_indicator == .underline) {
-        return layoutAxisChildrenMode(widget.children, content, .horizontal, parent_index, depth, output, len, style, tokens, true, true);
+        if (underlineTabsFillWidth(tokens)) {
+            return layoutAxisChildrenMode(widget.children, content, .horizontal, parent_index, depth, output, len, style, tokens, true, true);
+        }
+        return layoutAxisChildrenMode(widget.children, content, .horizontal, parent_index, depth, output, len, style, tokens, false, true);
     }
     return layoutAxisChildrenMode(widget.children, content, .horizontal, parent_index, depth, output, len, style, tokens, false, false);
+}
+
+/// Full-width underline tabs are an explicit pack layout policy, not a
+/// consequence of choosing underline paint. This keeps custom underline
+/// themes content-hugging unless they opt into the ruled-row geometry.
+fn underlineTabsFillWidth(tokens: DesignTokens) bool {
+    return tokens.controls.tabs_indicator == .underline and
+        tokens.metrics.tabs_list_full_width;
 }
 
 /// Geist's primary TabsList is a width:100% ruled row. The authored
@@ -457,7 +468,7 @@ fn layoutTabsChildren(
 fn primaryUnderlineTabsFillWidth(widget: Widget, tokens: DesignTokens) bool {
     return widget.kind == .tabs and
         (widget.variant == .default or widget.variant == .primary) and
-        tokens.controls.tabs_indicator == .underline;
+        underlineTabsFillWidth(tokens);
 }
 
 /// A non-growing primary underline TabsList gets first claim on a row's
@@ -470,17 +481,15 @@ fn axisChildImplicitlyFillsWidth(widget: Widget) bool {
         (widget.variant == .default or widget.variant == .primary);
 }
 
-/// The builder stamps the house TabsList's canonical 3px hug before it
-/// knows which runtime theme pack will paint the tree. When the resolved
-/// register is underline, translate that canonical default to the
-/// underline register's own inset (0 for Geist). Any genuinely custom
-/// padding remains author-owned. The pill arm returns the stored padding
-/// byte-for-byte, preserving the default theme's layout.
+/// The builder stamps the house TabsList's canonical hug before it knows
+/// which runtime theme pack will paint the tree. When the resolved
+/// register is underline, translate only that recorded kind default to
+/// the underline register's own inset (0 for Geist). Numerically equal
+/// author padding remains author-owned. The pill arm returns the stored
+/// padding byte-for-byte, preserving the default theme's layout.
 fn tabsLayoutPadding(widget: Widget, tokens: DesignTokens) geometry.InsetsF {
     if (tokens.controls.tabs_indicator != .underline) return widget.layout.padding;
-    const padding = widget.layout.padding;
-    const canonical = widget_model.tabs_list_inset;
-    if (padding.top != canonical or padding.right != canonical or padding.bottom != canonical or padding.left != canonical) return padding;
+    if (!widget.layout.padding_is_kind_default) return widget.layout.padding;
     return geometry.InsetsF.all(underlineTabsListInset(tokens));
 }
 
@@ -495,7 +504,7 @@ fn layoutAxisChildren(
     style: WidgetLayoutStyle,
     tokens: DesignTokens,
 ) Error!void {
-    if (axis == .horizontal and tokens.controls.tabs_indicator == .underline) {
+    if (axis == .horizontal and underlineTabsFillWidth(tokens)) {
         return layoutAxisChildrenMode(children, content, axis, parent_index, depth, output, len, style, tokens, true, false);
     }
     return layoutAxisChildrenMode(children, content, axis, parent_index, depth, output, len, style, tokens, false, false);
@@ -907,7 +916,7 @@ fn wrappedVerticalExtentForWidth(widget: Widget, width: f32, tokens: DesignToken
 /// so wrapped heights inside rows (blockquotes, list items) are computed
 /// against real widths.
 fn rowChildWidth(row: Widget, available_width: f32, index: usize, tokens: DesignTokens) f32 {
-    if (tokens.controls.tabs_indicator == .underline) {
+    if (underlineTabsFillWidth(tokens)) {
         return rowChildWidthMode(row, available_width, index, tokens, true);
     }
     return rowChildWidthMode(row, available_width, index, tokens, false);

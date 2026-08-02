@@ -1008,6 +1008,7 @@ pub fn build(b: *std.Build) void {
         .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "releaseImageBitmap(action.id)" },
         .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "resumeAndDrawBlur" },
         .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "blur_snapshot_->CopyFromBitmap" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "command.effect.blur * transformScale(command.transform)" },
         .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "view->gpu_force_full_repaint_pending = true" },
         .{ .path = "src/platform/windows/root.zig", .pattern = ".canvas_frame_full_repaint = event.force_full_repaint != 0" },
         .{ .path = ".github/scripts/windows-canvas-smoke.sh", .pattern = "gpu_backend=direct2d" },

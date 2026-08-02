@@ -112,6 +112,21 @@ struct Affine {
     float ty = 0;
 };
 
+constexpr float maxTransformAxisLengthSquared(const Affine &matrix) {
+    const float x_scale_squared = matrix.a * matrix.a + matrix.b * matrix.b;
+    const float y_scale_squared = matrix.c * matrix.c + matrix.d * matrix.d;
+    return x_scale_squared > y_scale_squared ? x_scale_squared : y_scale_squared;
+}
+
+static float transformScale(const Affine &matrix) {
+    return std::max(0.0001f, std::sqrt(maxTransformAxisLengthSquared(matrix)));
+}
+
+static_assert(maxTransformAxisLengthSquared(Affine{2, 0, 0, 2, 0, 0}) == 4,
+    "uniform command scaling must scale effect kernels");
+static_assert(maxTransformAxisLengthSquared(Affine{0, 3, -2, 0, 0, 0}) == 9,
+    "rotated nonuniform transforms use their largest axis scale");
+
 static Rect normalized(Rect rect) {
     if (rect.width < 0) {
         rect.x += rect.width;
@@ -1524,7 +1539,12 @@ private:
         temporary->SetDpi(static_cast<FLOAT>(96.0 * scale_), static_cast<FLOAT>(96.0 * scale_));
         temporary->BeginDraw();
         temporary->Clear(D2D1::ColorF(0, 0, 0, 0));
-        const float radius = std::min(64.0f, std::max(0.0f, command.effect.blur));
+        /* D2D's target DPI applies the presentation scale, but this blur
+         * bypasses the command transform after converting its rect to a
+         * device-space bounding box. Scale the kernel explicitly so a
+         * transformed blur keeps parity with the reference/AppKit paths. */
+        const float radius = std::min(64.0f,
+            std::max(0.0f, command.effect.blur * transformScale(command.transform)));
         const float offsets[5] = {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f};
         const float weights[5] = {1.0f, 4.0f, 6.0f, 4.0f, 1.0f};
         float accumulated_weight = 0;

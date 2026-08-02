@@ -57,6 +57,11 @@ public:
     virtual void abandonContent() = 0;
 
     virtual bool hasContent() const = 0;
+    /* Read the actual opaque backing pixel at a logical point. This is an
+     * explicit synchronization point and is reserved for the hidden-titlebar
+     * caption sample; ordinary presentation diagnostics stay on the retained
+     * command heuristic below. */
+    virtual bool readColorAt(double logical_x, double logical_y, uint32_t *color) = 0;
     virtual uint32_t representativeColorAt(double logical_x, double logical_y) const = 0;
 };
 

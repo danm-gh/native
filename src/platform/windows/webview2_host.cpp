@@ -2407,7 +2407,7 @@ static void punchHiddenCaptionButtonHole(Host *host, const NativeView &view, HWN
  * caption color (plus the immersive dark flag, which picks the button
  * glyph/hover palette). Older builds reject the attribute and keep the
  * system caption material — the buttons still draw and work. */
-static void syncHiddenCaptionColor(Host *host, Window &window, const NativeView &view, const uint8_t *rgba8, size_t width, size_t height) {
+static void syncHiddenCaptionColor(Window &window, const NativeView &view, const uint8_t *rgba8, size_t width, size_t height) {
     if (!windowUsesHiddenTitlebar(window) || !window.hwnd || !view.hwnd) return;
     const DwmApi &dwm = dwmApi();
     if (!dwm.set_window_attribute) return;
@@ -2430,9 +2430,11 @@ static void syncHiddenCaptionColor(Host *host, Window &window, const NativeView 
     dwm.set_window_attribute(window.hwnd, kDwmwaUseImmersiveDarkMode, &dark, sizeof(dark));
 }
 
-/* Packet presentation never reads the GPU target back merely to color
- * the DWM caption. The renderer resolves a representative solid fill at
- * the sample point from its retained command list and returns ARGB. */
+/* Hidden-titlebar caption buttons must use the color that actually reached
+ * the backing target: gradients, images, blur, and path geometry can all
+ * differ from a retained command's bounding-box approximation. This is the
+ * packet path's only GPU readback; ordinary windows keep the no-readback
+ * presenter, and a failed sample falls back to the diagnostic heuristic. */
 static void syncHiddenCaptionColorFromPacket(Host *host, Window &window, const NativeView &view) {
     if (!host || !view.gpu_surface || !windowUsesHiddenTitlebar(window) || !window.hwnd || !view.hwnd) return;
     const DwmApi &dwm = dwmApi();
@@ -2444,7 +2446,10 @@ static void syncHiddenCaptionColorFromPacket(Host *host, Window &window, const N
     if (!(scale > 0)) return;
     const double sample_x = std::max(0.0, ((double)cluster.left - origin.x - 8.0) / scale);
     const double sample_y = std::max(0.0, (((double)cluster.top + cluster.bottom) * 0.5 - origin.y) / scale);
-    const uint32_t packed = view.gpu_surface->representativeColorAt(sample_x, sample_y);
+    uint32_t packed = 0;
+    if (!view.gpu_surface->readColorAt(sample_x, sample_y, &packed)) {
+        packed = view.gpu_surface->representativeColorAt(sample_x, sample_y);
+    }
     const uint8_t red = (uint8_t)((packed >> 16) & 0xff);
     const uint8_t green = (uint8_t)((packed >> 8) & 0xff);
     const uint8_t blue = (uint8_t)(packed & 0xff);
@@ -5724,8 +5729,9 @@ Host *native_sdk_windows_create(const char *app_name, size_t app_name_len, const
      * balance. */
     host->com_initialized = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
     /* One hardware Direct2D/DirectWrite resource domain for every canvas
-     * child. Creation can fail on an exceptionally old/disabled graphics
-     * stack; packet presents then refuse cleanly into the pixel fallback. */
+     * child. Creation also requires the in-memory font and constrained
+     * fallback seams: without them packet text cannot match engine layout,
+     * so the renderer refuses cleanly into the pixel fallback. */
     host->gpu_renderer = createWindowsGpuRenderer();
     host->app_name = slice(app_name, app_name_len);
     host->window_title = slice(window_title, window_title_len);
@@ -6652,13 +6658,21 @@ int native_sdk_windows_remove_gpu_surface_image(Host *host, uint64_t id) {
 }
 
 int native_sdk_windows_register_gpu_surface_font(Host *host, uint64_t id, const uint8_t *ttf, size_t ttf_len, uint64_t *token) {
-    if (!host || !host->gpu_renderer) return 0;
-    return host->gpu_renderer->registerFont(id, ttf, ttf_len, token) ? 1 : 0;
+    if (!host) return -1;
+    if (!host->gpu_renderer) return 0;
+    if (host->gpu_renderer->registerFont(id, ttf, ttf_len, token)) return 1;
+    /* IDs 1 and 2 are the required bundled faces registered during host
+     * initialization, before any surface exists. If either is rejected,
+     * packet text cannot match engine layout; retire the whole renderer so
+     * later presents and custom registrations negotiate pixel fallback. */
+    if (id == 1 || id == 2) host->gpu_renderer.reset();
+    return -1;
 }
 
 int native_sdk_windows_unregister_gpu_surface_font(Host *host, uint64_t id, uint64_t token) {
-    if (!host || !host->gpu_renderer) return 0;
-    return host->gpu_renderer->unregisterFont(id, token) ? 1 : 0;
+    if (!host) return -1;
+    if (!host->gpu_renderer) return 0;
+    return host->gpu_renderer->unregisterFont(id, token) ? 1 : -1;
 }
 
 int native_sdk_windows_present_gpu_surface_pixels(Host *host, uint64_t window_id, const char *label, size_t label_len, size_t width, size_t height, double scale, int has_dirty_rect, double dirty_x, double dirty_y, double dirty_width, double dirty_height, const uint8_t *rgba8, size_t rgba8_len) {
@@ -6725,7 +6739,7 @@ int native_sdk_windows_present_gpu_surface_pixels(Host *host, uint64_t window_id
 
     /* Hidden-titlebar windows: keep the DWM caption material behind the
      * button cluster matched to the header the app just presented. */
-    if (owner != host->windows.end()) syncHiddenCaptionColor(host, owner->second, view, rgba8, width, height);
+    if (owner != host->windows.end()) syncHiddenCaptionColor(owner->second, view, rgba8, width, height);
 
     const size_t sample_index = ((height / 2) * width + width / 2) * 4;
     const uint8_t sr = rgba8[sample_index + 0];

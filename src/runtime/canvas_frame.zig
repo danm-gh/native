@@ -318,9 +318,14 @@ pub fn RuntimeCanvasFrames(comptime Runtime: type) type {
             widenCanvasFrameDirtyForPresentationScale(&canvas_frame, presentation_scale);
 
             const services = self.options.platform.services;
-            const packet_service_available = services.present_gpu_surface_packet_fn != null or
-                services.present_gpu_surface_packet_binary_fn != null;
-            if (gpu_commands.len > 0 and packet_json_buffer.len > 0) {
+            const packet_requested = if (runtimeFindViewIndex(self, window_id, label)) |index|
+                self.views[index].gpu_requested_backend != .software
+            else
+                true;
+            const packet_service_available = packet_requested and
+                (services.present_gpu_surface_packet_fn != null or
+                    services.present_gpu_surface_packet_binary_fn != null);
+            if (packet_requested and gpu_commands.len > 0 and packet_json_buffer.len > 0) {
                 if (packet_service_available) {
                     var packet = try canvas_frame.gpuPacket(gpu_commands);
                     packet.scale = presentation_scale;

@@ -341,8 +341,10 @@ pub const WindowsPlatform = struct {
         // Packet text must use the same Geist metrics the engine planned
         // against. Register both built-in faces directly from their
         // compile-time bytes; custom application fonts keep the public
-        // side-channel and ids >= 64. A machine without the in-memory
-        // DirectWrite loader keeps rendering through its system faces.
+        // side-channel and ids >= 64. If either required face cannot be
+        // registered, disable packet rendering as one capability and keep
+        // the exact reference-pixel fallback — never draw system faces
+        // against Geist-planned layout.
         if (web_engine == .system) {
             var font_token: u64 = 0;
             _ = native_sdk_windows_register_gpu_surface_font(host, 1, bundled_geist_regular.ptr, bundled_geist_regular.len, &font_token);
@@ -1259,16 +1261,28 @@ fn registerGpuSurfaceFont(context: ?*anyopaque, font: platform_mod.GpuSurfaceFon
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
     if (self.web_engine != .system) return error.UnsupportedService;
     var token: u64 = 0;
-    if (native_sdk_windows_register_gpu_surface_font(self.host, font.id, font.ttf.ptr, font.ttf.len, &token) == 0)
-        return error.InvalidGpuSurfaceFont;
-    return token;
+    return gpuSurfaceFontRegistrationResult(
+        native_sdk_windows_register_gpu_surface_font(self.host, font.id, font.ttf.ptr, font.ttf.len, &token),
+        token,
+    );
+}
+
+fn gpuSurfaceFontRegistrationResult(result: c_int, token: u64) anyerror!u64 {
+    return switch (result) {
+        1 => token,
+        0 => error.UnsupportedService,
+        else => error.InvalidGpuSurfaceFont,
+    };
 }
 
 fn unregisterGpuSurfaceFont(context: ?*anyopaque, id: u64, token: u64) anyerror!void {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
     if (self.web_engine != .system) return error.UnsupportedService;
-    if (native_sdk_windows_unregister_gpu_surface_font(self.host, id, token) == 0)
-        return error.InvalidGpuSurfaceFont;
+    switch (native_sdk_windows_unregister_gpu_surface_font(self.host, id, token)) {
+        1 => return,
+        0 => return error.UnsupportedService,
+        else => return error.InvalidGpuSurfaceFont,
+    }
 }
 
 /// Win32 menus treat `&` in an item label as a mnemonic marker —
@@ -2078,6 +2092,41 @@ test "windows unavailable image uploader negotiates pixel fallback" {
         u8,
         host_source,
         "if (!host->gpu_renderer) return 0;",
+    ) != null);
+}
+
+test "windows packet renderer requires deterministic font and caption seams" {
+    try std.testing.expectEqual(@as(u64, 37), try gpuSurfaceFontRegistrationResult(1, 37));
+    try std.testing.expectError(error.UnsupportedService, gpuSurfaceFontRegistrationResult(0, 0));
+    try std.testing.expectError(error.InvalidGpuSurfaceFont, gpuSurfaceFontRegistrationResult(-1, 0));
+
+    const renderer_source = @embedFile("gpu_surface_renderer.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        renderer_source,
+        "fallback_builder->CreateFontFallback(&font_fallback_)",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        renderer_source,
+        "layout2->SetFontFallback(renderer_->fontFallback())",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        renderer_source,
+        "D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_GDI_COMPATIBLE",
+    ) != null);
+
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (id == 1 || id == 2) host->gpu_renderer.reset();",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "view.gpu_surface->readColorAt(sample_x, sample_y, &packed)",
     ) != null);
 }
 

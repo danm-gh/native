@@ -782,6 +782,7 @@ public:
     ~GpuRendererImpl() override {
         fonts_.clear();
         images_.clear();
+        releaseCom(font_fallback_);
         if (dwrite_factory_ && memory_font_loader_) dwrite_factory_->UnregisterFontFileLoader(memory_font_loader_);
         releaseCom(memory_font_loader_);
         releaseCom(dwrite_factory5_);
@@ -795,13 +796,23 @@ public:
         IUnknown *unknown = nullptr;
         if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), &unknown)) || !unknown) return false;
         dwrite_factory_ = static_cast<IDWriteFactory *>(unknown);
-        if (SUCCEEDED(dwrite_factory_->QueryInterface(__uuidof(IDWriteFactory5), reinterpret_cast<void **>(&dwrite_factory5_))) && dwrite_factory5_) {
-            if (SUCCEEDED(dwrite_factory5_->CreateInMemoryFontFileLoader(&memory_font_loader_)) && memory_font_loader_) {
-                const HRESULT registered = dwrite_factory_->RegisterFontFileLoader(memory_font_loader_);
-                if (FAILED(registered)) releaseCom(memory_font_loader_);
-            }
+        if (FAILED(dwrite_factory_->QueryInterface(__uuidof(IDWriteFactory5), reinterpret_cast<void **>(&dwrite_factory5_))) ||
+            !dwrite_factory5_) return false;
+        if (FAILED(dwrite_factory5_->CreateInMemoryFontFileLoader(&memory_font_loader_)) ||
+            !memory_font_loader_) return false;
+        if (FAILED(dwrite_factory_->RegisterFontFileLoader(memory_font_loader_))) return false;
+
+        /* Text layout is planned against one explicit face and the engine's
+         * deterministic .notdef advance. An empty custom fallback prevents
+         * IDWriteTextLayout from silently substituting machine fonts for
+         * missing glyphs; every created layout installs this object below. */
+        IDWriteFontFallbackBuilder *fallback_builder = nullptr;
+        HRESULT fallback_result = dwrite_factory5_->CreateFontFallbackBuilder(&fallback_builder);
+        if (SUCCEEDED(fallback_result) && fallback_builder) {
+            fallback_result = fallback_builder->CreateFontFallback(&font_fallback_);
         }
-        return true;
+        releaseCom(fallback_builder);
+        return SUCCEEDED(fallback_result) && font_fallback_;
     }
 
     std::shared_ptr<WindowsGpuSurface> createSurface(HWND hwnd) override;
@@ -886,6 +897,7 @@ public:
 
     ID2D1Factory *d2dFactory() const { return d2d_factory_; }
     IDWriteFactory *dwriteFactory() const { return dwrite_factory_; }
+    IDWriteFontFallback *fontFallback() const { return font_fallback_; }
 
     std::shared_ptr<ImageResource> image(uint64_t id) const {
         auto found = images_.find(id);
@@ -902,6 +914,7 @@ private:
     IDWriteFactory *dwrite_factory_ = nullptr;
     IDWriteFactory5 *dwrite_factory5_ = nullptr;
     IDWriteInMemoryFontFileLoader *memory_font_loader_ = nullptr;
+    IDWriteFontFallback *font_fallback_ = nullptr;
     std::map<uint64_t, std::shared_ptr<ImageResource>> images_;
     std::map<uint64_t, std::shared_ptr<FontResource>> fonts_;
     uint64_t next_resource_serial_ = 1;
@@ -1051,6 +1064,7 @@ public:
     bool paint(const RECT &paint_rect) override;
     void abandonContent() override { releaseDeviceResources(true); }
     bool hasContent() const override { return content_valid_ && backing_bitmap_; }
+    bool readColorAt(double logical_x, double logical_y, uint32_t *color) override;
     uint32_t representativeColorAt(double logical_x, double logical_y) const override;
 
 private:
@@ -1127,7 +1141,7 @@ private:
         const D2D1_SIZE_U pixels = D2D1::SizeU(pixel_width_, pixel_height_);
         const D2D1_PIXEL_FORMAT format = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED);
         HRESULT result = window_target_->CreateCompatibleRenderTarget(
-            &desired, &pixels, &format, D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, &backing_target_);
+            &desired, &pixels, &format, D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_GDI_COMPATIBLE, &backing_target_);
         if (SUCCEEDED(result) && backing_target_) {
             backing_target_->SetDpi(static_cast<FLOAT>(96.0 * scale_), static_cast<FLOAT>(96.0 * scale_));
         }
@@ -1374,6 +1388,34 @@ private:
         return true;
     }
 
+    bool createTextLayout(
+        const std::wstring &value,
+        IDWriteTextFormat *format,
+        float width,
+        float height,
+        IDWriteTextLayout **layout
+    ) {
+        if (!format || !layout || !renderer_->fontFallback()) return false;
+        *layout = nullptr;
+        HRESULT result = renderer_->dwriteFactory()->CreateTextLayout(
+            value.data(), static_cast<UINT32>(value.size()), format,
+            std::max(1.0f, width), std::max(1.0f, height), layout);
+        IDWriteTextLayout2 *layout2 = nullptr;
+        if (SUCCEEDED(result) && *layout) {
+            result = (*layout)->QueryInterface(
+                __uuidof(IDWriteTextLayout2), reinterpret_cast<void **>(&layout2));
+        }
+        if (SUCCEEDED(result) && layout2) {
+            result = layout2->SetFontFallback(renderer_->fontFallback());
+        }
+        releaseCom(layout2);
+        if (FAILED(result)) {
+            releaseCom(*layout);
+            return false;
+        }
+        return *layout != nullptr;
+    }
+
     bool drawText(const Command &command) {
         const TextCommand &text = command.text;
         IDWriteTextFormat *format = nullptr;
@@ -1390,9 +1432,8 @@ private:
             std::wstring value;
             if (!widenUtf8(utf8, &value)) return false;
             IDWriteTextLayout *layout = nullptr;
-            HRESULT result = renderer_->dwriteFactory()->CreateTextLayout(
-                value.data(), static_cast<UINT32>(value.size()), format, 100000.0f,
-                std::max(4.0f, text.size * 4.0f), &layout);
+            HRESULT result = createTextLayout(
+                value, format, 100000.0f, std::max(4.0f, text.size * 4.0f), &layout) ? S_OK : E_FAIL;
             DWRITE_LINE_METRICS metrics = {};
             UINT32 actual = 0;
             if (SUCCEEDED(result)) result = layout->GetLineMetrics(&metrics, 1, &actual);
@@ -1423,11 +1464,14 @@ private:
             if (result && !value.empty()) {
                 const float width = text.has_layout && text.max_width > 0 ? text.max_width : 100000.0f;
                 const float height = text.has_layout ? std::max(text.line_height, text.size * 1.25f) * 4096.0f : text.size * 4.0f;
-                const D2D1_RECT_F destination = D2D1::RectF(
-                    text.origin.x, text.origin.y - text.size,
-                    text.origin.x + width, text.origin.y - text.size + height);
-                backing_target_->DrawText(value.data(), static_cast<UINT32>(value.size()), format,
-                    destination, brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+                IDWriteTextLayout *layout = nullptr;
+                result = createTextLayout(value, format, width, height, &layout);
+                if (result) {
+                    backing_target_->DrawTextLayout(
+                        D2D1::Point2F(text.origin.x, text.origin.y - text.size), layout, brush,
+                        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+                }
+                releaseCom(layout);
             }
         }
         releaseCom(brush);
@@ -1954,6 +1998,45 @@ bool GpuSurfaceImpl::paint(const RECT &paint_rect) {
         releaseDeviceResources(true);
         return false;
     }
+    return true;
+}
+
+bool GpuSurfaceImpl::readColorAt(double logical_x, double logical_y, uint32_t *color) {
+    if (!color || !content_valid_ || !backing_target_ || !backing_bitmap_ || !(scale_ > 0) ||
+        !std::isfinite(logical_x) || !std::isfinite(logical_y)) return false;
+    const double pixel_x_value = std::floor(logical_x * scale_);
+    const double pixel_y_value = std::floor(logical_y * scale_);
+    if (pixel_x_value < 0 || pixel_y_value < 0 ||
+        pixel_x_value >= pixel_width_ || pixel_y_value >= pixel_height_) return false;
+
+    ID2D1GdiInteropRenderTarget *interop = nullptr;
+    HRESULT result = backing_target_->QueryInterface(
+        __uuidof(ID2D1GdiInteropRenderTarget), reinterpret_cast<void **>(&interop));
+    if (FAILED(result) || !interop) {
+        releaseCom(interop);
+        return false;
+    }
+
+    /* The backing target alone is GDI-compatible. COPY synchronizes its
+     * retained GPU bitmap into the returned DC, and GetPixel reads exactly
+     * one device pixel. Hidden-titlebar caption sampling is the sole caller,
+     * so ordinary packet frames never pay this synchronization cost. */
+    backing_target_->BeginDraw();
+    HDC dc = nullptr;
+    result = interop->GetDC(D2D1_DC_INITIALIZE_MODE_COPY, &dc);
+    COLORREF sampled = CLR_INVALID;
+    HRESULT released = S_OK;
+    if (SUCCEEDED(result) && dc) {
+        sampled = GetPixel(dc, static_cast<int>(pixel_x_value), static_cast<int>(pixel_y_value));
+        released = interop->ReleaseDC(nullptr);
+    }
+    const HRESULT ended = backing_target_->EndDraw();
+    releaseCom(interop);
+    if (FAILED(result) || FAILED(released) || FAILED(ended) || sampled == CLR_INVALID) return false;
+    *color = 0xff000000u |
+        (static_cast<uint32_t>(GetRValue(sampled)) << 16) |
+        (static_cast<uint32_t>(GetGValue(sampled)) << 8) |
+        static_cast<uint32_t>(GetBValue(sampled));
     return true;
 }
 

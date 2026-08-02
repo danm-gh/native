@@ -474,6 +474,55 @@ test "runtime presents next canvas frame through packet presenter when available
     try std.testing.expect(!presented_frame.canvas_frame_requires_render);
 }
 
+test "runtime explicit software canvas bypasses packet encoding and image upload" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-canvas-explicit-software", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    try harness.start(app_state.app());
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 4, 4),
+        .gpu_surface = .{ .backend = .software },
+    });
+
+    const red = [4]u8{ 255, 0, 0, 255 };
+    try harness.runtime.registerCanvasImage(7, 1, 1, &red);
+    const commands = [_]canvas.CanvasCommand{.{ .draw_image = .{
+        .id = 1,
+        .image_id = 7,
+        .dst = geometry.RectF.init(0, 0, 4, 4),
+    } }};
+    _ = try harness.runtime.setCanvasDisplayList(1, "canvas", .{ .commands = &commands });
+
+    var gpu_commands: [max_canvas_commands_per_view]canvas.CanvasGpuCommand = undefined;
+    var packet_json_buffer: [16 * 1024]u8 = undefined;
+    var pixels: [4 * 4 * 4]u8 = undefined;
+    var scratch: [4 * 4 * 4]u8 = undefined;
+    const result = try harness.runtime.presentNextCanvasFrame(1, "canvas", .{
+        .frame_index = 22,
+        .timestamp_ns = 89_000,
+        .surface_size = geometry.SizeF.init(4, 4),
+        .scale = 1,
+    }, canvasFrameScratchStorage(&harness.runtime), &gpu_commands, &packet_json_buffer, &pixels, &scratch, canvas.Color.rgb8(0, 0, 0), null);
+
+    try std.testing.expectEqual(platform.GpuSurfaceBackend.software, harness.runtime.views[0].gpu_requested_backend);
+    try std.testing.expectEqual(CanvasPresentationMode.pixels, result.mode);
+    try std.testing.expectEqual(@as(usize, 0), harness.null_platform.gpu_surface_packet_present_count);
+    try std.testing.expectEqual(@as(usize, 0), harness.null_platform.gpu_surface_image_upload_count);
+    try std.testing.expectEqual(@as(usize, 1), harness.null_platform.gpu_surface_present_count);
+    try std.testing.expectEqual(platform.GpuPresentFallbackReason.none, harness.runtime.views[0].info().gpu_present_fallback_reason);
+}
+
 test "runtime auto-present packet honors presentation scale without invalidating retained frame" {
     const TestApp = struct {
         fn app(self: *@This()) App {

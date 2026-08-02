@@ -429,9 +429,15 @@ pub fn buttonBorderFill(widget: Widget, tokens: DesignTokens) Fill {
         // keep the author's stated identity.
         if (visual.disabled_background) |color| switch (widget.variant) {
             .primary, .destructive => return colorFill(color),
-            .default, .secondary, .outline => if (tokens.controls.button_disabled_border) |disabled_border| return colorFill(disabled_border),
-            .ghost => {},
+            .default, .secondary, .outline, .ghost => {},
         };
+        // The shared edge is independently overridable: a custom theme
+        // may want a solid disabled outline while keeping the house fill
+        // wash instead of also stating a disabled body color.
+        switch (widget.variant) {
+            .default, .secondary, .outline => if (tokens.controls.button_disabled_border) |disabled_border| return colorFill(disabled_border),
+            .primary, .ghost, .destructive => {},
+        }
         // shadcn's filled default button has a transparent CSS border.
         // At rest our fallback accent stroke is invisible against the
         // identical opaque fill, but washing both commands separately

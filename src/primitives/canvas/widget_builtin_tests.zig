@@ -785,6 +785,21 @@ test "geist disabled buttons use the reference swap and tertiary registers" {
     }
 }
 
+test "button disabled border override does not require a disabled background" {
+    const buttonBorderFill = @import("widget_render_style.zig").buttonBorderFill;
+    const disabled_border = Color.rgb8(24, 96, 160);
+    const tokens = DesignTokens.themeWithOverrides(.{}, .{
+        .controls = .{ .button_disabled_border = disabled_border },
+    });
+    const button = Widget{
+        .kind = .button,
+        .variant = .outline,
+        .state = .{ .disabled = true },
+    };
+
+    try expectFillColor(disabled_border, buttonBorderFill(button, tokens));
+}
+
 /// The flush-group segment assertions, shared by the tree-walk and
 /// layout-walk halves of the test below so the two emission paths are
 /// pinned to the SAME bar: leading corners on the first segment,

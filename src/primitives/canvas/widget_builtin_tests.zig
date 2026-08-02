@@ -1037,6 +1037,29 @@ test "geist primary tabs use the measured row while house tabs remain unchanged"
         .fill_rounded_rect => |pill| try std.testing.expectEqual(@as(f32, 148), pill.rect.width),
         else => return error.TestUnexpectedResult,
     }
+
+    // Flow layout keeps the same contract. The row + growing spacer is
+    // the common theme-agnostic shape used to make the house strip hug;
+    // Geist gives the TabsList first claim on the row's flexible width,
+    // while the identical house tree leaves that width to the spacer.
+    const row_children = [_]Widget{
+        nested_strip,
+        .{ .id = 5, .kind = .stack, .layout = .{ .grow = 1 } },
+    };
+    const row_host = Widget{
+        .kind = .row,
+        .frame = geometry.RectF.init(0, 0, 352, 50),
+        .children = &row_children,
+    };
+    var row_geist_nodes: [6]WidgetLayoutNode = undefined;
+    const row_geist = try layoutWidgetTreeWithTokens(row_host, row_host.frame, geist, &row_geist_nodes);
+    try std.testing.expectEqual(@as(f32, 352), row_geist.nodes[1].frame.width);
+    try std.testing.expectEqual(@as(f32, 0), row_geist.nodes[5].frame.width);
+
+    var row_house_nodes: [6]WidgetLayoutNode = undefined;
+    const row_house = try layoutWidgetTreeWithTokens(row_host, row_host.frame, house, &row_house_nodes);
+    try std.testing.expectEqual(@as(f32, 148), row_house.nodes[1].frame.width);
+    try std.testing.expectEqual(@as(f32, 204), row_house.nodes[5].frame.width);
 }
 
 test "the bubble reaction pill straddles the bottom edge on the page plane" {

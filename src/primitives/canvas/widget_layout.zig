@@ -429,6 +429,26 @@ fn tabsLayoutStyle(widget: Widget, tokens: DesignTokens) WidgetLayoutStyle {
     return style;
 }
 
+/// Geist's primary TabsList is a width:100% ruled row. The authored
+/// widget tree is theme-agnostic, though, and often carries the house
+/// pill's intrinsic/fixed width, so every parent layout mode uses this
+/// predicate to translate that same node without changing house layout.
+fn primaryUnderlineTabsFillWidth(widget: Widget, tokens: DesignTokens) bool {
+    return widget.kind == .tabs and
+        (widget.variant == .default or widget.variant == .primary) and
+        tokens.controls.tabs_indicator == .underline;
+}
+
+/// A non-growing primary underline TabsList gets first claim on a row's
+/// flexible width. This is the flow-layout equivalent of
+/// `stackChildFrame`'s full-width translation. Author-provided grow still
+/// follows the normal flex allocation contract.
+fn axisChildImplicitlyFillsWidth(widget: Widget) bool {
+    return nonNegative(widget.layout.grow) == 0 and
+        widget.kind == .tabs and
+        (widget.variant == .default or widget.variant == .primary);
+}
+
 /// The builder stamps the house TabsList's canonical 3px hug before it
 /// knows which runtime theme pack will paint the tree. When the resolved
 /// register is underline, translate that canonical default to the
@@ -454,6 +474,27 @@ fn layoutAxisChildren(
     style: WidgetLayoutStyle,
     tokens: DesignTokens,
 ) Error!void {
+    if (axis == .horizontal and tokens.controls.tabs_indicator == .underline) {
+        return layoutAxisChildrenMode(children, content, axis, parent_index, depth, output, len, style, tokens, true);
+    }
+    return layoutAxisChildrenMode(children, content, axis, parent_index, depth, output, len, style, tokens, false);
+}
+
+/// `fill_primary_tabs` is comptime so the overwhelmingly common house
+/// path compiles to the original flex loop with no per-child theme
+/// branches. Underline rows opt into the extra full-width allocation.
+fn layoutAxisChildrenMode(
+    children: []const Widget,
+    content: geometry.RectF,
+    axis: LayoutAxis,
+    parent_index: usize,
+    depth: usize,
+    output: []WidgetLayoutNode,
+    len: *usize,
+    style: WidgetLayoutStyle,
+    tokens: DesignTokens,
+    comptime fill_primary_tabs: bool,
+) Error!void {
     // Anchored floating children take no flow slot: they are skipped in
     // every pass here (measurement, gap counting, placement) and laid out
     // by `layoutAnchoredChildren` against the parent's frame instead.
@@ -475,8 +516,14 @@ fn layoutAxisChildren(
     const total_gap = clamped_gap * @as(f32, @floatFromInt(flow_count - 1));
     var fixed_extent: f32 = 0;
     var grow_total: f32 = 0;
+    var fill_width_count: usize = 0;
     for (children) |child| {
         if (child.layout.anchor != null) continue;
+        const implicitly_fills = if (comptime fill_primary_tabs) axisChildImplicitlyFillsWidth(child) else false;
+        if (implicitly_fills) {
+            fill_width_count += 1;
+            continue;
+        }
         const grow = nonNegative(child.layout.grow);
         if (grow > 0) {
             grow_total += grow;
@@ -489,8 +536,22 @@ fn layoutAxisChildren(
         }
     }
 
-    const remaining = @max(0, available_extent - fixed_extent - total_gap);
-    const assigned_extent = assignedAxisChildrenExtent(children, axis, fixed_extent, grow_total, remaining);
+    const flexible_extent = @max(0, available_extent - fixed_extent - total_gap);
+    const fill_width_share = if (fill_width_count > 0)
+        flexible_extent / @as(f32, @floatFromInt(fill_width_count))
+    else
+        0;
+    var fill_width_extent: f32 = 0;
+    if (comptime fill_primary_tabs) {
+        if (fill_width_count > 0) {
+            for (children) |child| {
+                if (!axisChildImplicitlyFillsWidth(child)) continue;
+                fill_width_extent += clampMainExtent(child, axis, fill_width_share);
+            }
+        }
+    }
+    const grow_extent = @max(0, flexible_extent - fill_width_extent);
+    const assigned_extent = assignedAxisChildrenExtent(children, axis, fixed_extent + fill_width_extent, grow_total, grow_extent);
     const used_extent = assigned_extent + total_gap;
     if (axisLayoutOverflow(available_extent, used_extent)) |overflow| {
         logAxisChildrenOverflow(output, parent_index, axis, available_extent, used_extent, overflow);
@@ -508,8 +569,11 @@ fn layoutAxisChildren(
     for (children) |child| {
         if (child.layout.anchor != null) continue;
         const grow = nonNegative(child.layout.grow);
-        const main_extent = if (grow > 0 and grow_total > 0)
-            clampMainExtent(child, axis, remaining * grow / grow_total)
+        const implicitly_fills = if (comptime fill_primary_tabs) axisChildImplicitlyFillsWidth(child) else false;
+        const main_extent = if (implicitly_fills)
+            clampMainExtent(child, axis, fill_width_share)
+        else if (grow > 0 and grow_total > 0)
+            clampMainExtent(child, axis, grow_extent * grow / grow_total)
         else
             mainExtentWithBubbleCap(child, axis, available_extent, preferredMainExtentInCross(child, axis, cross_extent, style.cross_alignment, tokens));
         const cross = preferredCrossExtent(child, axis, cross_extent, style.cross_alignment, tokens);
@@ -814,14 +878,27 @@ fn wrappedVerticalExtentForWidth(widget: Widget, width: f32, tokens: DesignToken
 /// so wrapped heights inside rows (blockquotes, list items) are computed
 /// against real widths.
 fn rowChildWidth(row: Widget, available_width: f32, index: usize, tokens: DesignTokens) f32 {
+    if (tokens.controls.tabs_indicator == .underline) {
+        return rowChildWidthMode(row, available_width, index, tokens, true);
+    }
+    return rowChildWidthMode(row, available_width, index, tokens, false);
+}
+
+fn rowChildWidthMode(row: Widget, available_width: f32, index: usize, tokens: DesignTokens, comptime fill_primary_tabs: bool) f32 {
     const children = row.children;
     if (children.len == 0) return available_width;
     var flow_count: usize = 0;
     var fixed_extent: f32 = 0;
     var grow_total: f32 = 0;
+    var fill_width_count: usize = 0;
     for (children) |child| {
         if (child.layout.anchor != null) continue;
         flow_count += 1;
+        const implicitly_fills = if (comptime fill_primary_tabs) axisChildImplicitlyFillsWidth(child) else false;
+        if (implicitly_fills) {
+            fill_width_count += 1;
+            continue;
+        }
         const grow = nonNegative(child.layout.grow);
         if (grow > 0) {
             grow_total += grow;
@@ -839,10 +916,26 @@ fn rowChildWidth(row: Widget, available_width: f32, index: usize, tokens: Design
         else => nonNegative(row.layout.gap),
     };
     const total_gap = row_gap * @as(f32, @floatFromInt(flow_count - 1));
-    const remaining = @max(0, available_width - fixed_extent - total_gap);
+    const flexible_extent = @max(0, available_width - fixed_extent - total_gap);
+    const fill_width_share = if (fill_width_count > 0)
+        flexible_extent / @as(f32, @floatFromInt(fill_width_count))
+    else
+        0;
+    var fill_width_extent: f32 = 0;
+    if (comptime fill_primary_tabs) {
+        if (fill_width_count > 0) {
+            for (children) |candidate| {
+                if (!axisChildImplicitlyFillsWidth(candidate)) continue;
+                fill_width_extent += clampMainExtent(candidate, .horizontal, fill_width_share);
+            }
+        }
+    }
+    const grow_extent = @max(0, flexible_extent - fill_width_extent);
     const child = children[index];
+    const implicitly_fills = if (comptime fill_primary_tabs) axisChildImplicitlyFillsWidth(child) else false;
+    if (implicitly_fills) return clampMainExtent(child, .horizontal, fill_width_share);
     const grow = nonNegative(child.layout.grow);
-    if (grow > 0 and grow_total > 0) return clampMainExtent(child, .horizontal, remaining * grow / grow_total);
+    if (grow > 0 and grow_total > 0) return clampMainExtent(child, .horizontal, grow_extent * grow / grow_total);
     // The same bubble thread cap `layoutAxisChildren` applies, replayed
     // here so wrapped heights measure at the width the bubble will
     // actually receive.
@@ -1527,7 +1620,7 @@ fn stackChildFrame(content: geometry.RectF, child: Widget, tokens: DesignTokens)
     // only the underline register to the remaining containing width.
     // House pills return byte-for-byte above, and an explicit max width
     // remains the author escape hatch for a deliberately bounded strip.
-    if (child.kind == .tabs and (child.variant == .default or child.variant == .primary) and tokens.controls.tabs_indicator == .underline) {
+    if (primaryUnderlineTabsFillWidth(child, tokens)) {
         frame.width = clampIntrinsicAxis(
             @max(0, content.maxX() - frame.x),
             child.layout.min_size.width,
@@ -2228,6 +2321,13 @@ fn preferredCrossExtent(widget: Widget, axis: LayoutAxis, available: f32, alignm
         .horizontal => widget.layout.max_size.height,
         .vertical => widget.layout.max_size.width,
     };
+    // The cross axis of a vertical flow is width. Geist primary tabs
+    // therefore fill a column just as they fill stack and row parents,
+    // even when the theme-agnostic node still carries the house pill's
+    // fixed width. An explicit max width remains the bounding escape.
+    if (axis == .vertical and primaryUnderlineTabsFillWidth(widget, tokens)) {
+        return @max(min_value, boundedByMax(available, max_value));
+    }
     if (value > 0) return @max(min_value, boundedByMax(value, max_value));
     // The cross axis of a vertical container is the child's WIDTH, so
     // the bubble thread contract applies here: a bubble directly in a

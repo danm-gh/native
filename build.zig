@@ -566,6 +566,9 @@ pub fn build(b: *std.Build) void {
         .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "\"gpu_surfaces\"" },
         .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "\"gpuSurfaces\"" },
         .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "gpuFirstFrameLatencyNs: number" },
+        .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "gpuBackend: NativeSdkGpuSurfaceBackend;" },
+        .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "export type NativeSdkGpuSurfaceBackendRequest = \"metal\" | \"software\";" },
+        .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "gpuBackend?: NativeSdkGpuSurfaceBackendRequest;" },
     });
     addFileContainsCheckStep(b, file_contains_checker, test_step, "test-ts-toolchain-twins", "Verify the CLI's toolchain-resolution gate and its direct-`zig build` twin stay in lockstep (both resolve the aliased real compiler @typescript/old from packages/core — the same origin runtime imports it from — hold its resolved version against the manifest-read pin, never probe the unused @typescript/typescript6 wrapper, and teach instead of panicking)", &.{
         // The resolution twins probe the aliased REAL compiler

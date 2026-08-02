@@ -1,1 +1,2 @@
 fix: **Responsive Windows GPU surfaces**: Windows now renders retained binary canvas packets with Direct2D and DirectWrite, applies dirty-region patches (including GPU-resident backdrop blur), and limits RGBA-to-BGRA conversion and invalidation to dirty pixels when software fallback is required.
+- **Truthful GPU backend types**: TypeScript creation options now expose only portable backend requests while view and frame state can report the concrete Direct2D renderer.

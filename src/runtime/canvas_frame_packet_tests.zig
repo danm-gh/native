@@ -891,19 +891,31 @@ test "runtime re-registration and unregister drive the image upload side-channel
     try std.testing.expectEqual(@as(usize, 2), harness.null_platform.gpu_surface_image_upload_count);
     try std.testing.expectEqualDeep([4]u8{ 0, 0, 255, 255 }, harness.null_platform.gpuSurfaceImage(9).?.sample_rgba);
 
-    // Unregister drops the platform-side entry; the next frame (stale
-    // tree still referencing the id) stays on the packet path with the
-    // absent-image skip and uploads nothing new.
+    // Unregister drops the platform-side entry. Re-registering the SAME
+    // content before another frame must still upload: the platform
+    // resource is gone even though the image fingerprint matches the
+    // last presented cache key.
     try std.testing.expect(harness.runtime.unregisterCanvasImage(9));
     try std.testing.expectEqual(@as(usize, 1), harness.null_platform.gpu_surface_image_remove_count);
     try std.testing.expect(harness.null_platform.gpuSurfaceImage(9) == null);
-    const after = try present.frame(harness, &gpu_commands, &packet_json_buffer, &pixels, &scratch, 43);
+    try harness.runtime.registerCanvasImage(9, 1, 1, &blue);
+    const restored = try present.frame(harness, &gpu_commands, &packet_json_buffer, &pixels, &scratch, 43);
+    try std.testing.expectEqual(CanvasPresentationMode.gpu_packet, restored.mode);
+    try std.testing.expectEqual(@as(usize, 3), harness.null_platform.gpu_surface_image_upload_count);
+    try std.testing.expectEqualDeep([4]u8{ 0, 0, 255, 255 }, harness.null_platform.gpuSurfaceImage(9).?.sample_rgba);
+
+    // A later unregister with no replacement keeps the stale tree on
+    // the packet path with the absent-image skip and no new upload.
+    try std.testing.expect(harness.runtime.unregisterCanvasImage(9));
+    try std.testing.expectEqual(@as(usize, 2), harness.null_platform.gpu_surface_image_remove_count);
+    try std.testing.expect(harness.null_platform.gpuSurfaceImage(9) == null);
+    const after = try present.frame(harness, &gpu_commands, &packet_json_buffer, &pixels, &scratch, 44);
     try std.testing.expectEqual(CanvasPresentationMode.gpu_packet, after.mode);
-    try std.testing.expectEqual(@as(usize, 2), harness.null_platform.gpu_surface_image_upload_count);
+    try std.testing.expectEqual(@as(usize, 3), harness.null_platform.gpu_surface_image_upload_count);
 
     // Unregistering an absent id never reaches the platform.
     try std.testing.expect(!harness.runtime.unregisterCanvasImage(9));
-    try std.testing.expectEqual(@as(usize, 1), harness.null_platform.gpu_surface_image_remove_count);
+    try std.testing.expectEqual(@as(usize, 2), harness.null_platform.gpu_surface_image_remove_count);
 }
 
 test "runtime falls back to pixels when the platform lacks the image upload seam" {

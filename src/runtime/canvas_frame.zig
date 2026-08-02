@@ -1050,17 +1050,17 @@ pub fn RuntimeCanvasFrames(comptime Runtime: type) type {
                     storage.text_layout_cache_actions,
                 );
 
-            const full_repaint = frame_options.full_repaint or
+            var full_repaint = frame_options.full_repaint or
                 !self.views[index].presented_canvas_valid or
                 canvas_surface_changed or
                 (canvas_changed and (self.views[index].presented_canvas_has_unkeyed or self.views[index].currentCanvasHasUnkeyed()));
-            const changes = if (full_repaint)
+            var changes: []const canvas.DiffChange = if (full_repaint)
                 storage.changes[0..0]
             else
                 try self.views[index].diffPresentedCanvasSummary(storage.changes);
             var dirty_rects: [canvas.max_canvas_frame_dirty_rects]geometry.RectF = undefined;
             var dirty_rect_count: usize = 0;
-            const dirty_bounds = if (full_repaint)
+            var dirty_bounds: ?geometry.RectF = if (full_repaint)
                 canvasFullRepaintBounds(frame_options.surface_size, render_plan.bounds)
             else dirty: {
                 // Every incremental dirty rect leaves here through
@@ -1130,6 +1130,19 @@ pub fn RuntimeCanvasFrames(comptime Runtime: type) type {
                 }
                 break :dirty bleedAlignedCanvasDirtyBounds(unionRects(canvasDirtyBoundsFromChanges(changes), overrides_dirty), frame_options.scale, 1, frame_options.surface_size);
             };
+            if (!full_repaint and canvas.incrementalDamageIntersectsBackdropBlur(render_plan.commands, dirty_bounds)) {
+                // A blur's apron must be reconstructed from the scene as
+                // it existed before that command. Retained pixels beyond
+                // an incremental scissor are already fully composited,
+                // so widening only the output rect would still sample
+                // stale blur/later-command pixels at its edge. Replay the
+                // whole ordered list when damage reaches the blur's read
+                // footprint; damage elsewhere remains incremental.
+                full_repaint = true;
+                changes = storage.changes[0..0];
+                dirty_bounds = canvasFullRepaintBounds(frame_options.surface_size, render_plan.bounds);
+                dirty_rect_count = 0;
+            }
 
             const canvas_frame = canvas.CanvasFrame{
                 .frame_index = frame_options.frame_index,

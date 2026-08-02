@@ -2893,6 +2893,48 @@ test "canvas frame plan clips incremental dirty bounds to surface" {
     try std.testing.expect(std.mem.indexOf(u8, profile_json, "\"risk\":\"high\"") != null);
 }
 
+test "canvas frame plan fully repaints damage inside a backdrop blur apron" {
+    const previous_commands = [_]CanvasCommand{
+        .{ .fill_rect = .{ .id = 1, .rect = geometry.RectF.init(44, 15, 4, 4), .fill = .{ .color = Color.rgb8(255, 0, 0) } } },
+        .{ .push_clip = .{ .id = 2, .rect = geometry.RectF.init(50, 10, 20, 20) } },
+        .{ .blur = .{ .id = 3, .rect = geometry.RectF.init(50, 10, 20, 20), .radius = 8 } },
+        .pop_clip,
+    };
+    const next_commands = [_]CanvasCommand{
+        .{ .fill_rect = .{ .id = 1, .rect = geometry.RectF.init(44, 15, 4, 4), .fill = .{ .color = Color.rgb8(0, 0, 255) } } },
+        previous_commands[1],
+        previous_commands[2],
+        previous_commands[3],
+    };
+
+    var render_commands: [2]RenderCommand = undefined;
+    var render_batches: [2]RenderBatch = undefined;
+    var resources: [1]RenderResource = undefined;
+    var resource_cache_entries: [1]RenderResourceCacheEntry = undefined;
+    var resource_cache_actions: [1]RenderResourceCacheAction = undefined;
+    var glyphs: [0]GlyphAtlasEntry = .{};
+    var changes: [2]DiffChange = undefined;
+    const frame = try (DisplayList{ .commands = &next_commands }).framePlan(.{ .commands = &previous_commands }, .{
+        .surface_size = geometry.SizeF.init(100, 40),
+    }, .{
+        .render_commands = &render_commands,
+        .render_batches = &render_batches,
+        .resources = &resources,
+        .resource_cache_entries = &resource_cache_entries,
+        .resource_cache_actions = &resource_cache_actions,
+        .glyph_atlas_entries = &glyphs,
+        .changes = &changes,
+    });
+
+    // The changed fill ends at x=48, before the blur output begins at
+    // x=50, but inside its radius-8 read footprint. Incremental replay
+    // cannot reconstruct the pre-blur backdrop outside its scissor.
+    try std.testing.expect(frame.full_repaint);
+    try std.testing.expectEqual(@as(usize, 0), frame.changes.len);
+    try expectRect(geometry.RectF.init(0, 0, 100, 40), frame.dirty_bounds);
+    try std.testing.expectEqual(CanvasRenderPassLoadAction.clear, frame.renderPass().loadAction());
+}
+
 test "canvas frame plan leaves unchanged retained frame clean" {
     const commands = [_]CanvasCommand{
         .{ .fill_rect = .{ .id = 1, .rect = geometry.RectF.init(0, 0, 40, 40), .fill = .{ .color = Color.rgb8(255, 255, 255) } } },

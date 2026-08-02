@@ -865,6 +865,7 @@ pub const RuntimeView = struct {
     pub const copyCanvasFrameResourceCache = CanvasFrameMethods.copyCanvasFrameResourceCache;
     pub const copyCanvasFramePathGeometryCache = CanvasFrameMethods.copyCanvasFramePathGeometryCache;
     pub const copyCanvasFrameImageCache = CanvasFrameMethods.copyCanvasFrameImageCache;
+    pub const removeCanvasFrameImageCacheId = CanvasFrameMethods.removeCanvasFrameImageCacheId;
     pub const copyCanvasFrameLayerCache = CanvasFrameMethods.copyCanvasFrameLayerCache;
     pub const copyCanvasFrameVisualEffectCache = CanvasFrameMethods.copyCanvasFrameVisualEffectCache;
     pub const copyCanvasRenderAnimations = CanvasFrameMethods.copyCanvasRenderAnimations;

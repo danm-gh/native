@@ -2370,7 +2370,13 @@ fn preferredCrossExtent(widget: Widget, axis: LayoutAxis, available: f32, alignm
     // even when the theme-agnostic node still carries the house pill's
     // fixed width. An explicit max width remains the bounding escape.
     if (axis == .vertical and primaryUnderlineTabsFillWidth(widget, tokens)) {
-        return @max(min_value, boundedByMax(available, max_value));
+        // `alignedCrossAxisOrigin` applies the authored x offset after
+        // choosing this width. Fill only the space remaining after that
+        // offset so the closing rail still lands on the parent's trailing
+        // edge, matching `stackChildFrame`. A deliberately wider strip
+        // remains wider so horizontal scrolling keeps its full extent.
+        const remaining = @max(0, available - widget.frame.x);
+        return @max(min_value, boundedByMax(@max(value, remaining), max_value));
     }
     if (value > 0) return @max(min_value, boundedByMax(value, max_value));
     // The cross axis of a vertical container is the child's WIDTH, so

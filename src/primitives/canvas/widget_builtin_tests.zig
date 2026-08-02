@@ -1192,6 +1192,43 @@ test "geist primary tabs translate fixed trigger frames onto the content-hugging
     }
 }
 
+test "geist primary tabs fill the remaining width of an indented vertical flow" {
+    const geist = DesignTokens.theme(.{ .pack = .geist });
+    const triggers = [_]Widget{.{
+        .id = 3,
+        .kind = .segmented_control,
+        .text = "Files",
+        .state = .{ .selected = true },
+    }};
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 2,
+        .frame = geometry.RectF.init(20, 0, 148, 50),
+        .children = &triggers,
+    });
+    const children = [_]Widget{strip};
+    const column = Widget{
+        .id = 1,
+        .kind = .column,
+        .frame = geometry.RectF.init(0, 0, 352, 80),
+        .children = &children,
+    };
+
+    var nodes: [4]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTreeWithTokens(column, column.frame, geist, &nodes);
+    try std.testing.expectEqual(geometry.RectF.init(20, 0, 332, 50), layout.findById(2).?.frame);
+
+    // Full width remains a floor, not a cap: an authored overflow keeps
+    // its extent just as it does in stack and horizontal-scroll parents.
+    var wide_strip = strip;
+    wide_strip.frame.width = 480;
+    const wide_children = [_]Widget{wide_strip};
+    var wide_column = column;
+    wide_column.children = &wide_children;
+    var wide_nodes: [4]WidgetLayoutNode = undefined;
+    const wide_layout = try layoutWidgetTreeWithTokens(wide_column, wide_column.frame, geist, &wide_nodes);
+    try std.testing.expectEqual(geometry.RectF.init(20, 0, 480, 50), wide_layout.findById(2).?.frame);
+}
+
 test "the bubble reaction pill straddles the bottom edge on the page plane" {
     const surfaces = @import("widget_render_surfaces.zig");
     const tokens = DesignTokens{};

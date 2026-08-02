@@ -508,6 +508,19 @@ test "runtime explicit software canvas bypasses packet encoding and image upload
     var packet_json_buffer: [16 * 1024]u8 = undefined;
     var pixels: [4 * 4 * 4]u8 = undefined;
     var scratch: [4 * 4 * 4]u8 = undefined;
+
+    // The direct packet-present entry point enforces the same policy as
+    // automatic presentation and exits before packet image upload.
+    try std.testing.expectError(error.UnsupportedService, harness.runtime.presentNextCanvasGpuPacket(1, "canvas", .{
+        .frame_index = 21,
+        .timestamp_ns = 88_000,
+        .surface_size = geometry.SizeF.init(4, 4),
+        .scale = 1,
+    }, canvasFrameScratchStorage(&harness.runtime), canvas.Color.rgb8(0, 0, 0), &gpu_commands, &packet_json_buffer));
+    try std.testing.expectEqual(@as(usize, 0), harness.null_platform.gpu_surface_packet_present_count);
+    try std.testing.expectEqual(@as(usize, 0), harness.null_platform.gpu_surface_image_upload_count);
+    try std.testing.expectEqual(platform.GpuPresentFallbackReason.none, harness.runtime.views[0].info().gpu_present_fallback_reason);
+
     const result = try harness.runtime.presentNextCanvasFrame(1, "canvas", .{
         .frame_index = 22,
         .timestamp_ns = 89_000,

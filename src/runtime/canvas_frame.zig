@@ -33,6 +33,16 @@ pub const canvasRenderAnimationActive = canvas_frame_helpers.canvasRenderAnimati
 pub const platformCanvasFrameProfileRisk = canvas_frame_helpers.platformCanvasFrameProfileRisk;
 pub const gpuSurfaceFrameEventFromGpuFrame = canvas_frame_helpers.gpuSurfaceFrameEventFromGpuFrame;
 
+/// Whether presentation for this view should use the GPU packet path. A
+/// missing view stays eligible so the presentation entry point can report
+/// its normal validation error instead of masking it as a backend choice.
+pub fn canvasGpuPacketPresentationRequested(runtime: anytype, window_id: platform.WindowId, label: []const u8) bool {
+    return if (runtimeFindViewIndex(runtime, window_id, label)) |index|
+        runtime.views[index].gpu_requested_backend != .software
+    else
+        true;
+}
+
 const runtime_api = @import("api.zig");
 const runtime_clock = @import("clock.zig");
 const validation = @import("validation.zig");
@@ -254,7 +264,16 @@ pub fn RuntimeCanvasFrames(comptime Runtime: type) type {
             packet_json_buffer: []u8,
             packet_scale: ?f32,
         ) anyerror!canvas.CanvasGpuPacket {
-            var canvas_frame = try self.nextCanvasFrame(window_id, label, options, storage);
+            // An explicit software request is a presentation policy, not a
+            // host refusal. Stop before planning or encoding a packet (and
+            // before uploading any packet image resources); callers that
+            // offer a pixel fallback handle UnsupportedService as usual.
+            try validateRuntimeViewParent(self, window_id);
+            try validateViewLabel(label);
+            const view_index = runtimeFindViewIndex(self, window_id, label) orelse return error.ViewNotFound;
+            if (self.views[view_index].kind != .gpu_surface) return error.InvalidViewOptions;
+            if (self.views[view_index].gpu_requested_backend == .software) return error.UnsupportedService;
+            var canvas_frame = try planCanvasFrameForView(self, view_index, options, storage, true);
             recordCanvasClearColor(self, window_id, label, clear_color);
             const presentation_scale = normalizedCanvasPresentationScale(packet_scale, canvas_frame.scale);
             // Widen BEFORE the packet build so the scissor-culled
@@ -318,10 +337,7 @@ pub fn RuntimeCanvasFrames(comptime Runtime: type) type {
             widenCanvasFrameDirtyForPresentationScale(&canvas_frame, presentation_scale);
 
             const services = self.options.platform.services;
-            const packet_requested = if (runtimeFindViewIndex(self, window_id, label)) |index|
-                self.views[index].gpu_requested_backend != .software
-            else
-                true;
+            const packet_requested = canvasGpuPacketPresentationRequested(self, window_id, label);
             const packet_service_available = packet_requested and
                 (services.present_gpu_surface_packet_fn != null or
                     services.present_gpu_surface_packet_binary_fn != null);

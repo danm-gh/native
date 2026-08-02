@@ -11,13 +11,22 @@ A tab strip: ONE muted rounded container (the house tab-strip treatment) whose t
 
 ```html
 <column gap="16">
-  <tabs>
-    <button selected="{tab == account}" on-press="show_account">Account</button>
-    <button selected="{tab == password}" on-press="show_password">Password</button>
-    <button selected="{tab == team}" on-press="show_team">Team</button>
-  </tabs>
-  <if test="{tab == account}">
+  <row>
+    <tabs>
+      <button selected="{tab == 'account'}" on-press="show_account">Account</button>
+      <button selected="{tab == 'password'}" on-press="show_password">Password</button>
+      <button selected="{tab == 'team'}" on-press="show_team">Team</button>
+    </tabs>
+    <spacer grow="1" />
+  </row>
+  <if test="{tab == 'account'}">
     <text foreground="text_muted">Manage your account details.</text>
+  </if>
+  <if test="{tab == 'password'}">
+    <text foreground="text_muted">Change your password.</text>
+  </if>
+  <if test="{tab == 'team'}">
+    <text foreground="text_muted">Manage your team.</text>
   </if>
 </column>
 ```

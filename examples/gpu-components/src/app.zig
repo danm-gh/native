@@ -187,9 +187,10 @@ pub const GpuComponentsApp = struct {
             .gpu_surface_frame => |frame_event| try self.handleGpuFrame(runtime, frame_event),
             .canvas_widget_pointer => |pointer_event| try self.handleWidgetPointer(runtime, pointer_event),
             .canvas_widget_keyboard => |keyboard_event| try self.handleWidgetKeyboard(runtime, keyboard_event),
+            .canvas_widget_scroll => |scroll_event| try self.handleWidgetScroll(runtime, scroll_event),
             .canvas_widget_dismiss => |dismiss_event| try self.handleWidgetDismiss(runtime, dismiss_event),
             .appearance_changed => |appearance| try self.applySystemAppearance(runtime, appearance),
-            .gpu_surface_resized, .gpu_surface_input, .shortcut, .timer, .effects_wake, .audio, .video, .files_dropped, .canvas_widget_scroll, .canvas_widget_file_drop, .canvas_widget_drag, .canvas_widget_context_menu, .canvas_widget_context_menu_shown, .canvas_widget_context_menu_dismissed, .canvas_widget_context_menu_request, .canvas_widget_context_press, .canvas_widget_resize, .canvas_widget_change, .window_closed, .automation_provenance, .lifecycle => {},
+            .gpu_surface_resized, .gpu_surface_input, .shortcut, .timer, .effects_wake, .audio, .video, .files_dropped, .canvas_widget_file_drop, .canvas_widget_drag, .canvas_widget_context_menu, .canvas_widget_context_menu_shown, .canvas_widget_context_menu_dismissed, .canvas_widget_context_menu_request, .canvas_widget_context_press, .canvas_widget_resize, .canvas_widget_change, .window_closed, .automation_provenance, .lifecycle => {},
         }
     }
 
@@ -282,6 +283,21 @@ pub const GpuComponentsApp = struct {
         const target = keyboard_event.target orelse return;
         const scrolled_id = try self.scrollVirtualWidgetFromKeyboard(runtime, keyboard_event) orelse target.id;
         try self.reportWidgetInteraction(runtime, keyboard_event.window_id, "Keyed", scrolled_id);
+    }
+
+    /// Plain scroll views are runtime-scrolled, unlike the catalog's
+    /// model-driven virtual lists. Echo their observed offset back into
+    /// the app model and rebuild once so a later programmatic reset is a
+    /// real source-side change instead of an unchanged zero that retained
+    /// reconciliation replaces with the old runtime offset.
+    fn handleWidgetScroll(self: *@This(), runtime: *native_sdk.Runtime, scroll_event: native_sdk.runtime.CanvasWidgetScrollEvent) anyerror!void {
+        if (!std.mem.eql(u8, scroll_event.view_label, canvas_label)) return;
+        switch (scroll_event.id) {
+            component_tree_scroll_id, content_scroll_id => {},
+            else => return,
+        }
+        try self.setComponentVirtualScrollState(scroll_event.id, scroll_event.scroll.axis(.vertical));
+        try self.updateComponentsCanvasModel(runtime, scroll_event.window_id);
     }
 
     /// The engine's dismissal (Escape, outside click, automation) hands

@@ -40,6 +40,7 @@ const widgetTabTriggerInset = widget_metrics.widgetTabTriggerInset;
 const widgetTabTriggerIconExtent = widget_metrics.widgetTabTriggerIconExtent;
 const widgetTabTriggerIconGap = widget_metrics.widgetTabTriggerIconGap;
 const underlineTabsListInset = widget_metrics.underlineTabsListInset;
+const widgetTreeIndent = widget_metrics.widgetTreeIndent;
 const widgetTypographySize = widget_metrics.widgetTypographySize;
 const widgetLineHeight = widget_metrics.widgetLineHeight;
 const widgetDefaultRowHeight = widget_metrics.widgetDefaultRowHeight;
@@ -545,6 +546,7 @@ fn layoutAxisChildrenMode(
     if (comptime fill_primary_tabs) {
         if (fill_width_count > 0) {
             for (children) |child| {
+                if (child.layout.anchor != null) continue;
                 if (!axisChildImplicitlyFillsWidth(child)) continue;
                 fill_width_extent += clampMainExtent(child, axis, fill_width_share);
             }
@@ -925,6 +927,7 @@ fn rowChildWidthMode(row: Widget, available_width: f32, index: usize, tokens: De
     if (comptime fill_primary_tabs) {
         if (fill_width_count > 0) {
             for (children) |candidate| {
+                if (candidate.layout.anchor != null) continue;
                 if (!axisChildImplicitlyFillsWidth(candidate)) continue;
                 fill_width_extent += clampMainExtent(candidate, .horizontal, fill_width_share);
             }
@@ -2214,7 +2217,7 @@ fn intrinsicRowTextWidgetSize(widget: Widget, tokens: DesignTokens) geometry.Siz
     // Ceil to the snap grid (`pixelSnapCeil`): list rows and table
     // cells hug their measured label exactly, so render-time edge
     // snapping must not shave the label below its own width and elide.
-    return geometry.SizeF.init(pixelSnapCeil(tokens, icon_width + text_width + inset * 2), widgetDefaultRowHeight(widget, tokens));
+    return geometry.SizeF.init(pixelSnapCeil(tokens, widgetTreeIndent(widget, tokens) + icon_width + text_width + inset * 2), widgetDefaultRowHeight(widget, tokens));
 }
 
 fn intrinsicCheckboxWidgetSize(widget: Widget, tokens: DesignTokens) geometry.SizeF {

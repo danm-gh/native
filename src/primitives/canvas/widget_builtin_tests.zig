@@ -1060,6 +1060,29 @@ test "geist primary tabs use the measured row while house tabs remain unchanged"
     const row_house = try layoutWidgetTreeWithTokens(row_host, row_host.frame, house, &row_house_nodes);
     try std.testing.expectEqual(@as(f32, 148), row_house.nodes[1].frame.width);
     try std.testing.expectEqual(@as(f32, 204), row_house.nodes[5].frame.width);
+
+    // Anchored primary tabs consume no flow allocation, including the
+    // second pass that totals clamped fill widths. The bounded flow tab
+    // takes its 100px maximum and leaves the rest to the growing sibling.
+    var bounded_strip = nested_strip;
+    bounded_strip.layout.max_size.width = 100;
+    const anchored_strip = Widget{
+        .id = 6,
+        .kind = .tabs,
+        .frame = geometry.RectF.init(0, 0, 40, 50),
+        .layout = .{ .anchor = .{} },
+    };
+    const anchored_row_children = [_]Widget{
+        bounded_strip,
+        .{ .id = 5, .kind = .stack, .layout = .{ .grow = 1 } },
+        anchored_strip,
+    };
+    var anchored_row = row_host;
+    anchored_row.children = &anchored_row_children;
+    var anchored_row_nodes: [7]WidgetLayoutNode = undefined;
+    const anchored_row_layout = try layoutWidgetTreeWithTokens(anchored_row, anchored_row.frame, geist, &anchored_row_nodes);
+    try std.testing.expectEqual(@as(f32, 100), anchored_row_layout.findById(1).?.frame.width);
+    try std.testing.expectEqual(@as(f32, 252), anchored_row_layout.findById(5).?.frame.width);
 }
 
 test "the bubble reaction pill straddles the bottom edge on the page plane" {
@@ -1315,8 +1338,13 @@ test "list and menu items draw a leading vector icon with the label shifted righ
     // Intrinsic row width grows by the shared icon metrics; height holds.
     const plain_size = canvas.intrinsicWidgetSize(plain, tokens);
     const iconed_size = canvas.intrinsicWidgetSize(iconed, tokens);
+    const tree_size = canvas.intrinsicWidgetSize(tree_child, tokens);
     try std.testing.expect(iconed_size.width > plain_size.width);
     try std.testing.expectEqual(plain_size.height, iconed_size.height);
+    // The render-time tree inset is also part of intrinsic measurement,
+    // so a hug-width child row keeps the full label budget after shifting.
+    try std.testing.expectApproxEqAbs(tokens.spacing.lg, tree_size.width - plain_size.width, 0.001);
+    try std.testing.expectEqual(plain_size.height, tree_size.height);
 }
 
 test "menu rows wash the active row, never outline, and checkmark the committed row" {

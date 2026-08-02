@@ -1887,6 +1887,17 @@ test "gpu components pointer clicks update retained controls" {
     try std.testing.expect(std.mem.indexOf(u8, try componentStatusText(&harness.runtime), "Scrolled") == null);
 
     resetComponentDirty(&harness.runtime);
+    before_scroll_layout = try harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const before_tree_scroll = before_scroll_layout.findById(component_tree_scroll_id).?.widget.value;
+    try dispatchComponentPointerWheel(&harness.runtime, app_handle, component_tree_scroll_id, 20);
+    scrolled_layout = try harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const tree_scroll = scrolled_layout.findById(component_tree_scroll_id).?.widget.value;
+    try std.testing.expectApproxEqAbs(before_tree_scroll + 22, tree_scroll, 0.001);
+    // The runtime-owned plain scroll view is echoed into app state and
+    // rebuilt once, making a later source reset distinguishable.
+    try std.testing.expectApproxEqAbs(tree_scroll, app.virtual_scroll.tree, 0.001);
+
+    resetComponentDirty(&harness.runtime);
     try dispatchComponentPointerClick(&harness.runtime, app_handle, 158);
     snapshot = harness.runtime.automationSnapshot("Components");
     try std.testing.expect(componentSnapshotWidget(snapshot, 158).?.selected);
@@ -1909,6 +1920,8 @@ test "gpu components pointer clicks update retained controls" {
     try std.testing.expectEqual(@as(f32, 0), refreshed_layout.findById(120).?.widget.value);
     try std.testing.expectEqual(@as(f32, 28), refreshed_layout.findById(130).?.widget.value);
     try std.testing.expectEqual(@as(f32, 28), refreshed_layout.findById(150).?.widget.value);
+    try std.testing.expectEqual(@as(f32, 0), refreshed_layout.findById(component_tree_scroll_id).?.widget.value);
+    try std.testing.expectEqual(@as(f32, 0), app.virtual_scroll.tree);
 }
 
 test "gpu components pointer opens and selects environment dropdown options" {

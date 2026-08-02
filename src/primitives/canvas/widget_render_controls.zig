@@ -50,6 +50,7 @@ const widgetTabTriggerTextSize = widget_metrics.widgetTabTriggerTextSize;
 const widgetTabTriggerInset = widget_metrics.widgetTabTriggerInset;
 const widgetTabTriggerIconExtent = widget_metrics.widgetTabTriggerIconExtent;
 const widgetTabTriggerIconGap = widget_metrics.widgetTabTriggerIconGap;
+const widgetTreeIndent = widget_metrics.widgetTreeIndent;
 const widgetTypographySize = widget_metrics.widgetTypographySize;
 const widgetButtonInset = widget_metrics.widgetButtonInset;
 const widgetControlInset = widget_metrics.widgetControlInset;
@@ -845,10 +846,7 @@ pub fn emitListItemWidget(builder: *Builder, widget: Widget, tokens: DesignToken
     // that semantic hierarchy its matching visual inset while leaving
     // every ordinary list item untouched. Structural trees may keep the
     // default zero level and author their nesting through child frames.
-    const tree_indent = if (widget.semantics.role == .treeitem and widget.tree_level > 1)
-        @min(widget.frame.width, widgetSizedDensityValue(widget, tokens, tokens.spacing.lg) * @as(f32, @floatFromInt(widget.tree_level - 1)))
-    else
-        0;
+    const tree_indent = @min(widget.frame.width, widgetTreeIndent(widget, tokens));
     var text_frame = geometry.RectF.init(
         widget.frame.x + tree_indent,
         widget.frame.y,

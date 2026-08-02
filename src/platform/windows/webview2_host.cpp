@@ -485,6 +485,13 @@ struct NativeView {
     int gpu_backend = 0;
     uint64_t gpu_packet_decode_ns = 0;
     uint64_t gpu_packet_draw_ns = 0;
+    /* Last device-pixel location sampled from the retained Direct2D
+     * backing for hidden-titlebar caption contrast. Dirty packets that
+     * do not cover this point must not synchronize the GPU target with
+     * GDI merely to rediscover the cached window color. */
+    bool gpu_caption_sample_valid = false;
+    LONG gpu_caption_sample_x = 0;
+    LONG gpu_caption_sample_y = 0;
     int gpu_pointer_down = 0;
     /* TrackMouseEvent(TME_LEAVE) armed for the current hover session:
      * set on the first WM_MOUSEMOVE, cleared by the WM_MOUSELEAVE it
@@ -2414,13 +2421,11 @@ static void syncHiddenCaptionColor(Window &window, const NativeView &view, const
     RECT cluster = {};
     if (!captionButtonsClientRect(window.hwnd, &cluster)) return;
     const POINT origin = childOriginInParentClient(view.hwnd, window.hwnd);
-    long sample_x = (long)(cluster.left - origin.x) - 8;
-    long sample_y = (long)((cluster.top + cluster.bottom) / 2 - origin.y);
-    if (sample_x < 0) sample_x = 0;
-    if (sample_x >= (long)width) sample_x = (long)width - 1;
-    if (sample_y < 0) sample_y = 0;
-    if (sample_y >= (long)height) sample_y = (long)height - 1;
-    const uint8_t *pixel = rgba8 + ((size_t)sample_y * width + (size_t)sample_x) * 4;
+    const LONG sample_x = cluster.left - origin.x - 8;
+    const LONG sample_y = (cluster.top + cluster.bottom) / 2 - origin.y;
+    if (sample_x < 0 || sample_y < 0 ||
+        static_cast<size_t>(sample_x) >= width || static_cast<size_t>(sample_y) >= height) return;
+    const uint8_t *pixel = rgba8 + (static_cast<size_t>(sample_y) * width + static_cast<size_t>(sample_x)) * 4;
     const COLORREF color = RGB(pixel[0], pixel[1], pixel[2]);
     if (window.hidden_caption_color_set && window.hidden_caption_color == color) return;
     window.hidden_caption_color = color;
@@ -2433,23 +2438,39 @@ static void syncHiddenCaptionColor(Window &window, const NativeView &view, const
 /* Hidden-titlebar caption buttons must use the color that actually reached
  * the backing target: gradients, images, blur, and path geometry can all
  * differ from a retained command's bounding-box approximation. This is the
- * packet path's only GPU readback; ordinary windows keep the no-readback
- * presenter, and a failed sample falls back to the diagnostic heuristic. */
-static void syncHiddenCaptionColorFromPacket(Host *host, Window &window, const NativeView &view) {
+ * packet path's only GPU readback; it runs only when this surface covers the
+ * caption sample and the packet dirtied that pixel (or established a fresh
+ * backing). A failed sample falls back to the diagnostic heuristic. */
+static void syncHiddenCaptionColorFromPacket(
+    Host *host, Window &window, NativeView &view, const WindowsGpuPresentInfo &info,
+    double surface_width, double surface_height) {
     if (!host || !view.gpu_surface || !windowUsesHiddenTitlebar(window) || !window.hwnd || !view.hwnd) return;
     const DwmApi &dwm = dwmApi();
     if (!dwm.set_window_attribute) return;
     RECT cluster = {};
     if (!captionButtonsClientRect(window.hwnd, &cluster)) return;
     const POINT origin = childOriginInParentClient(view.hwnd, window.hwnd);
+    const POINT sample = {
+        cluster.left - origin.x - 8,
+        (cluster.top + cluster.bottom) / 2 - origin.y,
+    };
+    RECT client = {};
+    if (!GetClientRect(view.hwnd, &client) || !PtInRect(&client, sample)) return;
+    const bool same_sample = view.gpu_caption_sample_valid &&
+        view.gpu_caption_sample_x == sample.x && view.gpu_caption_sample_y == sample.y;
+    if (same_sample && info.has_dirty_rect && !PtInRect(&info.dirty_rect, sample)) return;
     const double scale = gpuSurfaceScale(view.hwnd);
     if (!(scale > 0)) return;
-    const double sample_x = std::max(0.0, ((double)cluster.left - origin.x - 8.0) / scale);
-    const double sample_y = std::max(0.0, (((double)cluster.top + cluster.bottom) * 0.5 - origin.y) / scale);
+    const double sample_x = static_cast<double>(sample.x) / scale;
+    const double sample_y = static_cast<double>(sample.y) / scale;
+    if (sample_x >= surface_width || sample_y >= surface_height) return;
     uint32_t packed = 0;
     if (!view.gpu_surface->readColorAt(sample_x, sample_y, &packed)) {
         packed = view.gpu_surface->representativeColorAt(sample_x, sample_y);
     }
+    view.gpu_caption_sample_valid = true;
+    view.gpu_caption_sample_x = sample.x;
+    view.gpu_caption_sample_y = sample.y;
     const uint8_t red = (uint8_t)((packed >> 16) & 0xff);
     const uint8_t green = (uint8_t)((packed >> 8) & 0xff);
     const uint8_t blue = (uint8_t)(packed & 0xff);
@@ -6631,7 +6652,10 @@ int native_sdk_windows_present_gpu_surface_packet_binary(Host *host, uint64_t wi
             view.gpu_nonblank = 1;
             view.gpu_sample_color = info.sample_color;
         }
-        if (owner != host->windows.end()) syncHiddenCaptionColorFromPacket(host, owner->second, view);
+        if (owner != host->windows.end()) {
+            syncHiddenCaptionColorFromPacket(
+                host, owner->second, view, info, request.surface_width, request.surface_height);
+        }
         InvalidateRect(view.hwnd, info.has_dirty_rect ? &info.dirty_rect : nullptr, FALSE);
     }
 
@@ -6687,6 +6711,7 @@ int native_sdk_windows_present_gpu_surface_pixels(Host *host, uint64_t window_id
     view.gpu_backend = 0;
     view.gpu_packet_decode_ns = 0;
     view.gpu_packet_draw_ns = 0;
+    view.gpu_caption_sample_valid = false;
     auto owner = host->windows.find(view.window_id);
     const bool transparent_window = owner != host->windows.end() && owner->second.transparent;
 

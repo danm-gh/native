@@ -1591,23 +1591,34 @@ private:
             std::max(0.0f, command.effect.blur * transformScale(command.transform)));
         const float offsets[5] = {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f};
         const float weights[5] = {1.0f, 4.0f, 6.0f, 4.0f, 1.0f};
-        float accumulated_weight = 0;
-        for (size_t y = 0; y < 5; ++y) {
-            for (size_t x = 0; x < 5; ++x) {
-                const float dx = std::max(-target.x, std::min(
-                    static_cast<float>(surface_width_) - (target.x + target.width), offsets[x] * radius));
-                const float dy = std::max(-target.y, std::min(
-                    static_cast<float>(surface_height_) - (target.y + target.height), offsets[y] * radius));
-                const float weight = weights[x] * weights[y];
-                accumulated_weight += weight;
-                temporary->DrawBitmap(
-                    blur_snapshot_, D2D1::RectF(0, 0, target.width, target.height),
-                    weight / accumulated_weight, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
-                    D2D1::RectF(target.x + dx, target.y + dy,
-                        target.x + target.width + dx, target.y + target.height + dy));
+        ID2D1BitmapBrush *sample_brush = nullptr;
+        const D2D1_BITMAP_BRUSH_PROPERTIES sample_properties = D2D1::BitmapBrushProperties(
+            D2D1_EXTEND_MODE_CLAMP, D2D1_EXTEND_MODE_CLAMP, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        result = temporary->CreateBitmapBrush(blur_snapshot_, &sample_properties, nullptr, &sample_brush);
+        if (SUCCEEDED(result) && !sample_brush) result = E_FAIL;
+        if (SUCCEEDED(result) && sample_brush) {
+            float accumulated_weight = 0;
+            for (size_t y = 0; y < 5; ++y) {
+                for (size_t x = 0; x < 5; ++x) {
+                    const float dx = offsets[x] * radius;
+                    const float dy = offsets[y] * radius;
+                    const float weight = weights[x] * weights[y];
+                    accumulated_weight += weight;
+                    /* Translate the whole-surface snapshot beneath the
+                     * target-local output. The brush clamps each sample
+                     * at a surface edge, so a full-surface blur keeps
+                     * nonzero kernel offsets instead of collapsing every
+                     * tap onto the unblurred source. */
+                    sample_brush->SetOpacity(weight / accumulated_weight);
+                    sample_brush->SetTransform(D2D1::Matrix3x2F::Translation(
+                        -(target.x + dx), -(target.y + dy)));
+                    temporary->FillRectangle(
+                        D2D1::RectF(0, 0, target.width, target.height), sample_brush);
+                }
             }
         }
-        result = temporary->EndDraw();
+        const HRESULT draw_result = temporary->EndDraw();
+        if (SUCCEEDED(result)) result = draw_result;
         if (SUCCEEDED(result)) result = temporary->GetBitmap(&blurred);
 
         resume();
@@ -1617,6 +1628,7 @@ private:
                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
             backing_target_->PopAxisAlignedClip();
         }
+        releaseCom(sample_brush);
         releaseCom(blurred);
         releaseCom(temporary);
         return SUCCEEDED(result);

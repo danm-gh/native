@@ -687,15 +687,13 @@ test "buttons draw an inline vector icon and label as one widget with one tint" 
     try std.testing.expect(icon_only_list.findCommandById(widgetPartId(63, 6)) != null);
 }
 
-test "disabled filled buttons mute their border with the fill" {
-    // A disabled primary button washes its fill to half strength; the
-    // border must wash with it, in the SAME hue — a full-strength
-    // accent edge over the washed fill read as a focus ring on every
-    // idle disabled button (the "Comment button wearing an outline at
-    // rest" regression), and the old neutral-gray border made the
-    // faded fill look like a live secondary control. Destructive is
-    // the quiet borderless chip, so its edge stays at width 0 in both
-    // states — nothing to wash.
+test "disabled filled buttons match their reference edge treatment" {
+    // A primary button's implicit structural edge is the same accent as
+    // its opaque fill at rest. shadcn's actual edge is transparent; if
+    // the fill and fallback edge are each washed to half strength, their
+    // overlap becomes darker and invents an outline around the disabled
+    // control. Destructive is already the quiet borderless chip, so its
+    // edge stays at width 0 in both states.
     const tokens = DesignTokens{};
     const button = Widget{
         .id = 71,
@@ -717,9 +715,8 @@ test "disabled filled buttons mute their border with the fill" {
     var disabled_commands: [8]CanvasCommand = undefined;
     var disabled_builder = Builder.init(&disabled_commands);
     try emitWidgetTree(&disabled_builder, disabled, tokens);
-    const washed_border = Color.rgba(tokens.colors.accent.r, tokens.colors.accent.g, tokens.colors.accent.b, 0.5 * tokens.colors.accent.a);
     switch (disabled_builder.displayList().findCommandById(widgetPartId(71, 2)).?.command) {
-        .stroke_rect => |stroke| try expectFillColor(washed_border, stroke.stroke.fill),
+        .stroke_rect => |stroke| try expectFillColor(Color.rgba8(0, 0, 0, 0), stroke.stroke.fill),
         else => return error.TestUnexpectedResult,
     }
     // shadcn applies opacity to the composed button. Its knockout label

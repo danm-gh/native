@@ -432,6 +432,13 @@ pub fn buttonBorderFill(widget: Widget, tokens: DesignTokens) Fill {
             .default, .secondary, .outline => if (tokens.controls.button_disabled_border) |disabled_border| return colorFill(disabled_border),
             .ghost => {},
         };
+        // shadcn's filled default button has a transparent CSS border.
+        // At rest our fallback accent stroke is invisible against the
+        // identical opaque fill, but washing both commands separately
+        // makes their overlap darker and creates a false outline. Drop
+        // that implicit edge in the disabled state; an explicitly themed
+        // or locally authored border still follows its own opacity wash.
+        if (widget.variant == .primary and visual.border == null) return colorFill(transparentColor());
     }
     return colorFill(disabledWash(border, widget.state.disabled, tokens.states.disabled_alpha));
 }

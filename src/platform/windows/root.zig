@@ -161,7 +161,7 @@ extern fn native_sdk_windows_close_window(host: *WindowsHost, window_id: u64) c_
 extern fn native_sdk_windows_minimize_window(host: *WindowsHost, window_id: u64) c_int;
 extern fn native_sdk_windows_show_window(host: *WindowsHost, window_id: u64) c_int;
 extern fn native_sdk_windows_set_window_close_policy(host: *WindowsHost, window_id: u64, close_policy: c_int) c_int;
-extern fn native_sdk_windows_create_view(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize, kind: c_int, parent: [*]const u8, parent_len: usize, x: f64, y: f64, width: f64, height: f64, layer: c_int, visible: c_int, enabled: c_int, role: [*]const u8, role_len: usize, accessibility_label: [*]const u8, accessibility_label_len: usize, text: [*]const u8, text_len: usize, command: [*]const u8, command_len: usize) c_int;
+extern fn native_sdk_windows_create_view(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize, kind: c_int, gpu_backend_request: c_int, parent: [*]const u8, parent_len: usize, x: f64, y: f64, width: f64, height: f64, layer: c_int, visible: c_int, enabled: c_int, role: [*]const u8, role_len: usize, accessibility_label: [*]const u8, accessibility_label_len: usize, text: [*]const u8, text_len: usize, command: [*]const u8, command_len: usize) c_int;
 extern fn native_sdk_windows_update_view(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize, has_frame: c_int, x: f64, y: f64, width: f64, height: f64, has_layer: c_int, layer: c_int, has_visible: c_int, visible: c_int, has_enabled: c_int, enabled: c_int, has_role: c_int, role: [*]const u8, role_len: usize, has_accessibility_label: c_int, accessibility_label: [*]const u8, accessibility_label_len: usize, has_text: c_int, text: [*]const u8, text_len: usize, has_command: c_int, command: [*]const u8, command_len: usize) c_int;
 extern fn native_sdk_windows_set_view_frame(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize, x: f64, y: f64, width: f64, height: f64) c_int;
 extern fn native_sdk_windows_set_view_visible(host: *WindowsHost, window_id: u64, label: [*]const u8, label_len: usize, visible: c_int) c_int;
@@ -1079,6 +1079,7 @@ fn createView(context: ?*anyopaque, options: platform_mod.ViewOptions) anyerror!
         options.label.ptr,
         options.label.len,
         viewKindInt(options.kind),
+        if (options.kind == .gpu_surface) gpuSurfaceBackendRequestInt(options.gpu_surface.backend) else 0,
         parent.ptr,
         parent.len,
         frame.x,
@@ -1230,14 +1231,22 @@ fn presentGpuSurfacePacketBinary(context: ?*anyopaque, packet: platform_mod.GpuS
 fn uploadGpuSurfaceImage(context: ?*anyopaque, image: platform_mod.GpuSurfaceImagePixels) anyerror!void {
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
     if (self.web_engine != .system) return error.UnsupportedService;
-    if (native_sdk_windows_upload_gpu_surface_image(
+    return gpuSurfaceImageUploadResult(native_sdk_windows_upload_gpu_surface_image(
         self.host,
         image.id,
         image.width,
         image.height,
         image.rgba8.ptr,
         image.rgba8.len,
-    ) == 0) return error.InvalidGpuSurfaceImage;
+    ));
+}
+
+fn gpuSurfaceImageUploadResult(result: c_int) anyerror!void {
+    switch (result) {
+        1 => return,
+        0 => return error.UnsupportedService,
+        else => return error.InvalidGpuSurfaceImage,
+    }
 }
 
 fn removeGpuSurfaceImage(context: ?*anyopaque, id: u64) anyerror!void {
@@ -2042,6 +2051,36 @@ test "windows passive canvas creation does not focus its child hwnd" {
     ) != null);
 }
 
+test "windows software GPU backend request stays on the pixel presenter" {
+    try std.testing.expectEqual(@as(c_int, 0), gpuSurfaceBackendRequestInt(.metal));
+    try std.testing.expectEqual(@as(c_int, 1), gpuSurfaceBackendRequestInt(.software));
+
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "view.gpu_backend_request != kGpuBackendRequestSoftware",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (view.gpu_backend_request == kGpuBackendRequestSoftware) return 0;",
+    ) != null);
+}
+
+test "windows unavailable image uploader negotiates pixel fallback" {
+    try gpuSurfaceImageUploadResult(1);
+    try std.testing.expectError(error.UnsupportedService, gpuSurfaceImageUploadResult(0));
+    try std.testing.expectError(error.InvalidGpuSurfaceImage, gpuSurfaceImageUploadResult(-1));
+
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "if (!host->gpu_renderer) return 0;",
+    ) != null);
+}
+
 test "windows click-through uses a layered surface even when visually opaque" {
     const host_source = @embedFile("webview2_host.cpp");
     try std.testing.expect(std.mem.indexOf(
@@ -2252,6 +2291,10 @@ fn viewKindInt(kind: platform_mod.ViewKind) c_int {
         .progress_indicator => 15,
         .segmented_control => 16,
     };
+}
+
+fn gpuSurfaceBackendRequestInt(backend: platform_mod.GpuSurfaceBackend) c_int {
+    return if (backend == .software) 1 else 0;
 }
 
 fn flattenFilters(filters: []const platform_mod.FileFilter, buffer: []u8) []const u8 {

@@ -28,6 +28,30 @@ constexpr size_t kDirtyRectCap = 8;
 constexpr uint32_t kMaxSurfacePixels = 8192;
 constexpr float kBezierCircle = 0.5522847498307936f;
 
+constexpr uint64_t canvasFontResourceId(uint64_t font_id) {
+    /* Zero is DrawText's public default. It and the styled sans variants
+     * resolve through the same bundled Geist regular resource the engine's
+     * reference metrics use. */
+    return font_id == 0 || (font_id >= 3 && font_id <= 6) ? 1 : font_id;
+}
+
+constexpr uint64_t canvasFallbackFontResourceId(uint64_t font_id) {
+    return font_id == 2 ? 0 : 1;
+}
+
+constexpr float canvasStrokeWidth(float width) {
+    return width > 0 ? width : 0;
+}
+
+static_assert(canvasFontResourceId(0) == 1, "default canvas text uses bundled Geist");
+static_assert(canvasFontResourceId(2) == 2, "the built-in mono face keeps its resource id");
+static_assert(canvasFontResourceId(6) == 1, "styled sans variants use bundled Geist");
+static_assert(canvasFallbackFontResourceId(2) == 0, "mono keeps its platform fallback");
+static_assert(canvasFallbackFontResourceId(64) == 1, "missing application fonts fall back to Geist");
+static_assert(canvasStrokeWidth(-1.0f) == 0, "negative canvas strokes are empty");
+static_assert(canvasStrokeWidth(0.0f) == 0, "zero-width canvas strokes are empty");
+static_assert(canvasStrokeWidth(0.5f) == 0.5f, "subpixel canvas strokes keep their width");
+
 template <typename T>
 static void releaseCom(T *&value) {
     if (value) value->Release();
@@ -1158,6 +1182,11 @@ private:
     }
 
     bool drawPaintedShape(const Command &command, bool stroke) {
+        const float stroke_width = canvasStrokeWidth(
+            command.shape.kind == Shape::Kind::line ? command.shape.width : command.stroke_width);
+        /* Match the reference renderer: non-positive strokes are no-ops,
+         * while positive fractional widths remain valid Direct2D widths. */
+        if (stroke && stroke_width <= 0) return true;
         ID2D1Brush *brush = nullptr;
         if (!makeBrush(command.paint, clamp01(command.opacity), &brush)) return false;
         if (command.shape.kind == Shape::Kind::line) {
@@ -1168,7 +1197,7 @@ private:
             backing_target_->DrawLine(
                 D2D1::Point2F(command.shape.from.x, command.shape.from.y),
                 D2D1::Point2F(command.shape.to.x, command.shape.to.y),
-                brush, std::max(1.0f, command.shape.width), command.cap == 1 ? round_stroke_ : butt_stroke_);
+                brush, stroke_width, command.cap == 1 ? round_stroke_ : butt_stroke_);
             releaseCom(brush);
             return true;
         }
@@ -1178,8 +1207,7 @@ private:
             return false;
         }
         if (stroke) {
-            const float width = std::max(1.0f, command.stroke_width);
-            backing_target_->DrawGeometry(geometry, brush, width, command.cap == 1 ? round_stroke_ : butt_stroke_);
+            backing_target_->DrawGeometry(geometry, brush, stroke_width, command.cap == 1 ? round_stroke_ : butt_stroke_);
         } else {
             backing_target_->FillGeometry(geometry, brush);
         }
@@ -1297,8 +1325,15 @@ private:
         /* IDs 3..6 are styled variants of the built-in sans face, not
          * independent assets. Resolve them through registered Geist id 1
          * and let DirectWrite select/simulate the requested traits. */
-        const uint64_t resource_id = text.font_id >= 3 && text.font_id <= 6 ? 1 : text.font_id;
+        const uint64_t resource_id = canvasFontResourceId(text.font_id);
         std::shared_ptr<FontResource> custom = renderer_->font(resource_id);
+        /* An absent application font follows the reference/AppKit fallback
+         * contract too: mono keeps its platform mono fallback, every other
+         * id uses bundled Geist when that registration succeeded. */
+        if (!custom) {
+            const uint64_t fallback_id = canvasFallbackFontResourceId(text.font_id);
+            if (fallback_id != 0) custom = renderer_->font(fallback_id);
+        }
         const wchar_t *family = L"Segoe UI";
         IDWriteFontCollection *collection = nullptr;
         DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;

@@ -185,6 +185,8 @@ constexpr int kViewSearchField = 9;
 constexpr int kViewLabel = 10;
 constexpr int kViewSpacer = 11;
 constexpr int kViewGpuSurface = 12;
+constexpr int kGpuBackendRequestAccelerated = 0;
+constexpr int kGpuBackendRequestSoftware = 1;
 constexpr int kViewCheckbox = 13;
 constexpr int kViewToggle = 14;
 constexpr int kViewProgressIndicator = 15;
@@ -433,6 +435,10 @@ struct NativeView {
     bool visible = true;
     bool enabled = true;
     bool explicit_text = false;
+    /* Portable creation request: accelerated maps to Direct2D on Windows;
+     * software is an explicit opt-out that keeps this view on the reference
+     * renderer plus GDI pixel presenter. */
+    int gpu_backend_request = kGpuBackendRequestAccelerated;
     /* Retained Direct2D packet presenter. Transparent top-level windows
      * intentionally leave this unused and take the alpha-correct pixel
      * fallback because UpdateLayeredWindow cannot compose child HWNDs. */
@@ -6357,8 +6363,10 @@ int native_sdk_windows_set_window_close_policy(Host *host, uint64_t window_id, i
     return 1;
 }
 
-int native_sdk_windows_create_view(Host *host, uint64_t window_id, const char *label, size_t label_len, int kind, const char *parent, size_t parent_len, double x, double y, double width, double height, int layer, int visible, int enabled, const char *role, size_t role_len, const char *accessibility_label, size_t accessibility_label_len, const char *text, size_t text_len, const char *command, size_t command_len) {
+int native_sdk_windows_create_view(Host *host, uint64_t window_id, const char *label, size_t label_len, int kind, int gpu_backend_request, const char *parent, size_t parent_len, double x, double y, double width, double height, int layer, int visible, int enabled, const char *role, size_t role_len, const char *accessibility_label, size_t accessibility_label_len, const char *text, size_t text_len, const char *command, size_t command_len) {
     if (!host || label_len == 0 || !isSupportedNativeViewKind(kind) || !validNativeViewFrame(x, y, width, height)) return 0;
+    if (kind == kViewGpuSurface && gpu_backend_request != kGpuBackendRequestAccelerated &&
+        gpu_backend_request != kGpuBackendRequestSoftware) return 0;
     auto window = host->windows.find(window_id);
     if (window == host->windows.end() || !window->second.hwnd) return 0;
     /* UpdateLayeredWindow owns the complete top-level bitmap and cannot
@@ -6395,6 +6403,7 @@ int native_sdk_windows_create_view(Host *host, uint64_t window_id, const char *l
     view.visible = visible != 0;
     view.enabled = enabled != 0;
     view.explicit_text = text_len > 0;
+    view.gpu_backend_request = kind == kViewGpuSurface ? gpu_backend_request : kGpuBackendRequestAccelerated;
 
     const std::string display_text = nativeViewDisplayText(view);
     std::wstring wide_text = widen(display_text);
@@ -6482,7 +6491,9 @@ int native_sdk_windows_create_view(Host *host, uint64_t window_id, const char *l
     if (!hwnd) return 0;
 
     view.hwnd = hwnd;
-    if (view.kind == kViewGpuSurface && host->gpu_renderer && !window->second.transparent) {
+    if (view.kind == kViewGpuSurface &&
+        view.gpu_backend_request != kGpuBackendRequestSoftware &&
+        host->gpu_renderer && !window->second.transparent) {
         view.gpu_surface = host->gpu_renderer->createSurface(hwnd);
     }
     applyNativeViewState(view, true, display_text);
@@ -6573,6 +6584,7 @@ int native_sdk_windows_present_gpu_surface_packet_binary(Host *host, uint64_t wi
     auto found = host->native_views.find(nativeViewKey(window_id, slice(label, label_len)));
     if (found == host->native_views.end() || found->second.kind != kViewGpuSurface || !found->second.hwnd) return -1;
     NativeView &view = found->second;
+    if (view.gpu_backend_request == kGpuBackendRequestSoftware) return 0;
     auto owner = host->windows.find(view.window_id);
     /* WS_EX_LAYERED top-level windows are presented as one alpha bitmap;
      * Windows does not redirect child HWNDs into that bitmap. Preserve
@@ -6626,8 +6638,12 @@ int native_sdk_windows_present_gpu_surface_packet_binary(Host *host, uint64_t wi
 }
 
 int native_sdk_windows_upload_gpu_surface_image(Host *host, uint64_t id, size_t width, size_t height, const uint8_t *rgba8, size_t rgba8_len) {
-    if (!host || !host->gpu_renderer || width > UINT32_MAX || height > UINT32_MAX) return 0;
-    return host->gpu_renderer->uploadImage(id, static_cast<uint32_t>(width), static_cast<uint32_t>(height), rgba8, rgba8_len) ? 1 : 0;
+    if (!host || width > UINT32_MAX || height > UINT32_MAX) return -1;
+    /* Zero means the packet service is unavailable, matching the present
+     * ABI. The Zig seam turns that into UnsupportedService so image-bearing
+     * frames take the same CPU fallback as shape-only frames. */
+    if (!host->gpu_renderer) return 0;
+    return host->gpu_renderer->uploadImage(id, static_cast<uint32_t>(width), static_cast<uint32_t>(height), rgba8, rgba8_len) ? 1 : -1;
 }
 
 int native_sdk_windows_remove_gpu_surface_image(Host *host, uint64_t id) {

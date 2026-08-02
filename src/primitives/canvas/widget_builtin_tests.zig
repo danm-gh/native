@@ -1229,6 +1229,84 @@ test "geist primary tabs fill the remaining width of an indented vertical flow" 
     try std.testing.expectEqual(geometry.RectF.init(20, 0, 480, 50), wide_layout.findById(2).?.frame);
 }
 
+test "geist primary tabs preserve authored overflow in rows" {
+    const geist = DesignTokens.theme(.{ .pack = .geist });
+    const triggers = [_]Widget{.{
+        .id = 3,
+        .kind = .segmented_control,
+        .text = "Files",
+        .state = .{ .selected = true },
+    }};
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 2,
+        .frame = geometry.RectF.init(0, 0, 480, 50),
+        .children = &triggers,
+    });
+    const children = [_]Widget{
+        strip,
+        .{ .id = 4, .kind = .stack, .layout = .{ .grow = 1 } },
+    };
+    const row = Widget{
+        .id = 1,
+        .kind = .row,
+        .frame = geometry.RectF.init(0, 0, 352, 50),
+        .children = &children,
+    };
+
+    var nodes: [5]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTreeWithTokens(row, row.frame, geist, &nodes);
+    try std.testing.expectEqual(@as(f32, 480), layout.findById(2).?.frame.width);
+    try std.testing.expectEqual(@as(f32, 0), layout.findById(4).?.frame.width);
+}
+
+test "geist primary tabs fill regular and virtual grid cells" {
+    const geist = DesignTokens.theme(.{ .pack = .geist });
+    const house = DesignTokens{};
+    const triggers = [_]Widget{.{
+        .id = 3,
+        .kind = .segmented_control,
+        .text = "Files",
+        .state = .{ .selected = true },
+    }};
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 2,
+        .frame = geometry.RectF.init(0, 0, 148, 50),
+        .children = &triggers,
+    });
+    const children = [_]Widget{strip};
+    const grid = Widget{
+        .id = 1,
+        .kind = .grid,
+        .frame = geometry.RectF.init(0, 0, 352, 50),
+        .layout = .{ .columns = 1 },
+        .children = &children,
+    };
+
+    var geist_nodes: [4]WidgetLayoutNode = undefined;
+    const geist_layout = try layoutWidgetTreeWithTokens(grid, grid.frame, geist, &geist_nodes);
+    try std.testing.expectEqual(@as(f32, 352), geist_layout.findById(2).?.frame.width);
+
+    var house_nodes: [4]WidgetLayoutNode = undefined;
+    const house_layout = try layoutWidgetTreeWithTokens(grid, grid.frame, house, &house_nodes);
+    try std.testing.expectEqual(@as(f32, 148), house_layout.findById(2).?.frame.width);
+
+    var virtual_grid = grid;
+    virtual_grid.layout.virtualized = true;
+    virtual_grid.layout.virtual_item_extent = 50;
+    var virtual_nodes: [4]WidgetLayoutNode = undefined;
+    const virtual_layout = try layoutWidgetTreeWithTokens(virtual_grid, virtual_grid.frame, geist, &virtual_nodes);
+    try std.testing.expectEqual(@as(f32, 352), virtual_layout.findById(2).?.frame.width);
+
+    var wide_strip = strip;
+    wide_strip.frame.width = 480;
+    const wide_children = [_]Widget{wide_strip};
+    var wide_grid = grid;
+    wide_grid.children = &wide_children;
+    var wide_nodes: [4]WidgetLayoutNode = undefined;
+    const wide_layout = try layoutWidgetTreeWithTokens(wide_grid, wide_grid.frame, geist, &wide_nodes);
+    try std.testing.expectEqual(@as(f32, 480), wide_layout.findById(2).?.frame.width);
+}
+
 test "the bubble reaction pill straddles the bottom edge on the page plane" {
     const surfaces = @import("widget_render_surfaces.zig");
     const tokens = DesignTokens{};

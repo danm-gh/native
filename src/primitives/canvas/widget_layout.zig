@@ -481,6 +481,13 @@ fn axisChildImplicitlyFillsWidth(widget: Widget) bool {
         (widget.variant == .default or widget.variant == .primary);
 }
 
+/// Width:100% is a floor for primary underline tabs, not a cap. Preserve
+/// an authored overflow while still growing a house-sized strip to its
+/// share of the row. Explicit max bounds remain the author escape hatch.
+fn axisChildImplicitFillExtent(widget: Widget, axis: LayoutAxis, fill_width_share: f32, tokens: DesignTokens) f32 {
+    return clampMainExtent(widget, axis, @max(preferredMainExtent(widget, axis, tokens), fill_width_share));
+}
+
 /// The builder stamps the house TabsList's canonical hug before it knows
 /// which runtime theme pack will paint the tree. When the resolved
 /// register is underline, translate only that recorded kind default to
@@ -578,7 +585,7 @@ fn layoutAxisChildrenMode(
             for (children) |child| {
                 if (child.layout.anchor != null) continue;
                 if (!axisChildImplicitlyFillsWidth(child)) continue;
-                fill_width_extent += clampMainExtent(child, axis, fill_width_share);
+                fill_width_extent += axisChildImplicitFillExtent(child, axis, fill_width_share, tokens);
             }
         }
     }
@@ -603,7 +610,7 @@ fn layoutAxisChildrenMode(
         const grow = nonNegative(child.layout.grow);
         const implicitly_fills = if (comptime fill_primary_tabs) axisChildImplicitlyFillsWidth(child) else false;
         const main_extent = if (implicitly_fills)
-            clampMainExtent(child, axis, fill_width_share)
+            axisChildImplicitFillExtent(child, axis, fill_width_share, tokens)
         else if (grow > 0 and grow_total > 0)
             clampMainExtent(child, axis, grow_extent * grow / grow_total)
         else
@@ -965,14 +972,14 @@ fn rowChildWidthMode(row: Widget, available_width: f32, index: usize, tokens: De
             for (children) |candidate| {
                 if (candidate.layout.anchor != null) continue;
                 if (!axisChildImplicitlyFillsWidth(candidate)) continue;
-                fill_width_extent += clampMainExtent(candidate, .horizontal, fill_width_share);
+                fill_width_extent += axisChildImplicitFillExtent(candidate, .horizontal, fill_width_share, tokens);
             }
         }
     }
     const grow_extent = @max(0, flexible_extent - fill_width_extent);
     const child = children[index];
     const implicitly_fills = if (comptime fill_primary_tabs) axisChildImplicitlyFillsWidth(child) else false;
-    if (implicitly_fills) return clampMainExtent(child, .horizontal, fill_width_share);
+    if (implicitly_fills) return axisChildImplicitFillExtent(child, .horizontal, fill_width_share, tokens);
     const grow = nonNegative(child.layout.grow);
     if (grow > 0 and grow_total > 0) return clampMainExtent(child, .horizontal, grow_extent * grow / grow_total);
     // The same bubble thread cap `layoutAxisChildren` applies, replayed
@@ -1117,7 +1124,7 @@ fn layoutGridChildren(
         const row = child_index / columns;
         const x = content.x + @as(f32, @floatFromInt(column)) * (cell_width + clamped_gap);
         const y = content.y + @as(f32, @floatFromInt(row)) * (fallback_cell_height + clamped_gap);
-        const width = clampIntrinsicAxis(if (child.frame.width > 0) child.frame.width else cell_width, child.layout.min_size.width, child.layout.max_size.width);
+        const width = gridChildWidth(child, cell_width, tokens);
         const height = clampIntrinsicAxis(if (child.frame.height > 0) child.frame.height else fallback_cell_height, child.layout.min_size.height, child.layout.max_size.height);
         const child_frame = geometry.RectF.init(
             x + child.frame.x,
@@ -1179,7 +1186,7 @@ fn layoutVirtualGridChildren(
             child.semantics.list_item_count = saturatingU32(children.len);
             const x = content.x + @as(f32, @floatFromInt(column)) * (cell_width + clamped_gap);
             const y = content.y + @as(f32, @floatFromInt(row)) * stride - range.layout_offset + child.frame.y;
-            const width = clampIntrinsicAxis(if (child.frame.width > 0) child.frame.width else cell_width, child.layout.min_size.width, child.layout.max_size.width);
+            const width = gridChildWidth(child, cell_width, tokens);
             const height = clampIntrinsicAxis(if (child.frame.height > 0) child.frame.height else range.item_extent, child.layout.min_size.height, child.layout.max_size.height);
             const child_frame = geometry.RectF.init(
                 x + child.frame.x,
@@ -1190,6 +1197,17 @@ fn layoutVirtualGridChildren(
             _ = try layoutWidgetDepth(child, child_frame, parent_index, depth + 1, output, len, tokens);
         }
     }
+}
+
+/// A grid cell is the containing width for Geist's primary ruled row.
+/// Translate the theme-agnostic house width to the remaining cell width,
+/// while keeping deliberate overflow and explicit max bounds intact.
+fn gridChildWidth(child: Widget, cell_width: f32, tokens: DesignTokens) f32 {
+    var width = if (child.frame.width > 0) child.frame.width else cell_width;
+    if (primaryUnderlineTabsFillWidth(child, tokens)) {
+        width = @max(width, @max(0, cell_width - child.frame.x));
+    }
+    return clampIntrinsicAxis(width, child.layout.min_size.width, child.layout.max_size.width);
 }
 
 fn preferredGridRowExtent(children: []const Widget, columns: usize, tokens: DesignTokens) f32 {

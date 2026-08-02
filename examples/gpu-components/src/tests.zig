@@ -1560,6 +1560,7 @@ test "gpu components app registers component lab on first gpu frame" {
     var component_action_buffer: [80]u8 = undefined;
     const component_action = try std.fmt.bufPrint(&component_action_buffer, "widget-action components-canvas {d} press", .{componentTreeItemId(6)});
     try harness.runtime.dispatchAutomationCommand(app.app(), component_action);
+    try std.testing.expectEqualStrings("Showing Button component.", try componentStatusText(&harness.runtime));
     snapshot = harness.runtime.automationSnapshot("Components");
     try std.testing.expectEqual(@as(usize, 6), app.selected_component);
     try std.testing.expect(componentSnapshotWidget(snapshot, 181) == null);

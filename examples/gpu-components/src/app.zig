@@ -282,6 +282,10 @@ pub const GpuComponentsApp = struct {
         if (keyboard_event.keyboard.phase != .key_down) return;
         const target = keyboard_event.target orelse return;
         const scrolled_id = try self.scrollVirtualWidgetFromKeyboard(runtime, keyboard_event) orelse target.id;
+        // Explorer-row activation already installed the route status in
+        // its command handler. Keyboard scrolling still runs above, but
+        // do not replace that useful status with a generic key report.
+        if (componentTreeItemIndex(target.id) != null) return;
         try self.reportWidgetInteraction(runtime, keyboard_event.window_id, "Keyed", scrolled_id);
     }
 

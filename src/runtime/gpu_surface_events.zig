@@ -86,19 +86,25 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                 // republish when the runtime is invalidated, and a frame
                 // completion carrying a NEW discrete fact may have no
                 // other invalidation source, leaving the published
-                // snapshot stale forever. Two such facts invalidate here
-                // (a third — a resolved input latency — is checked after
+                // snapshot stale forever. Three such facts invalidate here
+                // (a fourth — a resolved input latency — is checked after
                 // the app dispatch below, where the responding present
                 // stamps it):
                 //   - the host-reported nonblank verdict changed (the
                 //     first nonblank presentation on an idle boot has no
                 //     resize and no input to piggyback on);
+                //   - the concrete presenter changed (for example a
+                //     Direct2D packet refusal fell back to software, or a
+                //     later packet recovered Direct2D);
                 //   - this frame recorded the first-frame latency.
                 // Steady-state frames carry no new fact and stay quiet —
                 // a timer-mode surface must not republish observable
                 // state 60 times a second.
                 const first_frame_latency_recorded = !first_frame_latency_was_recorded and self.views[index].gpu_first_frame_latency_recorded;
-                if (self.views[index].gpu_frame_nonblank != frame_event.nonblank or first_frame_latency_recorded) {
+                if (self.views[index].gpu_frame_nonblank != frame_event.nonblank or
+                    self.views[index].gpu_backend != frame_event.backend or
+                    first_frame_latency_recorded)
+                {
                     self.invalidateFor(.state, self.views[index].frame);
                 }
                 self.views[index].gpu_frame_nonblank = frame_event.nonblank;

@@ -730,6 +730,35 @@ struct ImageResource {
     std::vector<uint8_t> bgra;
 };
 
+constexpr bool imageActionResolvesResource(uint8_t kind) {
+    return kind == 0 || kind == 1; /* upload or retain */
+}
+
+constexpr bool imageMetadataMatchesResource(
+    bool resource_present,
+    uint32_t metadata_width,
+    uint32_t metadata_height,
+    uint32_t resource_width,
+    uint32_t resource_height
+) {
+    /* The renderer-wide store is authoritative. An absent entry is the
+     * legitimate "not registered (yet/anymore)" state and draws nothing,
+     * even though its packet metadata is therefore 0x0. */
+    return !resource_present ||
+        (metadata_width != 0 && metadata_height != 0 &&
+            metadata_width == resource_width && metadata_height == resource_height);
+}
+
+static_assert(imageActionResolvesResource(0), "image uploads resolve the renderer-wide store");
+static_assert(imageActionResolvesResource(1), "image retains reconcile the renderer-wide store");
+static_assert(!imageActionResolvesResource(2), "image evictions only remove surface state");
+static_assert(imageMetadataMatchesResource(false, 0, 0, 0, 0),
+    "an unregistered image is a valid transient packet resource");
+static_assert(imageMetadataMatchesResource(true, 64, 32, 64, 32),
+    "a registered image must match its packet metadata");
+static_assert(!imageMetadataMatchesResource(true, 64, 32, 32, 64),
+    "mismatched registered-image metadata is rejected");
+
 class FontBytesOwner final : public IUnknown {
 public:
     explicit FontBytesOwner(const uint8_t *bytes, size_t length) : bytes_(bytes, bytes + length) {}
@@ -1712,25 +1741,30 @@ private:
         auto next = image_cache_;
         for (const ImageAction &action : packet.image_actions) {
             if (action.kind == 2) next.erase(action.id);
-            else if (action.kind > 1) return false;
+            else if (!imageActionResolvesResource(action.kind)) return false;
         }
         for (const ImageAction &action : packet.image_actions) {
-            if (action.kind != 0) continue;
+            if (!imageActionResolvesResource(action.kind)) continue;
             if (action.image_index == UINT32_MAX || action.image_index >= packet.images.size()) return false;
             const ImageMeta &meta = packet.images[action.image_index];
-            if (meta.id != action.id || meta.id == 0 || meta.width == 0 || meta.height == 0) return false;
+            if (meta.id != action.id || meta.id == 0) return false;
             std::shared_ptr<ImageResource> resource = renderer_->image(meta.id);
-            if (resource && (resource->width != meta.width || resource->height != meta.height)) return false;
+            if (!imageMetadataMatchesResource(
+                    resource != nullptr,
+                    meta.width,
+                    meta.height,
+                    resource ? resource->width : 0,
+                    resource ? resource->height : 0)) return false;
             if (resource) next[meta.id] = std::move(resource);
             else next.erase(meta.id);
         }
         image_cache_ = std::move(next);
         /* The renderer-wide remove releases the shared pixels, but each
-         * surface owns its own Direct2D bitmap. Eviction must drop that COM
-         * resource too so lifetime registration churn stays high-water
-         * bounded rather than retaining one texture per historical id. */
+         * surface owns its own Direct2D bitmap. Any action that reconciles
+         * an id to absent must drop that COM resource too so unregisters do
+         * not leave stale texture memory behind. */
         for (const ImageAction &action : packet.image_actions) {
-            if (action.kind == 2 && image_cache_.find(action.id) == image_cache_.end()) {
+            if (image_cache_.find(action.id) == image_cache_.end()) {
                 releaseImageBitmap(action.id);
             }
         }

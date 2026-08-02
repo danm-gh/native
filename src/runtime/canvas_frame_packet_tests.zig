@@ -1267,9 +1267,9 @@ test "chat-transcript-shaped heavy frame stays on the packet path through the bi
     const binary_len = harness.null_platform.gpu_surface_packet_present_binary_len;
     try std.testing.expect(binary_len > 0);
     try std.testing.expect(binary_len <= platform.max_gpu_surface_packet_binary_bytes);
-    // The size win that makes the ceiling real: >=5x denser than the
-    // JSON encoding on this text-heavy frame.
-    try std.testing.expect(binary_len * 5 <= json_needed_bytes);
+    // Positioned glyphs now ride the correctness-preserving v5 wire, while
+    // compact fields still keep it >=3x denser than JSON on this shaped frame.
+    try std.testing.expect(binary_len * 3 <= json_needed_bytes);
     try std.testing.expectEqual(platform.GpuPresentPath.packet, harness.runtime.views[0].gpu_present_path);
     try std.testing.expectEqual(platform.GpuPresentFallbackReason.none, harness.runtime.views[0].info().gpu_present_fallback_reason);
 

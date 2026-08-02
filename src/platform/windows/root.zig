@@ -2137,6 +2137,11 @@ test "windows packet renderer preserves text baselines and disjoint dirty region
         renderer_source,
         "draw_line(text.text, text.origin.x, text.origin.y)",
     ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        renderer_source,
+        "backing_target_->DrawGlyphRun(\n                    D2D1::Point2F(glyph.x, glyph.baseline)",
+    ) != null);
 
     const draw_list_at = std.mem.indexOf(
         u8,
@@ -2171,6 +2176,20 @@ test "windows packet renderer preserves text baselines and disjoint dirty region
         u8,
         host_source,
         "InvalidateRect(view.hwnd, &info.dirty_rects[index], FALSE)",
+    ) != null);
+}
+
+test "windows packet renderer keeps square rectangle stroke joins" {
+    const renderer_source = @embedFile("gpu_surface_renderer.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        renderer_source,
+        "style.lineJoin = D2D1_LINE_JOIN_MITER;",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        renderer_source,
+        "command.shape.kind == Shape::Kind::stroke_rect\n                ? rect_stroke_",
     ) != null);
 }
 

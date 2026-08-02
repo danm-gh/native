@@ -459,6 +459,7 @@ test "backdrop blur promotes intersecting damage to a full repaint" {
     const initial = [_]canvas.CanvasCommand{
         .{ .fill_rect = .{ .id = 1, .rect = geometry.RectF.init(4, 4, 4, 4), .fill = .{ .color = canvas.Color.rgb8(255, 0, 0) } } },
         .{ .fill_rect = .{ .id = 2, .rect = geometry.RectF.init(44, 15, 4, 4), .fill = .{ .color = canvas.Color.rgb8(255, 0, 0) } } },
+        .{ .fill_rect = .{ .id = 5, .rect = geometry.RectF.init(90, 4, 4, 4), .fill = .{ .color = canvas.Color.rgb8(255, 0, 0) } } },
         .{ .push_clip = .{ .id = 3, .rect = geometry.RectF.init(50, 10, 20, 20) } },
         .{ .blur = .{ .id = 4, .rect = geometry.RectF.init(50, 10, 20, 20), .radius = 8 } },
         .pop_clip,
@@ -470,13 +471,15 @@ test "backdrop blur promotes intersecting damage to a full repaint" {
     }, canvasFrameScratchStorage(&harness.runtime), &pixels, &scratch, clear);
     try std.testing.expect(first.full_repaint);
 
-    // Damage well outside the blur's radius keeps the retained path.
+    // Two damage islands well outside the blur's radius keep the retained
+    // path even though their bounding union crosses the blur apron.
     const far_changed = [_]canvas.CanvasCommand{
         .{ .fill_rect = .{ .id = 1, .rect = geometry.RectF.init(4, 4, 4, 4), .fill = .{ .color = canvas.Color.rgb8(0, 255, 0) } } },
         initial[1],
-        initial[2],
+        .{ .fill_rect = .{ .id = 5, .rect = geometry.RectF.init(90, 4, 4, 4), .fill = .{ .color = canvas.Color.rgb8(0, 255, 0) } } },
         initial[3],
         initial[4],
+        initial[5],
     };
     _ = try harness.runtime.setCanvasDisplayList(1, "canvas", .{ .commands = &far_changed });
     const incremental = try harness.runtime.presentNextCanvasFramePixels(1, "canvas", .{
@@ -485,6 +488,7 @@ test "backdrop blur promotes intersecting damage to a full repaint" {
     }, canvasFrameScratchStorage(&harness.runtime), &pixels, &scratch, clear);
     try std.testing.expect(!incremental.full_repaint);
     try std.testing.expect(incremental.dirty_bounds != null);
+    try std.testing.expectEqual(@as(usize, 2), incremental.dirtyRects().len);
 
     // This changed rect stops two points before the blur output, but it
     // lies inside the radius-8 sampling apron. A scissored replay would
@@ -492,9 +496,10 @@ test "backdrop blur promotes intersecting damage to a full repaint" {
     const apron_changed = [_]canvas.CanvasCommand{
         far_changed[0],
         .{ .fill_rect = .{ .id = 2, .rect = geometry.RectF.init(44, 15, 4, 4), .fill = .{ .color = canvas.Color.rgb8(0, 0, 255) } } },
-        initial[2],
+        far_changed[2],
         initial[3],
         initial[4],
+        initial[5],
     };
     _ = try harness.runtime.setCanvasDisplayList(1, "canvas", .{ .commands = &apron_changed });
     const promoted = try harness.runtime.presentNextCanvasFramePixels(1, "canvas", .{

@@ -16,13 +16,13 @@
 
 namespace {
 
-/* Compact binary gpu-surface packet decoding (wire format v4).
+/* Compact binary gpu-surface packet decoding (wire format v5).
  *
  * This independent decoder deliberately repeats the encoder's tags and
  * bounds rather than sharing packed structs across the Zig/C++ ABI. A
  * version or layout disagreement is a refused present, which makes the
  * runtime resynchronize/fall back instead of drawing corrupt content. */
-constexpr uint8_t kPacketVersion = 4;
+constexpr uint8_t kPacketVersion = 5;
 constexpr size_t kRetainedCommandCap = 2048;
 constexpr size_t kDirtyRectCap = kWindowsGpuDirtyRectCap;
 constexpr uint32_t kMaxSurfacePixels = 8192;
@@ -227,6 +227,13 @@ public:
         return value;
     }
 
+    uint16_t u16() {
+        uint8_t raw[2] = {};
+        if (!bytes(raw, sizeof(raw))) return 0;
+        return static_cast<uint16_t>(raw[0]) |
+            static_cast<uint16_t>(static_cast<uint16_t>(raw[1]) << 8);
+    }
+
     uint32_t u32() {
         uint8_t raw[4] = {};
         if (!bytes(raw, sizeof(raw))) return 0;
@@ -341,12 +348,29 @@ struct TextLine {
     std::string text;
 };
 
+struct PositionedGlyph {
+    uint16_t id = 0;
+    uint64_t font_id = 0;
+    float x = 0;
+    float baseline = 0;
+    float advance = 0;
+};
+
+struct PositionedTextFragment {
+    float x = 0;
+    float baseline = 0;
+    std::string text;
+};
+
 struct TextCommand {
     uint64_t font_id = 0;
     float size = 12;
     Point origin = {};
     Color color = {};
     std::string text;
+    bool has_positioned_glyphs = false;
+    std::vector<PositionedGlyph> positioned_glyphs;
+    std::vector<PositionedTextFragment> positioned_fragments;
     bool has_layout = false;
     float max_width = 0;
     float line_height = 0;
@@ -510,6 +534,35 @@ static bool readText(Reader &reader, TextCommand *text) {
     text->origin = readPoint(reader);
     text->color = readColor(reader);
     text->text = reader.string();
+    text->has_positioned_glyphs = reader.u8() != 0;
+    if (text->has_positioned_glyphs) {
+        const uint32_t glyph_count = reader.u32();
+        /* Every glyph consumes at least id u16 + flags u8 + three f32s;
+         * font overrides add u64. Bound both allocation and framing. */
+        if (reader.failed() || glyph_count > 65536 || glyph_count > reader.remaining() / 15) return false;
+        text->positioned_glyphs.reserve(glyph_count);
+        for (uint32_t index = 0; index < glyph_count; ++index) {
+            PositionedGlyph glyph;
+            glyph.id = reader.u16();
+            const uint8_t flags = reader.u8();
+            if (flags > 1) return false;
+            glyph.font_id = (flags & 1) != 0 ? reader.u64() : text->font_id;
+            glyph.x = reader.f32();
+            glyph.baseline = reader.f32();
+            glyph.advance = reader.f32();
+            text->positioned_glyphs.push_back(glyph);
+        }
+        const uint32_t fragment_count = reader.u32();
+        if (reader.failed() || fragment_count > 64 || fragment_count > reader.remaining() / 12) return false;
+        text->positioned_fragments.reserve(fragment_count);
+        for (uint32_t index = 0; index < fragment_count; ++index) {
+            PositionedTextFragment fragment;
+            fragment.x = reader.f32();
+            fragment.baseline = reader.f32();
+            fragment.text = reader.string();
+            text->positioned_fragments.push_back(std::move(fragment));
+        }
+    }
     text->has_layout = reader.u8() != 0;
     if (!text->has_layout) return !reader.failed();
     text->max_width = reader.f32();
@@ -1075,6 +1128,8 @@ public:
         style.startCap = D2D1_CAP_STYLE_FLAT;
         style.endCap = D2D1_CAP_STYLE_FLAT;
         style.dashCap = D2D1_CAP_STYLE_FLAT;
+        style.lineJoin = D2D1_LINE_JOIN_MITER;
+        renderer_->d2dFactory()->CreateStrokeStyle(style, nullptr, 0, &rect_stroke_);
         style.lineJoin = D2D1_LINE_JOIN_ROUND;
         renderer_->d2dFactory()->CreateStrokeStyle(style, nullptr, 0, &butt_stroke_);
         style.startCap = D2D1_CAP_STYLE_ROUND;
@@ -1087,6 +1142,7 @@ public:
         releaseDeviceResources(false);
         releaseCom(round_stroke_);
         releaseCom(butt_stroke_);
+        releaseCom(rect_stroke_);
     }
 
     int present(const WindowsGpuPacketPresent &present, WindowsGpuPresentInfo *info) override;
@@ -1265,7 +1321,10 @@ private:
             return false;
         }
         if (stroke) {
-            backing_target_->DrawGeometry(geometry, brush, stroke_width, command.cap == 1 ? round_stroke_ : butt_stroke_);
+            ID2D1StrokeStyle *stroke_style = command.shape.kind == Shape::Kind::stroke_rect
+                ? rect_stroke_
+                : (command.cap == 1 ? round_stroke_ : butt_stroke_);
+            backing_target_->DrawGeometry(geometry, brush, stroke_width, stroke_style);
         } else {
             backing_target_->FillGeometry(geometry, brush);
         }
@@ -1377,6 +1436,59 @@ private:
         return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), wide->data(), count) == count;
     }
 
+    static DWRITE_FONT_WEIGHT canvasFontWeight(uint64_t font_id) {
+        if (font_id == 3) return DWRITE_FONT_WEIGHT_MEDIUM;
+        if (font_id == 4 || font_id == 6) return DWRITE_FONT_WEIGHT_BOLD;
+        return DWRITE_FONT_WEIGHT_NORMAL;
+    }
+
+    static DWRITE_FONT_STYLE canvasFontStyle(uint64_t font_id) {
+        return font_id == 5 || font_id == 6 ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL;
+    }
+
+    std::shared_ptr<FontResource> fontResource(uint64_t font_id) const {
+        std::shared_ptr<FontResource> resource = renderer_->font(canvasFontResourceId(font_id));
+        if (!resource) {
+            const uint64_t fallback_id = canvasFallbackFontResourceId(font_id);
+            if (fallback_id != 0) resource = renderer_->font(fallback_id);
+        }
+        return resource;
+    }
+
+    bool createGlyphFace(uint64_t font_id, IDWriteFontFace **face) const {
+        if (!face) return false;
+        *face = nullptr;
+        const DWRITE_FONT_WEIGHT weight = canvasFontWeight(font_id);
+        const DWRITE_FONT_STYLE style = canvasFontStyle(font_id);
+        std::shared_ptr<FontResource> custom = fontResource(font_id);
+        IDWriteFont *font = nullptr;
+        HRESULT result = E_FAIL;
+        if (custom) {
+            IDWriteFontFamily1 *family = nullptr;
+            result = custom->collection->GetFontFamily(0, &family);
+            if (SUCCEEDED(result)) result = family->GetFirstMatchingFont(
+                weight, DWRITE_FONT_STRETCH_NORMAL, style, &font);
+            releaseCom(family);
+        } else {
+            IDWriteFontCollection *collection = nullptr;
+            IDWriteFontFamily *family = nullptr;
+            const wchar_t *family_name = font_id == 2 ? L"Consolas" : L"Segoe UI";
+            UINT32 family_index = 0;
+            BOOL exists = FALSE;
+            result = renderer_->dwriteFactory()->GetSystemFontCollection(&collection);
+            if (SUCCEEDED(result)) result = collection->FindFamilyName(family_name, &family_index, &exists);
+            if (SUCCEEDED(result) && !exists) result = E_FAIL;
+            if (SUCCEEDED(result)) result = collection->GetFontFamily(family_index, &family);
+            if (SUCCEEDED(result)) result = family->GetFirstMatchingFont(
+                weight, DWRITE_FONT_STRETCH_NORMAL, style, &font);
+            releaseCom(family);
+            releaseCom(collection);
+        }
+        if (SUCCEEDED(result) && font) result = font->CreateFontFace(face);
+        releaseCom(font);
+        return SUCCEEDED(result) && *face;
+    }
+
     bool createTextFormat(const TextCommand &text, IDWriteTextFormat **format) {
         if (!format) return false;
         *format = nullptr;
@@ -1394,15 +1506,12 @@ private:
         }
         const wchar_t *family = L"Segoe UI";
         IDWriteFontCollection *collection = nullptr;
-        DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;
-        DWRITE_FONT_STYLE style = DWRITE_FONT_STYLE_NORMAL;
+        const DWRITE_FONT_WEIGHT weight = canvasFontWeight(text.font_id);
+        const DWRITE_FONT_STYLE style = canvasFontStyle(text.font_id);
         if (custom) {
             family = custom->family.c_str();
             collection = custom->collection;
         } else if (text.font_id == 2) family = L"Consolas";
-        if (text.font_id == 3) weight = DWRITE_FONT_WEIGHT_MEDIUM;
-        if (text.font_id == 4 || text.font_id == 6) weight = DWRITE_FONT_WEIGHT_BOLD;
-        if (text.font_id == 5 || text.font_id == 6) style = DWRITE_FONT_STYLE_ITALIC;
         HRESULT result = renderer_->dwriteFactory()->CreateTextFormat(
             family, collection, weight, style, DWRITE_FONT_STRETCH_NORMAL,
             std::max(1.0f, text.size), L"en-us", format);
@@ -1473,6 +1582,52 @@ private:
             releaseCom(layout);
             return SUCCEEDED(result) && actual == 1;
         };
+
+        if (text.has_positioned_glyphs) {
+            bool result = true;
+            std::map<uint64_t, IDWriteFontFace *> faces;
+            for (const PositionedGlyph &glyph : text.positioned_glyphs) {
+                IDWriteFontFace *face = nullptr;
+                auto found = faces.find(glyph.font_id);
+                if (found == faces.end()) {
+                    if (!createGlyphFace(glyph.font_id, &face)) {
+                        result = false;
+                        break;
+                    }
+                    faces[glyph.font_id] = face;
+                } else {
+                    face = found->second;
+                }
+                const UINT16 glyph_index = glyph.id;
+                const FLOAT glyph_advance = glyph.advance;
+                const DWRITE_GLYPH_OFFSET glyph_offset = {};
+                DWRITE_GLYPH_RUN glyph_run = {};
+                glyph_run.fontFace = face;
+                glyph_run.fontEmSize = std::max(1.0f, text.size);
+                glyph_run.glyphCount = 1;
+                glyph_run.glyphIndices = &glyph_index;
+                glyph_run.glyphAdvances = &glyph_advance;
+                glyph_run.glyphOffsets = &glyph_offset;
+                backing_target_->DrawGlyphRun(
+                    D2D1::Point2F(glyph.x, glyph.baseline), &glyph_run, brush, DWRITE_MEASURING_MODE_NATURAL);
+            }
+            if (result) {
+                /* Positioned fragments already carry their final x; do not
+                 * apply center/trailing alignment inside the wide one-line
+                 * helper layout a second time. */
+                format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                for (const PositionedTextFragment &fragment : text.positioned_fragments) {
+                    if (!draw_line(fragment.text, fragment.x, fragment.baseline)) {
+                        result = false;
+                        break;
+                    }
+                }
+            }
+            for (auto &entry : faces) releaseCom(entry.second);
+            releaseCom(brush);
+            releaseCom(format);
+            return result;
+        }
 
         bool result = true;
         if (text.has_layout && text.has_lines) {
@@ -1825,6 +1980,7 @@ private:
     ID2D1BitmapRenderTarget *backing_target_ = nullptr;
     ID2D1Bitmap *backing_bitmap_ = nullptr;
     ID2D1Bitmap *blur_snapshot_ = nullptr;
+    ID2D1StrokeStyle *rect_stroke_ = nullptr;
     ID2D1StrokeStyle *butt_stroke_ = nullptr;
     ID2D1StrokeStyle *round_stroke_ = nullptr;
     std::map<uint64_t, CachedBitmap> image_bitmaps_;

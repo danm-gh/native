@@ -1130,7 +1130,11 @@ pub fn RuntimeCanvasFrames(comptime Runtime: type) type {
                 }
                 break :dirty bleedAlignedCanvasDirtyBounds(unionRects(canvasDirtyBoundsFromChanges(changes), overrides_dirty), frame_options.scale, 1, frame_options.surface_size);
             };
-            if (!full_repaint and canvas.incrementalDamageIntersectsBackdropBlur(render_plan.commands, dirty_bounds)) {
+            if (!full_repaint and incrementalCanvasDamageIntersectsBackdropBlur(
+                render_plan.commands,
+                dirty_bounds,
+                dirty_rects[0..dirty_rect_count],
+            )) {
                 // A blur's apron must be reconstructed from the scene as
                 // it existed before that command. Retained pixels beyond
                 // an incremental scissor are already fully composited,
@@ -1303,6 +1307,21 @@ pub fn RuntimeCanvasFrames(comptime Runtime: type) type {
             if (!emitted_dirty_region and changes.len > 0) self.invalidateFor(.state, view_frame);
         }
     };
+}
+
+/// Refined patch damage is a set, not its bounding box: two distant edits
+/// can straddle a blur without either edit reaching the blur's read apron.
+/// When refinement is unavailable, retain the conservative union check.
+fn incrementalCanvasDamageIntersectsBackdropBlur(
+    commands: []const canvas.RenderCommand,
+    dirty_bounds: ?geometry.RectF,
+    dirty_rects: []const geometry.RectF,
+) bool {
+    if (dirty_rects.len == 0) return canvas.incrementalDamageIntersectsBackdropBlur(commands, dirty_bounds);
+    for (dirty_rects) |dirty_rect| {
+        if (canvas.incrementalDamageIntersectsBackdropBlur(commands, dirty_rect)) return true;
+    }
+    return false;
 }
 
 /// Rework a planned frame's incremental damage for the present's

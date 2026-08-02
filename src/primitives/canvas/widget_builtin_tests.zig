@@ -722,6 +722,13 @@ test "disabled filled buttons mute their border with the fill" {
         .stroke_rect => |stroke| try expectFillColor(washed_border, stroke.stroke.fill),
         else => return error.TestUnexpectedResult,
     }
+    // shadcn applies opacity to the composed button. Its knockout label
+    // therefore lands back on the matching page/surface color instead
+    // of being blended through the already-faded fill a second time.
+    switch (disabled_builder.displayList().findCommandById(widgetPartId(71, 4)).?.command) {
+        .draw_text => |text| try std.testing.expectEqualDeep(tokens.colors.accent_text, text.color),
+        else => return error.TestUnexpectedResult,
+    }
 
     // No focus ring on the idle disabled control either.
     try std.testing.expect(disabled_builder.displayList().findCommandById(widgetPartId(71, 3)) == null);
@@ -734,6 +741,50 @@ test "disabled filled buttons mute their border with the fill" {
     switch (chip_builder.displayList().findCommandById(widgetPartId(71, 2)).?.command) {
         .stroke_rect => |stroke| try std.testing.expectEqual(@as(f32, 0), stroke.stroke.width),
         else => return error.TestUnexpectedResult,
+    }
+}
+
+test "geist disabled buttons use the reference swap and tertiary registers" {
+    const buttonFillColor = @import("widget_render_style.zig").buttonFillColor;
+    const buttonTextColorForWidget = @import("widget_render_style.zig").buttonTextColorForWidget;
+    const buttonBorderFill = @import("widget_render_style.zig").buttonBorderFill;
+    const schemes = [_]canvas.ColorScheme{ .light, .dark };
+
+    for (schemes) |scheme| {
+        const tokens = DesignTokens.theme(.{ .pack = .geist, .color_scheme = scheme });
+        const disabled_background = if (scheme == .light) Color.rgb8(242, 242, 242) else Color.rgb8(26, 26, 26);
+        const disabled_border = if (scheme == .light) Color.rgb8(235, 235, 235) else Color.rgb8(31, 31, 31);
+        const variants = [_]canvas.WidgetVariant{ .default, .secondary, .outline };
+        for (variants) |variant| {
+            const button = Widget{ .kind = .button, .variant = variant, .state = .{ .disabled = true } };
+            try std.testing.expectEqualDeep(disabled_background, buttonFillColor(button, tokens));
+            try std.testing.expectEqualDeep(Color.rgb8(143, 143, 143), buttonTextColorForWidget(button, tokens));
+            try expectFillColor(disabled_border, buttonBorderFill(button, tokens));
+        }
+
+        const filled_variants = [_]canvas.WidgetVariant{ .primary, .destructive };
+        for (filled_variants) |variant| {
+            const button = Widget{ .kind = .button, .variant = variant, .state = .{ .disabled = true } };
+            try std.testing.expectEqualDeep(disabled_background, buttonFillColor(button, tokens));
+            try std.testing.expectEqualDeep(Color.rgb8(143, 143, 143), buttonTextColorForWidget(button, tokens));
+            try expectFillColor(disabled_background, buttonBorderFill(button, tokens));
+        }
+
+        const tertiary = Widget{ .kind = .button, .variant = .ghost, .state = .{ .disabled = true } };
+        const tertiary_background = Color.rgba(
+            disabled_background.r * 0.5 + tokens.colors.background.r * 0.5,
+            disabled_background.g * 0.5 + tokens.colors.background.g * 0.5,
+            disabled_background.b * 0.5 + tokens.colors.background.b * 0.5,
+            1,
+        );
+        const tertiary_foreground = Color.rgba(
+            tokens.colors.text.r * 0.5 + tokens.colors.background.r * 0.5,
+            tokens.colors.text.g * 0.5 + tokens.colors.background.g * 0.5,
+            tokens.colors.text.b * 0.5 + tokens.colors.background.b * 0.5,
+            1,
+        );
+        try std.testing.expectEqualDeep(tertiary_background, buttonFillColor(tertiary, tokens));
+        try std.testing.expectEqualDeep(tertiary_foreground, buttonTextColorForWidget(tertiary, tokens));
     }
 }
 

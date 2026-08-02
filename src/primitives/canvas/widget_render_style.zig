@@ -361,17 +361,21 @@ pub fn disabledWash(color: Color, disabled: bool, alpha: f32) Color {
 }
 
 pub fn buttonTextColorForWidget(widget: Widget, tokens: DesignTokens) Color {
-    // Disabled ink is the variant's own ink at the disabled-wash
-    // strength, matching the washed fill — the whole control fades as
-    // one piece (primary keeps knockout text on its washed fill; the
-    // quiet variants keep their body ink) instead of swapping to the
-    // shared muted gray, which read as a live-but-secondary label.
-    // Themes with a stated disabled ink (`disabled_foreground`) take it
-    // instead.
+    // Disabled ink normally keeps the variant's own ink at the
+    // disabled-wash strength. A filled primary is the exception: CSS
+    // opacity composites its knockout label and fill as ONE layer, so
+    // on the matching surface the label stays at (or very near) the
+    // knockout color instead of fading a second time through the
+    // already-muted fill. Keep that ink whole here; the fill and edge
+    // still take the half-strength state. Themes with a stated disabled
+    // ink (`disabled_foreground`) take it instead — Geist uses that for
+    // its gray swap register.
     if (widget.state.disabled) {
         const visual = buttonControlVisualTokens(widget, tokens);
         if (visual.disabled_foreground) |color| return color;
-        return disabledWash(buttonTextColorForWidget(restStateWidget(widget), tokens), true, tokens.states.disabled_alpha);
+        const rest = buttonTextColorForWidget(restStateWidget(widget), tokens);
+        if (widget.variant == .primary) return rest;
+        return disabledWash(rest, true, tokens.states.disabled_alpha);
     }
     const active = widget.state.pressed or widget.state.selected;
     const visual = buttonControlVisualTokens(widget, tokens);
@@ -417,6 +421,18 @@ pub fn buttonBorderFill(widget: Widget, tokens: DesignTokens) Fill {
             else => widgetBorderColor(widget, visual.border orelse tokens.colors.border),
         };
     };
+    if (widget.state.disabled and widget.style.border == null) {
+        const visual = buttonControlVisualTokens(widget, tokens);
+        // A theme-level disabled color swap dissolves a filled button's
+        // structural edge into its replacement body. Bordered variants
+        // retain their themed edge, while authored local borders still
+        // keep the author's stated identity.
+        if (visual.disabled_background) |color| switch (widget.variant) {
+            .primary, .destructive => return colorFill(color),
+            .default, .secondary, .outline => if (tokens.controls.button_disabled_border) |disabled_border| return colorFill(disabled_border),
+            .ghost => {},
+        };
+    }
     return colorFill(disabledWash(border, widget.state.disabled, tokens.states.disabled_alpha));
 }
 

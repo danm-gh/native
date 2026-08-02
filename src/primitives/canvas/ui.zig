@@ -2563,7 +2563,7 @@ pub fn Ui(comptime Msg: type) type {
                     budget,
                 );
                 chunks[chunk_index].static_text_group_fingerprint = group_fingerprint;
-                chunks[chunk_index].widget.static_text_group_offset = chunk_start;
+                chunks[chunk_index].widget.static_text_group_offset = @intCast(chunk_start);
                 chunk_index += 1;
                 chunk_start = chunk_end;
             }

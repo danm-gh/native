@@ -20,6 +20,15 @@ const { instance } = await WebAssembly.instantiate(bytes, {});
 const exports = instance.exports;
 const sceneNames = ["code", "code-diff"];
 
+if (
+  typeof exports.preview_code_diff_metadata_round_trip !== "function" ||
+  exports.preview_code_diff_metadata_round_trip() !== 1
+) {
+  throw new Error(
+    "the checked-in component-preview.wasm truncates code-diff metadata above line 96 on wasm32",
+  );
+}
+
 for (const sceneName of sceneNames) {
   const scene = new TextEncoder().encode(sceneName);
   const scenePtr = exports.preview_alloc(scene.length);

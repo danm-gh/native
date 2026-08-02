@@ -1141,6 +1141,7 @@ fn emitCodeEditorWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
             .fill = colorFill(tokens.colors.surface_subtle),
         });
     }
+    try emitVisibleCodeTextSpansWidget(builder, widget, tokens, widget.frame, .{});
     if (selection_range) |range| {
         if (!range.isCollapsed(widget.text.len)) {
             try widget_render_controls.emitWidgetTextSelectionRects(
@@ -1156,7 +1157,6 @@ fn emitCodeEditorWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
             );
         }
     }
-    try emitVisibleCodeTextSpansWidget(builder, widget, tokens, widget.frame, .{});
     if (selection_range) |range| {
         if (!range.isCollapsed(widget.text.len)) {
             try emitCodeEditorSelectedGlyphs(

@@ -912,9 +912,10 @@ pub const Widget = struct {
     /// Nonzero on bounded paragraph chunks that together present one
     /// selectable source-code document. The group id is the structural id
     /// of their internal parent; offsets order each chunk's exact source
-    /// bytes without duplicating the full source in retained storage.
+    /// bytes without duplicating the full source in retained storage. Fixed
+    /// width keeps the code-diff metadata union intact on 32-bit targets.
     static_text_group_id: ObjectId = 0,
-    static_text_group_offset: usize = 0,
+    static_text_group_offset: u64 = 0,
     /// What a single-line text run does with content that does not fit
     /// its frame (`ElementOptions.overflow` / markup `overflow=` on
     /// text leaves): `.ellipsis` (default) elides the tail behind a

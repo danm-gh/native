@@ -915,6 +915,45 @@ test "unwrapped editable diffs paint markers without line numbers" {
     try testing.expectEqual(@as(usize, 1), added_markers);
 }
 
+test "editable diff washes paint behind text selections" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ui = Ui.init(arena.allocator());
+    const view = try ui.finalize(ui.code(.{
+        .editable = true,
+        .wrap = false,
+        .added_lines = &.{1},
+    }, "added"));
+    var editor = findByText(view.root, "added").?;
+    editor.frame = geometry.RectF.init(0, 0, 160, 48);
+    editor.text_selection = .{ .anchor = 0, .focus = editor.text.len };
+
+    var tokens = canvas.DesignTokens{};
+    const selection_fill = canvas.Color.rgb8(7, 11, 13);
+    const added_wash = canvas.Color.rgb8(218, 246, 218);
+    tokens.colors.accent = selection_fill;
+    tokens.colors.background = canvas.Color.rgb8(255, 255, 255);
+
+    var commands: [128]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, editor, tokens);
+
+    var wash_index: ?usize = null;
+    var selection_index: ?usize = null;
+    for (builder.displayList().commands, 0..) |command, index| {
+        if (command != .fill_rect) continue;
+        if (std.meta.eql(command.fill_rect.fill.color, added_wash) and
+            command.fill_rect.rect.width == editor.frame.width)
+        {
+            wash_index = index;
+        }
+        if (std.meta.eql(command.fill_rect.fill.color, selection_fill)) selection_index = index;
+    }
+    try testing.expect(wash_index != null);
+    try testing.expect(selection_index != null);
+    try testing.expect(wash_index.? < selection_index.?);
+}
+
 test "line number gutter reserves at least three marker columns" {
     const tokens = canvas.DesignTokens{};
     var numbered = canvas.Widget{
@@ -1478,7 +1517,7 @@ test "large code blocks split at the paragraph line capacity without hiding thei
     var group_id: ?canvas.ObjectId = null;
     for (chunk_column.children) |chunk| {
         try testing.expect(chunk.static_text_group_id != 0);
-        try testing.expectEqual(expected_offset, chunk.static_text_group_offset);
+        try testing.expectEqual(@as(u64, @intCast(expected_offset)), chunk.static_text_group_offset);
         if (group_id) |expected| {
             try testing.expectEqual(expected, chunk.static_text_group_id);
         } else {

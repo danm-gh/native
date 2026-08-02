@@ -24,7 +24,7 @@ namespace {
  * runtime resynchronize/fall back instead of drawing corrupt content. */
 constexpr uint8_t kPacketVersion = 4;
 constexpr size_t kRetainedCommandCap = 2048;
-constexpr size_t kDirtyRectCap = 8;
+constexpr size_t kDirtyRectCap = kWindowsGpuDirtyRectCap;
 constexpr uint32_t kMaxSurfacePixels = 8192;
 constexpr float kBezierCircle = 0.5522847498307936f;
 
@@ -1061,7 +1061,7 @@ public:
     }
 
     int present(const WindowsGpuPacketPresent &present, WindowsGpuPresentInfo *info) override;
-    bool paint(const RECT &paint_rect) override;
+    bool paint(const RECT *paint_rects, size_t paint_rect_count) override;
     void abandonContent() override { releaseDeviceResources(true); }
     bool hasContent() const override { return content_valid_ && backing_bitmap_; }
     bool readColorAt(double logical_x, double logical_y, uint32_t *color) override;
@@ -1458,12 +1458,18 @@ private:
                     break;
                 }
             }
+        } else if (!text.has_layout) {
+            /* A raw DrawText origin is a baseline, not the top of an em
+             * box. DirectWrite's baseline comes from the registered face's
+             * metrics and is not guaranteed to equal `size`, so use the
+             * same measured-baseline path as engine-planned lines. */
+            result = draw_line(text.text, text.origin.x, text.origin.y);
         } else {
             std::wstring value;
             result = widenUtf8(text.text, &value);
             if (result && !value.empty()) {
-                const float width = text.has_layout && text.max_width > 0 ? text.max_width : 100000.0f;
-                const float height = text.has_layout ? std::max(text.line_height, text.size * 1.25f) * 4096.0f : text.size * 4.0f;
+                const float width = text.max_width > 0 ? text.max_width : 100000.0f;
+                const float height = std::max(text.line_height, text.size * 1.25f) * 4096.0f;
                 IDWriteTextLayout *layout = nullptr;
                 result = createTextLayout(value, format, width, height, &layout);
                 if (result) {
@@ -1536,7 +1542,15 @@ private:
      * Gaussian sample kernel into a temporary GPU target, then composite
      * that target over only the affected rect. There is no readback and
      * no full RGBA allocation/swizzle on the CPU. */
-    bool resumeAndDrawBlur(const Command &command, const Rect *outer_clip) {
+    Rect blurTarget(const Command &command, const Rect *outer_clip) const {
+        Rect target = command.has_transform ? transformedRect(command.effect.rect, command.transform) : normalized(command.effect.rect);
+        target = intersection(target, Rect{0, 0, static_cast<float>(surface_width_), static_cast<float>(surface_height_)});
+        if (command.has_clip) target = intersection(target, command.clip);
+        if (outer_clip) target = intersection(target, *outer_clip);
+        return target;
+    }
+
+    bool resumeAndDrawBlur(const Command &command, Rect target) {
         auto resume = [&] {
             backing_target_->BeginDraw();
             backing_target_->SetTransform(D2D1::Matrix3x2F::Identity());
@@ -1549,15 +1563,7 @@ private:
             return false;
         }
 
-        Rect target = command.has_transform ? transformedRect(command.effect.rect, command.transform) : normalized(command.effect.rect);
-        target = intersection(target, Rect{0, 0, static_cast<float>(surface_width_), static_cast<float>(surface_height_)});
-        if (command.has_clip) target = intersection(target, command.clip);
-        if (outer_clip) target = intersection(target, *outer_clip);
         const float opacity = clamp01(command.opacity);
-        if (empty(target) || command.effect.blur <= 0 || opacity <= 0) {
-            resume();
-            return true;
-        }
 
         const double pixel_width_value = std::ceil(target.width * scale_);
         const double pixel_height_value = std::ceil(target.height * scale_);
@@ -1637,12 +1643,17 @@ private:
     bool drawCommandList(const std::vector<const Command *> &commands, const Rect *outer_clip) {
         for (const Command *command : commands) {
             if (command->kind == 13) {
+                /* Cull before ending the current segment or copying the
+                 * full backing bitmap. A localized blur outside a dirty
+                 * patch must cost no more than any other culled command. */
+                const Rect target = blurTarget(*command, outer_clip);
+                if (empty(target) || command->effect.blur <= 0 || command->opacity <= 0) continue;
                 const HRESULT segment = backing_target_->EndDraw();
                 if (FAILED(segment)) {
                     backing_target_->BeginDraw();
                     return false;
                 }
-                if (!resumeAndDrawBlur(*command, outer_clip)) return false;
+                if (!resumeAndDrawBlur(*command, target)) return false;
                 continue;
             }
             if (!drawCommand(*command, outer_clip)) return false;
@@ -1947,37 +1958,29 @@ int GpuSurfaceImpl::present(const WindowsGpuPacketPresent &present, WindowsGpuPr
         info->nonblank = clear.r != 0 || clear.g != 0 || clear.b != 0 || !last_commands_.empty();
         info->sample_color = representativeColorAt(present.surface_width * 0.5, present.surface_height * 0.5);
         if (!full_surface && packet.has_scissor) {
-            Rect dirty = normalized(packet.scissor);
-            if (!packet.dirty_rects.empty()) {
-                float x0 = std::numeric_limits<float>::infinity();
-                float y0 = std::numeric_limits<float>::infinity();
-                float x1 = -std::numeric_limits<float>::infinity();
-                float y1 = -std::numeric_limits<float>::infinity();
-                for (Rect rect : packet.dirty_rects) {
-                    rect = intersection(normalized(rect), normalized(packet.scissor));
-                    if (empty(rect)) continue;
-                    x0 = std::min(x0, rect.x);
-                    y0 = std::min(y0, rect.y);
-                    x1 = std::max(x1, rect.x + rect.width);
-                    y1 = std::max(y1, rect.y + rect.height);
-                }
-                if (std::isfinite(x0)) dirty = {x0, y0, x1 - x0, y1 - y0};
-            }
-            dirty = intersection(dirty, Rect{0, 0, static_cast<float>(present.surface_width), static_cast<float>(present.surface_height)});
-            if (!empty(dirty)) {
-                info->has_dirty_rect = true;
-                info->dirty_rect.left = std::max<LONG>(0, static_cast<LONG>(std::floor(dirty.x * scale)));
-                info->dirty_rect.top = std::max<LONG>(0, static_cast<LONG>(std::floor(dirty.y * scale)));
-                info->dirty_rect.right = std::min<LONG>(static_cast<LONG>(pixel_width), static_cast<LONG>(std::ceil((dirty.x + dirty.width) * scale)));
-                info->dirty_rect.bottom = std::min<LONG>(static_cast<LONG>(pixel_height), static_cast<LONG>(std::ceil((dirty.y + dirty.height) * scale)));
-            }
+            const Rect surface = {0, 0, static_cast<float>(present.surface_width), static_cast<float>(present.surface_height)};
+            const Rect scissor = intersection(normalized(packet.scissor), surface);
+            const std::vector<Rect> &regions = packet.dirty_rects;
+            auto append_dirty = [&](Rect dirty) {
+                dirty = intersection(normalized(dirty), scissor);
+                if (empty(dirty) || info->dirty_rect_count >= kWindowsGpuDirtyRectCap) return;
+                RECT &pixels = info->dirty_rects[info->dirty_rect_count];
+                pixels.left = std::max<LONG>(0, static_cast<LONG>(std::floor(dirty.x * scale)));
+                pixels.top = std::max<LONG>(0, static_cast<LONG>(std::floor(dirty.y * scale)));
+                pixels.right = std::min<LONG>(static_cast<LONG>(pixel_width), static_cast<LONG>(std::ceil((dirty.x + dirty.width) * scale)));
+                pixels.bottom = std::min<LONG>(static_cast<LONG>(pixel_height), static_cast<LONG>(std::ceil((dirty.y + dirty.height) * scale)));
+                if (pixels.right > pixels.left && pixels.bottom > pixels.top) info->dirty_rect_count += 1;
+            };
+            if (regions.empty()) append_dirty(scissor);
+            else for (Rect dirty : regions) append_dirty(dirty);
         }
     }
     return 1;
 }
 
-bool GpuSurfaceImpl::paint(const RECT &paint_rect) {
+bool GpuSurfaceImpl::paint(const RECT *paint_rects, size_t paint_rect_count) {
     if (!content_valid_ || !backing_bitmap_) return true;
+    if (paint_rect_count > 0 && paint_rects == nullptr) return false;
     if (!ensureWindowTarget()) return false;
     RECT client = {};
     if (!GetClientRect(hwnd_, &client)) return false;
@@ -1992,19 +1995,23 @@ bool GpuSurfaceImpl::paint(const RECT &paint_rect) {
     window_target_->SetDpi(static_cast<FLOAT>(96.0 * scale_), static_cast<FLOAT>(96.0 * scale_));
     const float logical_client_width = static_cast<float>(client_width / scale_);
     const float logical_client_height = static_cast<float>(client_height / scale_);
-    const Rect clip = {
-        static_cast<float>(paint_rect.left / scale_),
-        static_cast<float>(paint_rect.top / scale_),
-        static_cast<float>((paint_rect.right - paint_rect.left) / scale_),
-        static_cast<float>((paint_rect.bottom - paint_rect.top) / scale_),
-    };
     window_target_->BeginDraw();
     window_target_->SetTransform(D2D1::Matrix3x2F::Identity());
-    if (!empty(clip)) window_target_->PushAxisAlignedClip(d2dRect(clip), D2D1_ANTIALIAS_MODE_ALIASED);
-    window_target_->DrawBitmap(backing_bitmap_,
-        D2D1::RectF(0, 0, logical_client_width, logical_client_height), 1.0f,
-        D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
-    if (!empty(clip)) window_target_->PopAxisAlignedClip();
+    for (size_t index = 0; index < paint_rect_count; ++index) {
+        const RECT &paint_rect = paint_rects[index];
+        const Rect clip = {
+            static_cast<float>(paint_rect.left / scale_),
+            static_cast<float>(paint_rect.top / scale_),
+            static_cast<float>((paint_rect.right - paint_rect.left) / scale_),
+            static_cast<float>((paint_rect.bottom - paint_rect.top) / scale_),
+        };
+        if (empty(clip)) continue;
+        window_target_->PushAxisAlignedClip(d2dRect(clip), D2D1_ANTIALIAS_MODE_ALIASED);
+        window_target_->DrawBitmap(backing_bitmap_,
+            D2D1::RectF(0, 0, logical_client_width, logical_client_height), 1.0f,
+            D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, nullptr);
+        window_target_->PopAxisAlignedClip();
+    }
     const HRESULT result = window_target_->EndDraw();
     if (result == D2DERR_RECREATE_TARGET || FAILED(result)) {
         releaseDeviceResources(true);

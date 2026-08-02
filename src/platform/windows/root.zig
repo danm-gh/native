@@ -2130,6 +2130,50 @@ test "windows packet renderer requires deterministic font and caption seams" {
     ) != null);
 }
 
+test "windows packet renderer preserves text baselines and disjoint dirty regions" {
+    const renderer_source = @embedFile("gpu_surface_renderer.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        renderer_source,
+        "draw_line(text.text, text.origin.x, text.origin.y)",
+    ) != null);
+
+    const draw_list_at = std.mem.indexOf(
+        u8,
+        renderer_source,
+        "bool drawCommandList(const std::vector<const Command *> &commands",
+    ) orelse return error.TestExpectedEqual;
+    const draw_list = renderer_source[draw_list_at..];
+    const blur_target_at = std.mem.indexOf(
+        u8,
+        draw_list,
+        "const Rect target = blurTarget(*command, outer_clip);",
+    ) orelse return error.TestExpectedEqual;
+    const segment_end_at = std.mem.indexOf(
+        u8,
+        draw_list,
+        "const HRESULT segment = backing_target_->EndDraw();",
+    ) orelse return error.TestExpectedEqual;
+    try std.testing.expect(blur_target_at < segment_end_at);
+
+    const host_source = @embedFile("webview2_host.cpp");
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "gpuSurfaceUpdateRegionRects(\n                hwnd, paint_rects, kGpuPaintRegionRectCap)",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "view->gpu_surface->paint(paint_rects, paint_rect_count)",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        host_source,
+        "InvalidateRect(view.hwnd, &info.dirty_rects[index], FALSE)",
+    ) != null);
+}
+
 test "windows click-through uses a layered surface even when visually opaque" {
     const host_source = @embedFile("webview2_host.cpp");
     try std.testing.expect(std.mem.indexOf(

@@ -28,14 +28,16 @@ struct WindowsGpuPacketPresent {
     size_t packet_len = 0;
 };
 
+constexpr size_t kWindowsGpuDirtyRectCap = 8;
+
 struct WindowsGpuPresentInfo {
     bool did_render = false;
     bool nonblank = false;
     uint32_t sample_color = 0;
     uint64_t decode_ns = 0;
     uint64_t draw_ns = 0;
-    bool has_dirty_rect = false;
-    RECT dirty_rect = {};
+    size_t dirty_rect_count = 0;
+    RECT dirty_rects[kWindowsGpuDirtyRectCap] = {};
 };
 
 class WindowsGpuSurface {
@@ -47,10 +49,12 @@ public:
      * retained state or GPU content is mutated. */
     virtual int present(const WindowsGpuPacketPresent &present, WindowsGpuPresentInfo *info) = 0;
 
-    /* Paint the retained GPU bitmap into the invalid region. false means
-     * the Direct2D resource domain was lost and the next packet must be a
-     * full resync. */
-    virtual bool paint(const RECT &paint_rect) = 0;
+    /* Paint the retained GPU bitmap into the exact invalid rectangles.
+     * The Win32 update region may remain disjoint after several packet
+     * invalidations; keeping that shape avoids turning two small patches
+     * into one window-sized copy. false means the Direct2D resource domain
+     * was lost and the next packet must be a full resync. */
+    virtual bool paint(const RECT *paint_rects, size_t paint_rect_count) = 0;
 
     /* A software fallback became the glass baseline. Drop both GPU
      * content and retained packet state so a later packet must resync. */

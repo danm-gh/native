@@ -2458,7 +2458,16 @@ static void syncHiddenCaptionColorFromPacket(
     if (!GetClientRect(view.hwnd, &client) || !PtInRect(&client, sample)) return;
     const bool same_sample = view.gpu_caption_sample_valid &&
         view.gpu_caption_sample_x == sample.x && view.gpu_caption_sample_y == sample.y;
-    if (same_sample && info.has_dirty_rect && !PtInRect(&info.dirty_rect, sample)) return;
+    if (same_sample && info.dirty_rect_count > 0) {
+        bool sample_changed = false;
+        for (size_t index = 0; index < info.dirty_rect_count; ++index) {
+            if (PtInRect(&info.dirty_rects[index], sample)) {
+                sample_changed = true;
+                break;
+            }
+        }
+        if (!sample_changed) return;
+    }
     const double scale = gpuSurfaceScale(view.hwnd);
     if (!(scale > 0)) return;
     const double sample_x = static_cast<double>(sample.x) / scale;
@@ -2813,6 +2822,49 @@ static void paintGpuSurface(NativeView &view, HWND hwnd, HDC dc) {
     StretchDIBits(dc, 0, 0, client_width, client_height, 0, 0, view.gpu_buf_width, view.gpu_buf_height, view.gpu_bgra.data(), &info, DIB_RGB_COLORS, SRCCOPY);
 }
 
+/* Preserve a complex Win32 update region as individual rectangles for the
+ * Direct2D backing copy. PAINTSTRUCT.rcPaint is only the region's bounding
+ * box, which would fuse two far-apart packet patches back into a nearly
+ * window-sized blit. Packet presents contribute at most eight rectangles;
+ * the larger fixed cap also handles ordinary system/exposure invalidations.
+ * Pathological regions safely fall back to their bounding box. */
+constexpr size_t kGpuPaintRegionRectCap = 64;
+
+struct GpuPaintRegionData {
+    RGNDATAHEADER header = {};
+    RECT rects[kGpuPaintRegionRectCap] = {};
+};
+
+static_assert(offsetof(GpuPaintRegionData, rects) == sizeof(RGNDATAHEADER));
+
+static size_t gpuSurfaceUpdateRegionRects(HWND hwnd, RECT *rects, size_t rect_cap) {
+    if (!hwnd || !rects || rect_cap == 0) return 0;
+    HRGN region = CreateRectRgn(0, 0, 0, 0);
+    if (!region) return 0;
+    const int region_kind = GetUpdateRgn(hwnd, region, FALSE);
+    size_t count = 0;
+    if (region_kind == SIMPLEREGION) {
+        RECT bounds = {};
+        if (GetRgnBox(region, &bounds) != NULLREGION) rects[count++] = bounds;
+    } else if (region_kind == COMPLEXREGION) {
+        const DWORD required = GetRegionData(region, 0, nullptr);
+        if (required > 0 && required <= sizeof(GpuPaintRegionData)) {
+            GpuPaintRegionData data;
+            if (GetRegionData(region, static_cast<DWORD>(sizeof(data)), reinterpret_cast<RGNDATA *>(&data)) > 0 &&
+                data.header.nCount > 0 && data.header.nCount <= rect_cap) {
+                count = data.header.nCount;
+                for (size_t index = 0; index < count; ++index) rects[index] = data.rects[index];
+            }
+        }
+        if (count == 0) {
+            RECT bounds = {};
+            if (GetRgnBox(region, &bounds) != NULLREGION) rects[count++] = bounds;
+        }
+    }
+    DeleteObject(region);
+    return count;
+}
+
 static constexpr uint8_t compositePremultipliedChannel(uint8_t source, uint8_t source_alpha, uint8_t destination) {
     return static_cast<uint8_t>(source +
         (static_cast<uint32_t>(destination) * (255u - source_alpha) + 127u) / 255u);
@@ -3082,11 +3134,18 @@ static LRESULT CALLBACK gpuSurfaceProc(HWND hwnd, UINT message, WPARAM wparam, L
             }
             break;
         case WM_PAINT: {
+            RECT paint_rects[kGpuPaintRegionRectCap] = {};
+            size_t paint_rect_count = gpuSurfaceUpdateRegionRects(
+                hwnd, paint_rects, kGpuPaintRegionRectCap);
             PAINTSTRUCT paint = {};
             HDC dc = BeginPaint(hwnd, &paint);
             if (dc) {
                 if (view->gpu_surface && view->gpu_surface->hasContent()) {
-                    if (!view->gpu_surface->paint(paint.rcPaint)) {
+                    if (paint_rect_count == 0 && !IsRectEmpty(&paint.rcPaint)) {
+                        paint_rects[0] = paint.rcPaint;
+                        paint_rect_count = 1;
+                    }
+                    if (!view->gpu_surface->paint(paint_rects, paint_rect_count)) {
                         /* Direct2D resource loss invalidates the retained
                          * backing. Wake the runtime and explicitly force a
                          * full packet: an unchanged scene would otherwise
@@ -6656,7 +6715,13 @@ int native_sdk_windows_present_gpu_surface_packet_binary(Host *host, uint64_t wi
             syncHiddenCaptionColorFromPacket(
                 host, owner->second, view, info, request.surface_width, request.surface_height);
         }
-        InvalidateRect(view.hwnd, info.has_dirty_rect ? &info.dirty_rect : nullptr, FALSE);
+        if (info.dirty_rect_count == 0) {
+            InvalidateRect(view.hwnd, nullptr, FALSE);
+        } else {
+            for (size_t index = 0; index < info.dirty_rect_count; ++index) {
+                InvalidateRect(view.hwnd, &info.dirty_rects[index], FALSE);
+            }
+        }
     }
 
     const bool first_present = !view.gpu_presented;

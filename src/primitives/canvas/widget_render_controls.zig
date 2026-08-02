@@ -940,21 +940,37 @@ fn segmentedTriggerRadius(widget: Widget, visual: ControlVisualTokens, tokens: D
     return Radius.all(@max(0, widgetSizedRadiusValue(widget, container) - widget_model.tabs_list_inset));
 }
 
-/// The selected-tab bar for the `.underline` tab register: the trigger
-/// itself hugs its content with the register's 2px side inset, so its
-/// full width is the exact primary indicator width (including a leading
-/// icon and its 6px gap when present). It lands on the trigger's bottom
-/// edge and covers the TabsList hairline where they meet. Null in the
-/// `.pill` register; shared with invalidation.
+/// The selected-tab bar for the `.underline` tab register: a short filled
+/// rect hugging the trigger's rendered content (text, optional icon and
+/// icon gap, plus the register's side inset), capped to the hit-target
+/// frame. Measuring the content instead of reusing the frame keeps the
+/// marker honest when an author gives triggers fixed widths or grow
+/// factors. It lands on the trigger's bottom edge and covers the TabsList
+/// hairline where they meet. Null in the `.pill` register; shared with
+/// invalidation.
 pub fn segmentedControlUnderlineRect(widget: Widget, tokens: DesignTokens) ?geometry.RectF {
     if (tokens.controls.tabs_indicator != .underline) return null;
     const frame = widget.frame.normalized();
     if (frame.isEmpty()) return null;
     const thickness = @min(frame.height, widgetSizedDensityValue(widget, tokens, tokens.metrics.tabs_indicator_thickness));
+    const text_size = widgetTabTriggerTextSize(widget, tokens);
+    const text_width = measureTextWidthForFont(tokens.text_measure, tokens.typography.font_id, widget.text, text_size);
+    const icon_width = if (widget.icon.len > 0)
+        widgetTabTriggerIconExtent(widget, tokens) + (if (widget.text.len > 0) widgetTabTriggerIconGap(tokens) else 0)
+    else
+        0;
+    const content_width = icon_width + text_width;
+    // A truly empty trigger has no content to hug, so retain the
+    // historical full-frame marker instead of collapsing it to an
+    // invisible zero-width rect.
+    const bar_width = if (content_width > 0)
+        @min(frame.width, content_width + widgetTabTriggerInset(widget, tokens) * 2)
+    else
+        frame.width;
     return pixelSnapGeometryRect(tokens, geometry.RectF.init(
-        frame.x,
+        frame.x + (frame.width - bar_width) * 0.5,
         frame.maxY() - thickness,
-        frame.width,
+        bar_width,
         thickness,
     ));
 }

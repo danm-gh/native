@@ -1085,6 +1085,50 @@ test "geist primary tabs use the measured row while house tabs remain unchanged"
     try std.testing.expectEqual(@as(f32, 252), anchored_row_layout.findById(5).?.frame.width);
 }
 
+test "geist primary tabs translate fixed trigger frames onto the content-hugging underline register" {
+    const tokens = DesignTokens.theme(.{ .pack = .geist });
+    const triggers = [_]Widget{.{
+        .id = 2,
+        .kind = .segmented_control,
+        // A theme-agnostic tree can retain the house trigger's fixed
+        // height and a wider hit target. Geist must still join the active
+        // marker to its 50px rail and keep that marker on the content.
+        .frame = geometry.RectF.init(0, 0, 120, 32),
+        .text = "Files",
+        .icon = "folder",
+        .state = .{ .selected = true },
+    }};
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 1,
+        .frame = geometry.RectF.init(0, 0, 240, 50),
+        .children = &triggers,
+    });
+
+    var nodes: [3]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTreeWithTokens(strip, strip.frame, tokens, &nodes);
+    const trigger = layout.findById(2).?.widget;
+    try std.testing.expectEqual(@as(f32, 50), trigger.frame.height);
+    try std.testing.expectEqual(@as(f32, 120), trigger.frame.width);
+
+    var commands: [16]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try layout.emitDisplayList(&builder, tokens);
+    switch (builder.displayList().findCommandById(widgetPartId(2, 2)).?.command) {
+        .fill_rect => |indicator| {
+            try std.testing.expectEqual(@as(f32, 48), indicator.rect.y);
+            try std.testing.expectEqual(@as(f32, 2), indicator.rect.height);
+            try std.testing.expect(indicator.rect.width < trigger.frame.width);
+
+            var hug_trigger = trigger;
+            hug_trigger.frame = geometry.RectF.init(0, 0, 0, 0);
+            const hug_width = intrinsicWidgetSize(hug_trigger, tokens).width;
+            try std.testing.expectApproxEqAbs(hug_width, indicator.rect.width, 1);
+            try std.testing.expectApproxEqAbs(trigger.frame.center().x, indicator.rect.center().x, 0.5);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "the bubble reaction pill straddles the bottom edge on the page plane" {
     const surfaces = @import("widget_render_surfaces.zig");
     const tokens = DesignTokens{};

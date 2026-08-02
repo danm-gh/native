@@ -88,7 +88,7 @@ pub fn layoutWidgetDepth(
         // Tab strips flow the same way: the underline register supplies
         // its own inter-trigger gap when the author left the strip's gap
         // at 0 (the house pill container keeps its flush triggers).
-        .tabs => try layoutAxisChildren(widget.children, content, .horizontal, index, depth, output, len, tabsLayoutStyle(widget, tokens), tokens),
+        .tabs => try layoutTabsChildren(widget, content, index, depth, output, len, tokens),
         .column => try layoutAxisChildren(widget.children, content, .vertical, index, depth, output, len, widget.layout, tokens),
         // The grouped input flows vertically inside its own field chrome:
         // the text entry (grow-stretched by `Ui.inputGroup`) above the
@@ -429,6 +429,27 @@ fn tabsLayoutStyle(widget: Widget, tokens: DesignTokens) WidgetLayoutStyle {
     return style;
 }
 
+/// Underline triggers are the strip's full-height hit targets. The
+/// ordinary stretch alignment only fills children without an explicit
+/// cross extent; theme-agnostic trees can still carry the house trigger's
+/// fixed 32px height, so this path translates those fixed frames onto the
+/// underline register's row as well.
+fn layoutTabsChildren(
+    widget: Widget,
+    content: geometry.RectF,
+    parent_index: usize,
+    depth: usize,
+    output: []WidgetLayoutNode,
+    len: *usize,
+    tokens: DesignTokens,
+) Error!void {
+    const style = tabsLayoutStyle(widget, tokens);
+    if (tokens.controls.tabs_indicator == .underline) {
+        return layoutAxisChildrenMode(widget.children, content, .horizontal, parent_index, depth, output, len, style, tokens, true, true);
+    }
+    return layoutAxisChildrenMode(widget.children, content, .horizontal, parent_index, depth, output, len, style, tokens, false, false);
+}
+
 /// Geist's primary TabsList is a width:100% ruled row. The authored
 /// widget tree is theme-agnostic, though, and often carries the house
 /// pill's intrinsic/fixed width, so every parent layout mode uses this
@@ -475,9 +496,9 @@ fn layoutAxisChildren(
     tokens: DesignTokens,
 ) Error!void {
     if (axis == .horizontal and tokens.controls.tabs_indicator == .underline) {
-        return layoutAxisChildrenMode(children, content, axis, parent_index, depth, output, len, style, tokens, true);
+        return layoutAxisChildrenMode(children, content, axis, parent_index, depth, output, len, style, tokens, true, false);
     }
-    return layoutAxisChildrenMode(children, content, axis, parent_index, depth, output, len, style, tokens, false);
+    return layoutAxisChildrenMode(children, content, axis, parent_index, depth, output, len, style, tokens, false, false);
 }
 
 /// `fill_primary_tabs` is comptime so the overwhelmingly common house
@@ -494,6 +515,7 @@ fn layoutAxisChildrenMode(
     style: WidgetLayoutStyle,
     tokens: DesignTokens,
     comptime fill_primary_tabs: bool,
+    comptime stretch_tab_triggers: bool,
 ) Error!void {
     // Anchored floating children take no flow slot: they are skipped in
     // every pass here (measurement, gap counting, placement) and laid out
@@ -577,7 +599,13 @@ fn layoutAxisChildrenMode(
             clampMainExtent(child, axis, grow_extent * grow / grow_total)
         else
             mainExtentWithBubbleCap(child, axis, available_extent, preferredMainExtentInCross(child, axis, cross_extent, style.cross_alignment, tokens));
-        const cross = preferredCrossExtent(child, axis, cross_extent, style.cross_alignment, tokens);
+        const cross = if (comptime stretch_tab_triggers)
+            if (child.kind == .segmented_control)
+                stretchedCrossExtent(child, axis, cross_extent)
+            else
+                preferredCrossExtent(child, axis, cross_extent, style.cross_alignment, tokens)
+        else
+            preferredCrossExtent(child, axis, cross_extent, style.cross_alignment, tokens);
         const cross_origin = alignedCrossAxisOrigin(content, axis, cross_extent, cross, child, style.cross_alignment);
         const child_frame = switch (axis) {
             .horizontal => geometry.RectF.init(cursor, cross_origin, main_extent, cross),
@@ -2358,6 +2386,18 @@ fn preferredCrossExtent(widget: Widget, axis: LayoutAxis, available: f32, alignm
         return @max(min_value, boundedByMax(intrinsic, max_value));
     }
     return @max(min_value, boundedByMax(@min(available, intrinsic), max_value));
+}
+
+fn stretchedCrossExtent(widget: Widget, axis: LayoutAxis, available: f32) f32 {
+    const min_value = switch (axis) {
+        .horizontal => widget.layout.min_size.height,
+        .vertical => widget.layout.min_size.width,
+    };
+    const max_value = switch (axis) {
+        .horizontal => widget.layout.max_size.height,
+        .vertical => widget.layout.max_size.width,
+    };
+    return @max(min_value, boundedByMax(available, max_value));
 }
 
 fn minMainExtent(widget: Widget, axis: LayoutAxis) f32 {

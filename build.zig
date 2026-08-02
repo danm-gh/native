@@ -566,6 +566,9 @@ pub fn build(b: *std.Build) void {
         .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "\"gpu_surfaces\"" },
         .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "\"gpuSurfaces\"" },
         .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "gpuFirstFrameLatencyNs: number" },
+        .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "gpuBackend: NativeSdkGpuSurfaceBackend;" },
+        .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "export type NativeSdkGpuSurfaceBackendRequest = \"metal\" | \"software\";" },
+        .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "gpuBackend?: NativeSdkGpuSurfaceBackendRequest;" },
     });
     addFileContainsCheckStep(b, file_contains_checker, test_step, "test-ts-toolchain-twins", "Verify the CLI's toolchain-resolution gate and its direct-`zig build` twin stay in lockstep (both resolve the aliased real compiler @typescript/old from packages/core — the same origin runtime imports it from — hold its resolved version against the manifest-read pin, never probe the unused @typescript/typescript6 wrapper, and teach instead of panicking)", &.{
         // The resolution twins probe the aliased REAL compiler
@@ -986,9 +989,37 @@ pub fn build(b: *std.Build) void {
     // this step until the encoder comment, the host decoder comment, and
     // the patterns below move with it.
     addFileContainsCheckStep(b, file_contains_checker, test_step, "test-wire-format-version-prose", "Verify wire-format version prose matches the packet version constant", &.{
-        .{ .path = "src/primitives/canvas/serialization.zig", .pattern = "pub const binary_packet_version: u8 = 4;" },
-        .{ .path = "src/primitives/canvas/serialization.zig", .pattern = "Compact binary gpu-surface packet encoding (wire format v4)." },
-        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "Compact binary gpu-surface packet decoding (wire format v4)." },
+        .{ .path = "src/primitives/canvas/serialization.zig", .pattern = "pub const binary_packet_version: u8 = 5;" },
+        .{ .path = "src/primitives/canvas/serialization.zig", .pattern = "Compact binary gpu-surface packet encoding (wire format v5)." },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "Compact binary gpu-surface packet decoding (wire format v5)." },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "Compact binary gpu-surface packet decoding (wire format v5)." },
+    });
+    addFileContainsCheckStep(b, file_contains_checker, test_step, "test-windows-gpu-packet-presenter", "Verify Windows uses retained Direct2D packets with recovery, bounded resources, and dirty-region pixel fallback", &.{
+        .{ .path = "src/platform/windows/root.zig", .pattern = ".present_gpu_surface_packet_binary_fn = presentGpuSurfacePacketBinary" },
+        .{ .path = "src/platform/windows/root.zig", .pattern = ".backend = if (event.gpu_backend == 1) .direct2d else .software" },
+        .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "view.gpu_surface->present(request, &info)" },
+        .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "InvalidateRect(view.hwnd, &info.dirty_rects[index], FALSE)" },
+        .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "for (size_t y_index = y0; y_index < y1; ++y_index)" },
+        .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "InvalidateRect(view.hwnd, partial_update ? &dirty_pixels : nullptr, FALSE)" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "D2D1_RENDER_TARGET_TYPE_HARDWARE" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "retained_commands_ = std::move(next_retained)" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "PushAxisAlignedClip(d2dRect(requested)" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "const float expansion = effect.spread + blur" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "releaseImageBitmap(action.id)" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "resumeAndDrawBlur" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "const Rect target = blurTarget(*command, outer_clip)" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "blur_snapshot_->CopyFromBitmap" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "command.effect.blur * transformScale(command.transform)" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "D2D1_EXTEND_MODE_CLAMP" },
+        .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "!GetClientRect(view.hwnd, &client) || !PtInRect(&client, sample)" },
+        .{ .path = "src/platform/windows/gpu_surface_renderer.cpp", .pattern = "draw_line(text.text, text.origin.x, text.origin.y)" },
+        .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "gpuSurfaceUpdateRegionRects" },
+        .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "info.dirty_rect_count > 0" },
+        .{ .path = "src/platform/windows/webview2_host.cpp", .pattern = "view->gpu_force_full_repaint_pending = true" },
+        .{ .path = "src/platform/windows/root.zig", .pattern = ".canvas_frame_full_repaint = event.force_full_repaint != 0" },
+        .{ .path = ".github/scripts/windows-canvas-smoke.sh", .pattern = "gpu_backend=direct2d" },
+        .{ .path = ".github/scripts/windows-effects-smoke.sh", .pattern = "gpu_backend=direct2d" },
+        .{ .path = "build/app.zig", .pattern = "app_mod.linkSystemLibrary(\"d2d1\", .{})" },
     });
     addFileContainsCheckStep(b, file_contains_checker, test_step, "test-appkit-gpu-packet-blur-effects", "Verify AppKit GPU packet presenter applies blur effects", &.{
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "NativeSdkPacketApplyBlur" },

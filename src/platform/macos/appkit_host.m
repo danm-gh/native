@@ -2958,7 +2958,7 @@ static NSRect NativeSdkPacketAlignRectToPixels(NSRect rect, CGFloat scale, NSUIn
 }
 
 /* ---------------------------------------------------------------------------
- * Compact binary gpu-surface packet decoding (wire format v4).
+ * Compact binary gpu-surface packet decoding (wire format v5).
  *
  * Little-endian, length-prefixed, mirror of the engine's binary packet
  * encoder (serialization.zig, `writeCanvasGpuPacketBinary` and the patch
@@ -2973,7 +2973,8 @@ static NSRect NativeSdkPacketAlignRectToPixels(NSRect rect, CGFloat scale, NSUIn
  * keyed upserts + the full draw-order vector) against the view's retained
  * command dictionary; v3 added the flag-gated dirty rect list after the
  * scissor; v4 added the per-command stroke end-cap code after
- * stroke_width. The version this comment names and the encoder's spec
+ * stroke_width; v5 added compact positioned glyph runs after text UTF-8.
+ * The version this comment names and the encoder's spec
  * comment must agree with `binary_packet_version` (serialization.zig);
  * the `test-wire-format-version-prose` build check pins all three.
  */
@@ -3003,6 +3004,14 @@ static BOOL NativeSdkBinaryHasBytes(NativeSdkBinaryPacketReader *reader, NSUInte
 static uint8_t NativeSdkBinaryReadU8(NativeSdkBinaryPacketReader *reader) {
     if (!NativeSdkBinaryHasBytes(reader, 1)) return 0;
     return reader->bytes[reader->offset++];
+}
+
+static uint16_t NativeSdkBinaryReadU16(NativeSdkBinaryPacketReader *reader) {
+    if (!NativeSdkBinaryHasBytes(reader, 2)) return 0;
+    uint16_t value = 0;
+    memcpy(&value, reader->bytes + reader->offset, 2);
+    reader->offset += 2;
+    return CFSwapInt16LittleToHost(value);
 }
 
 static uint32_t NativeSdkBinaryReadU32(NativeSdkBinaryPacketReader *reader) {
@@ -3209,6 +3218,45 @@ static NSDictionary *NativeSdkBinaryReadText(NativeSdkBinaryPacketReader *reader
         @"color" : color,
         @"text" : text,
     }];
+    uint8_t hasPositionedGlyphs = NativeSdkBinaryReadU8(reader);
+    if (reader->failed) return nil;
+    if (hasPositionedGlyphs) {
+        uint32_t glyphCount = NativeSdkBinaryReadU32(reader);
+        if (reader->failed || glyphCount > 65536 || glyphCount > (reader->length - reader->offset) / 15) {
+            reader->failed = YES;
+            return nil;
+        }
+        NSMutableArray *glyphs = [NSMutableArray arrayWithCapacity:glyphCount];
+        for (uint32_t index = 0; index < glyphCount; index++) {
+            uint16_t glyphId = NativeSdkBinaryReadU16(reader);
+            uint8_t flags = NativeSdkBinaryReadU8(reader);
+            if (flags > 1) {
+                reader->failed = YES;
+                return nil;
+            }
+            uint64_t glyphFontId = (flags & 1) != 0 ? NativeSdkBinaryReadU64(reader) : fontId;
+            NSNumber *x = NativeSdkBinaryReadF32Number(reader);
+            NSNumber *baseline = NativeSdkBinaryReadF32Number(reader);
+            NSNumber *advance = NativeSdkBinaryReadF32Number(reader);
+            if (reader->failed) return nil;
+            [glyphs addObject:@{ @"id" : @(glyphId), @"font" : @(glyphFontId), @"x" : x, @"baseline" : baseline, @"advance" : advance }];
+        }
+        uint32_t fragmentCount = NativeSdkBinaryReadU32(reader);
+        if (reader->failed || fragmentCount > 64 || fragmentCount > (reader->length - reader->offset) / 12) {
+            reader->failed = YES;
+            return nil;
+        }
+        NSMutableArray *fragments = [NSMutableArray arrayWithCapacity:fragmentCount];
+        for (uint32_t index = 0; index < fragmentCount; index++) {
+            NSNumber *x = NativeSdkBinaryReadF32Number(reader);
+            NSNumber *baseline = NativeSdkBinaryReadF32Number(reader);
+            NSString *fragmentText = NativeSdkBinaryReadString(reader);
+            if (reader->failed || !fragmentText) return nil;
+            [fragments addObject:@{ @"x" : x, @"baseline" : baseline, @"text" : fragmentText }];
+        }
+        result[@"positionedGlyphs"] = glyphs;
+        result[@"positionedFragments"] = fragments;
+    }
     uint8_t hasLayout = NativeSdkBinaryReadU8(reader);
     if (reader->failed) return nil;
     if (!hasLayout) return result;
@@ -3358,7 +3406,7 @@ static NSDictionary *NativeSdkPacketDictionaryFromBinary(const uint8_t *bytes, N
     if (memcmp(bytes, "NSGP", 4) != 0) return nil;
     reader.offset = 4;
     uint8_t version = NativeSdkBinaryReadU8(&reader);
-    if (version != 4) return nil;
+    if (version != 5) return nil;
     uint8_t loadActionCode = NativeSdkBinaryReadU8(&reader);
     uint8_t packetFlags = NativeSdkBinaryReadU8(&reader);
     (void)NativeSdkBinaryReadU8(&reader); /* reserved */

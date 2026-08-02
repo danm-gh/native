@@ -1141,10 +1141,10 @@ pub const ControlVisualTokens = struct {
     pressed_background: ?Color = null,
     /// Disabled fill and ink. Null keeps the house treatment:
     /// the rest color at `StateTokens.disabled_alpha`, except that a
-    /// filled primary keeps its knockout ink so the label does not
-    /// double-fade through the already-muted fill. Themes whose
-    /// disabled treatment is a color SWAP (a flat gray chip under gray
-    /// text) state the pair here.
+    /// filled primary precomposites its knockout ink over the page at
+    /// that strength so the label does not double-fade through the
+    /// already-muted fill. Themes whose disabled treatment is a color
+    /// SWAP (a flat gray chip under gray text) state the pair here.
     disabled_background: ?Color = null,
     disabled_foreground: ?Color = null,
     foreground: ?Color = null,
@@ -1165,8 +1165,9 @@ pub const ControlTokens = struct {
     button_ghost: ControlVisualTokens = .{},
     button_destructive: ControlVisualTokens = .{},
     /// Shared disabled edge for the button variants that retain an
-    /// outline. Filled variants dissolve their edge into their disabled
-    /// body; ghost remains borderless. Null keeps the house opacity wash.
+    /// outline. Filled variants drop their implicit edge so their disabled
+    /// body alone defines the silhouette; ghost remains borderless. Null
+    /// keeps the house opacity wash.
     button_disabled_border: ?Color = null,
     toggle_button: ControlVisualTokens = .{},
     accordion: ControlVisualTokens = .{},

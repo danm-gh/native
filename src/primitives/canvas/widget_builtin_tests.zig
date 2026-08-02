@@ -1309,6 +1309,10 @@ test "list and menu items draw a leading vector icon with the label shifted righ
     const registered = canvas.icons.find("folder").?;
     try std.testing.expectEqual(registered.elements.ptr, icon_stroke.elements.ptr);
 
+    // `tree_level` is logical hierarchy metadata, not renderer-owned
+    // spacing. A flat tree can author indentation with ordinary layout
+    // (including a composed list row), so the same built-in row keeps its
+    // label position when only its semantic level changes.
     var tree_child = plain;
     tree_child.semantics.role = .treeitem;
     tree_child.tree_level = 2;
@@ -1319,10 +1323,7 @@ test "list and menu items draw a leading vector icon with the label shifted righ
         .draw_text => |text| text,
         else => return error.TestUnexpectedResult,
     };
-    // A flat tree's semantic level is visible too: child rows shift one
-    // spacing rung while an ordinary list item remains exactly where it
-    // was. This is the component explorer's hierarchy cue.
-    try std.testing.expect(tree_label.origin.x > plain_label.origin.x);
+    try std.testing.expectEqualDeep(plain_label.origin, tree_label.origin);
 
     // menu_item keeps the same leading-icon slot contract even though
     // it draws with its own emitter (menu rows add the trailing
@@ -1341,10 +1342,7 @@ test "list and menu items draw a leading vector icon with the label shifted righ
     const tree_size = canvas.intrinsicWidgetSize(tree_child, tokens);
     try std.testing.expect(iconed_size.width > plain_size.width);
     try std.testing.expectEqual(plain_size.height, iconed_size.height);
-    // The render-time tree inset is also part of intrinsic measurement,
-    // so a hug-width child row keeps the full label budget after shifting.
-    try std.testing.expectApproxEqAbs(tokens.spacing.lg, tree_size.width - plain_size.width, 0.001);
-    try std.testing.expectEqual(plain_size.height, tree_size.height);
+    try std.testing.expectEqualDeep(plain_size, tree_size);
 }
 
 test "menu rows wash the active row, never outline, and checkmark the committed row" {

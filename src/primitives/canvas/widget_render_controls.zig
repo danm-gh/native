@@ -50,7 +50,6 @@ const widgetTabTriggerTextSize = widget_metrics.widgetTabTriggerTextSize;
 const widgetTabTriggerInset = widget_metrics.widgetTabTriggerInset;
 const widgetTabTriggerIconExtent = widget_metrics.widgetTabTriggerIconExtent;
 const widgetTabTriggerIconGap = widget_metrics.widgetTabTriggerIconGap;
-const widgetTreeIndent = widget_metrics.widgetTreeIndent;
 const widgetTypographySize = widget_metrics.widgetTypographySize;
 const widgetButtonInset = widget_metrics.widgetButtonInset;
 const widgetControlInset = widget_metrics.widgetControlInset;
@@ -842,17 +841,7 @@ pub fn emitListItemWidget(builder: *Builder, widget: Widget, tokens: DesignToken
     // so icon + label are one hit target with one tint, mirroring the
     // button's inline icon. The label shifts right by the shared metric
     // the intrinsic size also accounts for.
-    // Flat tree rows carry their logical nesting in `tree_level`; give
-    // that semantic hierarchy its matching visual inset while leaving
-    // every ordinary list item untouched. Structural trees may keep the
-    // default zero level and author their nesting through child frames.
-    const tree_indent = @min(widget.frame.width, widgetTreeIndent(widget, tokens));
-    var text_frame = geometry.RectF.init(
-        widget.frame.x + tree_indent,
-        widget.frame.y,
-        @max(1, widget.frame.width - tree_indent),
-        widget.frame.height,
-    );
+    var text_frame = widget.frame;
     const icon = icon_model.resolveOrMissing(widget.icon);
     if (icon) |resolved| {
         const icon_extent = widgetRowIconExtent(widget, tokens);

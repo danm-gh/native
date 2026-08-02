@@ -206,16 +206,6 @@ pub fn widgetRowIconGap(widget: Widget, tokens: DesignTokens) f32 {
     return widgetControlInset(widget, tokens, tokens.spacing.sm);
 }
 
-/// Visual nesting reserved before a flat tree row's ordinary content.
-/// Structural trees can still author hierarchy through child frames;
-/// only a semantic tree item with an explicit level participates. Shared
-/// by intrinsic sizing and rendering so a hug-width row never pays for
-/// the indent by eliding its own label.
-pub fn widgetTreeIndent(widget: Widget, tokens: DesignTokens) f32 {
-    if (widget.kind != .list_item or widget.semantics.role != .treeitem or widget.tree_level <= 1) return 0;
-    return widgetSizedDensityValue(widget, tokens, tokens.spacing.lg) * @as(f32, @floatFromInt(widget.tree_level - 1));
-}
-
 pub fn widgetDefaultRowHeight(widget: Widget, tokens: DesignTokens) f32 {
     return widgetSizedDensityValue(widget, tokens, tokens.metrics.row_extent);
 }

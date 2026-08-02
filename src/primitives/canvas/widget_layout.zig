@@ -40,7 +40,6 @@ const widgetTabTriggerInset = widget_metrics.widgetTabTriggerInset;
 const widgetTabTriggerIconExtent = widget_metrics.widgetTabTriggerIconExtent;
 const widgetTabTriggerIconGap = widget_metrics.widgetTabTriggerIconGap;
 const underlineTabsListInset = widget_metrics.underlineTabsListInset;
-const widgetTreeIndent = widget_metrics.widgetTreeIndent;
 const widgetTypographySize = widget_metrics.widgetTypographySize;
 const widgetLineHeight = widget_metrics.widgetLineHeight;
 const widgetDefaultRowHeight = widget_metrics.widgetDefaultRowHeight;
@@ -2217,7 +2216,7 @@ fn intrinsicRowTextWidgetSize(widget: Widget, tokens: DesignTokens) geometry.Siz
     // Ceil to the snap grid (`pixelSnapCeil`): list rows and table
     // cells hug their measured label exactly, so render-time edge
     // snapping must not shave the label below its own width and elide.
-    return geometry.SizeF.init(pixelSnapCeil(tokens, widgetTreeIndent(widget, tokens) + icon_width + text_width + inset * 2), widgetDefaultRowHeight(widget, tokens));
+    return geometry.SizeF.init(pixelSnapCeil(tokens, icon_width + text_width + inset * 2), widgetDefaultRowHeight(widget, tokens));
 }
 
 fn intrinsicCheckboxWidgetSize(widget: Widget, tokens: DesignTokens) geometry.SizeF {

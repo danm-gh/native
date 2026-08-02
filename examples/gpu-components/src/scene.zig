@@ -866,6 +866,7 @@ pub fn buildComponentsWidgetLayoutWithStateSizeAndTokens(nodes: []canvas.WidgetL
     const sidebar_title_width = @max(1, sidebar_width - 44);
     const sidebar_item_width = @max(1, sidebar_width - 28);
     const sections = [_]ComponentSection{ .controls, .inputs, .data, .components, .surfaces };
+    var sidebar_component_row_children: [canvas.builtin_component_names.len][2]canvas.Widget = undefined;
     var sidebar_tree_rows: [sections.len + canvas.builtin_component_names.len]canvas.Widget = undefined;
     var sidebar_tree_row_count: usize = 0;
     for (sections) |section| {
@@ -884,15 +885,26 @@ pub fn buildComponentsWidgetLayoutWithStateSizeAndTokens(nodes: []canvas.WidgetL
         });
         if (section != .components) continue;
         for (canvas.builtin_component_names, 0..) |name, index| {
+            // `tree_level` is the row's logical hierarchy for keyboard
+            // navigation. The explorer owns its visual nesting through
+            // ordinary child layout, matching the documented tree
+            // contract and keeping generic tree rows free to choose their
+            // own indentation. The first spacer includes the list row's
+            // normal text inset plus one depth step.
+            sidebar_component_row_children[index] = .{
+                .{ .kind = .stack, .frame = rect(0, 0, tokens.spacing.md + tokens.spacing.lg, 0) },
+                .{ .kind = .text, .text = name, .text_no_wrap = true, .layout = .{ .grow = 1 } },
+            };
             try appendComponentWidget(&sidebar_tree_rows, &sidebar_tree_row_count, .{
                 .id = componentTreeItemId(index),
                 .kind = .list_item,
                 .frame = rect(0, 0, 0, 32),
-                .text = name,
                 .tree_level = 2,
                 .command = componentTreeItemCommand(index),
+                .layout = .{ .cross_alignment = .center },
                 .state = .{ .selected = ui_state.section == .components and ui_state.selected_component == index },
                 .semantics = .{ .role = .treeitem, .label = name },
+                .children = &sidebar_component_row_children[index],
             });
         }
     }

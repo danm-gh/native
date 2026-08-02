@@ -354,6 +354,14 @@ test "gpu components layout keeps finished controls visually separated" {
     try std.testing.expect(!catalog_layout.findById(componentSectionNavId(.controls)).?.widget.state.selected);
     try std.testing.expectEqual(@as(?bool, true), catalog_layout.findById(componentSectionNavId(.components)).?.widget.state.expanded);
     try std.testing.expect(catalog_layout.findById(componentTreeItemId(0)).?.widget.state.selected);
+    const first_component_tree_item_index = try expectComponentWidgetIndex(catalog_layout, componentTreeItemId(0));
+    const first_component_tree_item = catalog_layout.nodes[first_component_tree_item_index];
+    const first_component_tree_spacer = catalog_layout.nodes[first_component_tree_item_index + 1];
+    const first_component_tree_label = catalog_layout.nodes[first_component_tree_item_index + 2];
+    try std.testing.expectEqual(first_component_tree_item_index, first_component_tree_spacer.parent_index.?);
+    try std.testing.expectEqual(first_component_tree_item_index, first_component_tree_label.parent_index.?);
+    try std.testing.expect(first_component_tree_label.frame.x > first_component_tree_item.frame.x);
+    try std.testing.expectEqualStrings(canvas.builtin_component_names[0], first_component_tree_label.widget.text);
     try expectComponentWidgetFrame(catalog_layout, 181, contentRect(64, 124, 720, 300));
     try std.testing.expect(catalog_layout.findById(182) == null);
     try std.testing.expect(catalog_layout.findById(184) == null);

@@ -123,6 +123,20 @@ test "ui builder emits an engine-compatible widget tree" {
     try testing.expect(saw_button);
 }
 
+test "ui builder distinguishes inherited tab padding from an equal author value" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+
+    var ui = InboxUi.init(arena_state.allocator());
+    const inherited = ui.el(.tabs, .{}, .{});
+    try testing.expectEqual(@as(f32, 3), inherited.widget.layout.padding.top);
+    try testing.expect(inherited.widget.layout.padding_is_kind_default);
+
+    const explicit = ui.el(.tabs, .{ .padding = 3 }, .{});
+    try testing.expectEqual(@as(f32, 3), explicit.widget.layout.padding.top);
+    try testing.expect(!explicit.widget.layout.padding_is_kind_default);
+}
+
 test "structural ids are stable across rebuilds" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();

@@ -948,6 +948,365 @@ test "underline tab strips separate triggers by the tabs metric gap" {
     try std.testing.expectApproxEqAbs(@as(f32, 0), pill_layout.nodes[2].frame.x - pill_layout.nodes[1].frame.maxX(), 0.001);
 }
 
+test "geist primary tabs use the measured row while house tabs remain unchanged" {
+    const triggers = [_]Widget{
+        .{ .id = 2, .kind = .segmented_control, .text = "Apple", .state = .{ .selected = true, .disabled = true } },
+        .{ .id = 3, .kind = .segmented_control, .text = "Orange" },
+        .{ .id = 4, .kind = .segmented_control, .text = "Files", .icon = "folder" },
+    };
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 1,
+        .frame = geometry.RectF.init(0, 0, 240, 50),
+        .children = &triggers,
+    });
+    try std.testing.expect(strip.layout.padding_is_kind_default);
+
+    const geist = DesignTokens.theme(.{ .pack = .geist });
+    var geist_nodes: [4]WidgetLayoutNode = undefined;
+    const geist_layout = try layoutWidgetTreeWithTokens(strip, strip.frame, geist, &geist_nodes);
+    try std.testing.expectEqual(geometry.RectF.init(0, 0, geist_layout.nodes[1].frame.width, 50), geist_layout.nodes[1].frame);
+    try std.testing.expectApproxEqAbs(@as(f32, 24), geist_layout.nodes[2].frame.x - geist_layout.nodes[1].frame.maxX(), 0.001);
+
+    var commands: [24]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try geist_layout.emitDisplayList(&builder, geist);
+    const list = builder.displayList();
+    switch (list.findCommandById(widgetPartId(1, 2)).?.command) {
+        .fill_rect => |rail| try std.testing.expectEqualDeep(geometry.RectF.init(0, 49, 240, 1), rail.rect),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (list.findCommandById(widgetPartId(2, 2)).?.command) {
+        .fill_rect => |indicator| try std.testing.expectEqualDeep(geometry.RectF.init(0, 48, geist_layout.nodes[1].frame.width, 2), indicator.rect),
+        else => return error.TestUnexpectedResult,
+    }
+    // Disabled does not dim the selected primary tab in the reference.
+    switch (list.findCommandById(widgetPartId(2, 3)).?.command) {
+        .draw_text => |label| {
+            try std.testing.expectEqual(@as(f32, 14), label.size);
+            try std.testing.expectEqualDeep(Color.rgb8(23, 23, 23), label.color);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expect(list.findCommandById(widgetPartId(4, 5)) != null or list.findCommandById(widgetPartId(4, 6)) != null);
+
+    // A numerically identical 3px author inset is not the builder
+    // default. Geist preserves it instead of translating it to the
+    // underline register's zero inset.
+    const explicitly_padded_strip = builtinComponentWidget(.tabs, .{
+        .id = 11,
+        .frame = geometry.RectF.init(0, 0, 240, 50),
+        .layout = .{ .padding = geometry.InsetsF.all(3) },
+        .children = &triggers,
+    });
+    try std.testing.expect(!explicitly_padded_strip.layout.padding_is_kind_default);
+    var explicitly_padded_nodes: [4]WidgetLayoutNode = undefined;
+    const explicitly_padded_layout = try layoutWidgetTreeWithTokens(explicitly_padded_strip, explicitly_padded_strip.frame, geist, &explicitly_padded_nodes);
+    try std.testing.expectEqual(@as(f32, 3), explicitly_padded_layout.nodes[1].frame.x);
+    try std.testing.expectEqual(@as(f32, 3), explicitly_padded_layout.nodes[1].frame.y);
+    try std.testing.expectEqual(@as(f32, 44), explicitly_padded_layout.nodes[1].frame.height);
+
+    // The identical authored tree under the default register retains
+    // its canonical 3px pill hug, 32px trigger, 13px label, and gap 0.
+    const house = DesignTokens{};
+    var house_nodes: [4]WidgetLayoutNode = undefined;
+    const house_layout = try layoutWidgetTreeWithTokens(strip, strip.frame, house, &house_nodes);
+    try std.testing.expectEqual(@as(f32, 3), house_layout.nodes[1].frame.x);
+    try std.testing.expectEqual(@as(f32, 32), house_layout.nodes[1].frame.height);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), house_layout.nodes[2].frame.x - house_layout.nodes[1].frame.maxX(), 0.001);
+    var house_commands: [24]CanvasCommand = undefined;
+    var house_builder = Builder.init(&house_commands);
+    try house_layout.emitDisplayList(&house_builder, house);
+    switch (house_builder.displayList().findCommandById(widgetPartId(2, 3)).?.command) {
+        .draw_text => |label| try std.testing.expectEqual(@as(f32, 13), label.size),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // A theme-agnostic stack may carry the pill register's old hug
+    // width. Geist translates that primary TabsList to the containing
+    // width so the closing rail continues after the last trigger; the
+    // identical house tree keeps its authored pill width.
+    var nested_strip = strip;
+    nested_strip.frame = geometry.RectF.init(0, 0, 148, 50);
+    const nested_children = [_]Widget{nested_strip};
+    const host = Widget{
+        .kind = .stack,
+        .frame = geometry.RectF.init(0, 0, 352, 80),
+        .children = &nested_children,
+    };
+    var nested_geist_nodes: [5]WidgetLayoutNode = undefined;
+    const nested_geist = try layoutWidgetTreeWithTokens(host, host.frame, geist, &nested_geist_nodes);
+    try std.testing.expectEqual(@as(f32, 352), nested_geist.nodes[1].frame.width);
+    var nested_geist_commands: [24]CanvasCommand = undefined;
+    var nested_geist_builder = Builder.init(&nested_geist_commands);
+    try nested_geist.emitDisplayList(&nested_geist_builder, geist);
+    switch (nested_geist_builder.displayList().findCommandById(widgetPartId(1, 2)).?.command) {
+        .fill_rect => |rail| try std.testing.expectEqualDeep(geometry.RectF.init(0, 49, 352, 1), rail.rect),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var nested_house_nodes: [5]WidgetLayoutNode = undefined;
+    const nested_house = try layoutWidgetTreeWithTokens(host, host.frame, house, &nested_house_nodes);
+    try std.testing.expectEqual(@as(f32, 148), nested_house.nodes[1].frame.width);
+    var nested_house_commands: [24]CanvasCommand = undefined;
+    var nested_house_builder = Builder.init(&nested_house_commands);
+    try nested_house.emitDisplayList(&nested_house_builder, house);
+    switch (nested_house_builder.displayList().findCommandById(widgetPartId(1, 1)).?.command) {
+        .fill_rounded_rect => |pill| try std.testing.expectEqual(@as(f32, 148), pill.rect.width),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // Underline paint does not imply Geist's width:100% policy. A
+    // custom underline theme must opt into that layout metric, otherwise
+    // the same authored strip keeps its 148px hug.
+    var custom_underline = DesignTokens{};
+    custom_underline.controls.tabs_indicator = .underline;
+    var nested_custom_nodes: [5]WidgetLayoutNode = undefined;
+    const nested_custom = try layoutWidgetTreeWithTokens(host, host.frame, custom_underline, &nested_custom_nodes);
+    try std.testing.expectEqual(@as(f32, 148), nested_custom.nodes[1].frame.width);
+
+    // Full-width is a minimum, not a cap. A deliberately wider Geist
+    // strip inside a horizontal viewport retains its authored overflow,
+    // including when the strip clips its own trigger content: the rail and
+    // the scroll semantics must cover the full scrollable width.
+    var wide_strip = nested_strip;
+    wide_strip.frame.width = 480;
+    wide_strip.layout.clip_content = true;
+    const wide_scroll_children = [_]Widget{wide_strip};
+    const wide_scroll = Widget{
+        .id = 7,
+        .kind = .scroll_view,
+        .frame = geometry.RectF.init(0, 0, 240, 50),
+        .scroll_axes = .horizontal,
+        .layout = .{ .clip_content = true },
+        .children = &wide_scroll_children,
+    };
+    var wide_scroll_nodes: [5]WidgetLayoutNode = undefined;
+    const wide_scroll_layout = try layoutWidgetTreeWithTokens(wide_scroll, wide_scroll.frame, geist, &wide_scroll_nodes);
+    try std.testing.expectEqual(@as(f32, 480), wide_scroll_layout.findById(1).?.frame.width);
+    var wide_scroll_commands: [32]CanvasCommand = undefined;
+    var wide_scroll_builder = Builder.init(&wide_scroll_commands);
+    try wide_scroll_layout.emitDisplayList(&wide_scroll_builder, geist);
+    switch (wide_scroll_builder.displayList().findCommandById(widgetPartId(1, 2)).?.command) {
+        .fill_rect => |rail| try std.testing.expectEqual(@as(f32, 480), rail.rect.width),
+        else => return error.TestUnexpectedResult,
+    }
+    var wide_scroll_semantics_buffer: [5]WidgetSemanticsNode = undefined;
+    const wide_scroll_semantics = try wide_scroll_layout.collectSemantics(&wide_scroll_semantics_buffer);
+    try std.testing.expect(wide_scroll_semantics[0].scroll.present);
+    try std.testing.expectEqual(@as(f32, 240), wide_scroll_semantics[0].scroll.viewport_extent);
+    try std.testing.expectEqual(@as(f32, 480), wide_scroll_semantics[0].scroll.content_extent);
+
+    // Flow layout keeps the same contract. The row + growing spacer is
+    // the common theme-agnostic shape used to make the house strip hug;
+    // Geist gives the TabsList first claim on the row's flexible width,
+    // while the identical house tree leaves that width to the spacer.
+    const row_children = [_]Widget{
+        nested_strip,
+        .{ .id = 5, .kind = .stack, .layout = .{ .grow = 1 } },
+    };
+    const row_host = Widget{
+        .kind = .row,
+        .frame = geometry.RectF.init(0, 0, 352, 50),
+        .children = &row_children,
+    };
+    var row_geist_nodes: [6]WidgetLayoutNode = undefined;
+    const row_geist = try layoutWidgetTreeWithTokens(row_host, row_host.frame, geist, &row_geist_nodes);
+    try std.testing.expectEqual(@as(f32, 352), row_geist.nodes[1].frame.width);
+    try std.testing.expectEqual(@as(f32, 0), row_geist.nodes[5].frame.width);
+
+    var row_house_nodes: [6]WidgetLayoutNode = undefined;
+    const row_house = try layoutWidgetTreeWithTokens(row_host, row_host.frame, house, &row_house_nodes);
+    try std.testing.expectEqual(@as(f32, 148), row_house.nodes[1].frame.width);
+    try std.testing.expectEqual(@as(f32, 204), row_house.nodes[5].frame.width);
+
+    var row_custom_nodes: [6]WidgetLayoutNode = undefined;
+    const row_custom = try layoutWidgetTreeWithTokens(row_host, row_host.frame, custom_underline, &row_custom_nodes);
+    try std.testing.expectEqual(@as(f32, 148), row_custom.nodes[1].frame.width);
+    try std.testing.expectEqual(@as(f32, 204), row_custom.nodes[5].frame.width);
+
+    // Anchored primary tabs consume no flow allocation, including the
+    // second pass that totals clamped fill widths. The bounded flow tab
+    // takes its 100px maximum and leaves the rest to the growing sibling.
+    var bounded_strip = nested_strip;
+    bounded_strip.layout.max_size.width = 100;
+    const anchored_strip = Widget{
+        .id = 6,
+        .kind = .tabs,
+        .frame = geometry.RectF.init(0, 0, 40, 50),
+        .layout = .{ .anchor = .{} },
+    };
+    const anchored_row_children = [_]Widget{
+        bounded_strip,
+        .{ .id = 5, .kind = .stack, .layout = .{ .grow = 1 } },
+        anchored_strip,
+    };
+    var anchored_row = row_host;
+    anchored_row.children = &anchored_row_children;
+    var anchored_row_nodes: [7]WidgetLayoutNode = undefined;
+    const anchored_row_layout = try layoutWidgetTreeWithTokens(anchored_row, anchored_row.frame, geist, &anchored_row_nodes);
+    try std.testing.expectEqual(@as(f32, 100), anchored_row_layout.findById(1).?.frame.width);
+    try std.testing.expectEqual(@as(f32, 252), anchored_row_layout.findById(5).?.frame.width);
+}
+
+test "geist primary tabs translate fixed trigger frames onto the content-hugging underline register" {
+    const tokens = DesignTokens.theme(.{ .pack = .geist });
+    const triggers = [_]Widget{.{
+        .id = 2,
+        .kind = .segmented_control,
+        // A theme-agnostic tree can retain the house trigger's fixed
+        // height and a wider hit target. Geist must still join the active
+        // marker to its 50px rail and keep that marker on the content.
+        .frame = geometry.RectF.init(0, 0, 120, 32),
+        .text = "Files",
+        .icon = "folder",
+        .state = .{ .selected = true },
+    }};
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 1,
+        .frame = geometry.RectF.init(0, 0, 240, 50),
+        .children = &triggers,
+    });
+
+    var nodes: [3]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTreeWithTokens(strip, strip.frame, tokens, &nodes);
+    const trigger = layout.findById(2).?.widget;
+    try std.testing.expectEqual(@as(f32, 50), trigger.frame.height);
+    try std.testing.expectEqual(@as(f32, 120), trigger.frame.width);
+
+    var commands: [16]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try layout.emitDisplayList(&builder, tokens);
+    switch (builder.displayList().findCommandById(widgetPartId(2, 2)).?.command) {
+        .fill_rect => |indicator| {
+            try std.testing.expectEqual(@as(f32, 48), indicator.rect.y);
+            try std.testing.expectEqual(@as(f32, 2), indicator.rect.height);
+            try std.testing.expect(indicator.rect.width < trigger.frame.width);
+
+            var hug_trigger = trigger;
+            hug_trigger.frame = geometry.RectF.init(0, 0, 0, 0);
+            const hug_width = intrinsicWidgetSize(hug_trigger, tokens).width;
+            try std.testing.expectApproxEqAbs(hug_width, indicator.rect.width, 1);
+            try std.testing.expectApproxEqAbs(trigger.frame.center().x, indicator.rect.center().x, 0.5);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "geist primary tabs fill the remaining width of an indented vertical flow" {
+    const geist = DesignTokens.theme(.{ .pack = .geist });
+    const triggers = [_]Widget{.{
+        .id = 3,
+        .kind = .segmented_control,
+        .text = "Files",
+        .state = .{ .selected = true },
+    }};
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 2,
+        .frame = geometry.RectF.init(20, 0, 148, 50),
+        .children = &triggers,
+    });
+    const children = [_]Widget{strip};
+    const column = Widget{
+        .id = 1,
+        .kind = .column,
+        .frame = geometry.RectF.init(0, 0, 352, 80),
+        .children = &children,
+    };
+
+    var nodes: [4]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTreeWithTokens(column, column.frame, geist, &nodes);
+    try std.testing.expectEqual(geometry.RectF.init(20, 0, 332, 50), layout.findById(2).?.frame);
+
+    // Full width remains a floor, not a cap: an authored overflow keeps
+    // its extent just as it does in stack and horizontal-scroll parents.
+    var wide_strip = strip;
+    wide_strip.frame.width = 480;
+    const wide_children = [_]Widget{wide_strip};
+    var wide_column = column;
+    wide_column.children = &wide_children;
+    var wide_nodes: [4]WidgetLayoutNode = undefined;
+    const wide_layout = try layoutWidgetTreeWithTokens(wide_column, wide_column.frame, geist, &wide_nodes);
+    try std.testing.expectEqual(geometry.RectF.init(20, 0, 480, 50), wide_layout.findById(2).?.frame);
+}
+
+test "geist primary tabs preserve authored overflow in rows" {
+    const geist = DesignTokens.theme(.{ .pack = .geist });
+    const triggers = [_]Widget{.{
+        .id = 3,
+        .kind = .segmented_control,
+        .text = "Files",
+        .state = .{ .selected = true },
+    }};
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 2,
+        .frame = geometry.RectF.init(0, 0, 480, 50),
+        .children = &triggers,
+    });
+    const children = [_]Widget{
+        strip,
+        .{ .id = 4, .kind = .stack, .layout = .{ .grow = 1 } },
+    };
+    const row = Widget{
+        .id = 1,
+        .kind = .row,
+        .frame = geometry.RectF.init(0, 0, 352, 50),
+        .children = &children,
+    };
+
+    var nodes: [5]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTreeWithTokens(row, row.frame, geist, &nodes);
+    try std.testing.expectEqual(@as(f32, 480), layout.findById(2).?.frame.width);
+    try std.testing.expectEqual(@as(f32, 0), layout.findById(4).?.frame.width);
+}
+
+test "geist primary tabs fill regular and virtual grid cells" {
+    const geist = DesignTokens.theme(.{ .pack = .geist });
+    const house = DesignTokens{};
+    const triggers = [_]Widget{.{
+        .id = 3,
+        .kind = .segmented_control,
+        .text = "Files",
+        .state = .{ .selected = true },
+    }};
+    const strip = builtinComponentWidget(.tabs, .{
+        .id = 2,
+        .frame = geometry.RectF.init(0, 0, 148, 50),
+        .children = &triggers,
+    });
+    const children = [_]Widget{strip};
+    const grid = Widget{
+        .id = 1,
+        .kind = .grid,
+        .frame = geometry.RectF.init(0, 0, 352, 50),
+        .layout = .{ .columns = 1 },
+        .children = &children,
+    };
+
+    var geist_nodes: [4]WidgetLayoutNode = undefined;
+    const geist_layout = try layoutWidgetTreeWithTokens(grid, grid.frame, geist, &geist_nodes);
+    try std.testing.expectEqual(@as(f32, 352), geist_layout.findById(2).?.frame.width);
+
+    var house_nodes: [4]WidgetLayoutNode = undefined;
+    const house_layout = try layoutWidgetTreeWithTokens(grid, grid.frame, house, &house_nodes);
+    try std.testing.expectEqual(@as(f32, 148), house_layout.findById(2).?.frame.width);
+
+    var virtual_grid = grid;
+    virtual_grid.layout.virtualized = true;
+    virtual_grid.layout.virtual_item_extent = 50;
+    var virtual_nodes: [4]WidgetLayoutNode = undefined;
+    const virtual_layout = try layoutWidgetTreeWithTokens(virtual_grid, virtual_grid.frame, geist, &virtual_nodes);
+    try std.testing.expectEqual(@as(f32, 352), virtual_layout.findById(2).?.frame.width);
+
+    var wide_strip = strip;
+    wide_strip.frame.width = 480;
+    const wide_children = [_]Widget{wide_strip};
+    var wide_grid = grid;
+    wide_grid.children = &wide_children;
+    var wide_nodes: [4]WidgetLayoutNode = undefined;
+    const wide_layout = try layoutWidgetTreeWithTokens(wide_grid, wide_grid.frame, geist, &wide_nodes);
+    try std.testing.expectEqual(@as(f32, 480), wide_layout.findById(2).?.frame.width);
+}
+
 test "the bubble reaction pill straddles the bottom edge on the page plane" {
     const surfaces = @import("widget_render_surfaces.zig");
     const tokens = DesignTokens{};
@@ -1172,6 +1531,22 @@ test "list and menu items draw a leading vector icon with the label shifted righ
     const registered = canvas.icons.find("folder").?;
     try std.testing.expectEqual(registered.elements.ptr, icon_stroke.elements.ptr);
 
+    // `tree_level` is logical hierarchy metadata, not renderer-owned
+    // spacing. A flat tree can author indentation with ordinary layout
+    // (including a composed list row), so the same built-in row keeps its
+    // label position when only its semantic level changes.
+    var tree_child = plain;
+    tree_child.semantics.role = .treeitem;
+    tree_child.tree_level = 2;
+    var tree_commands: [8]CanvasCommand = undefined;
+    var tree_builder = Builder.init(&tree_commands);
+    try emitWidgetTree(&tree_builder, tree_child, tokens);
+    const tree_label = switch (tree_builder.displayList().findCommandById(widgetPartId(70, 3)).?.command) {
+        .draw_text => |text| text,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqualDeep(plain_label.origin, tree_label.origin);
+
     // menu_item keeps the same leading-icon slot contract even though
     // it draws with its own emitter (menu rows add the trailing
     // checkmark slot and drop the focus ring).
@@ -1186,8 +1561,10 @@ test "list and menu items draw a leading vector icon with the label shifted righ
     // Intrinsic row width grows by the shared icon metrics; height holds.
     const plain_size = canvas.intrinsicWidgetSize(plain, tokens);
     const iconed_size = canvas.intrinsicWidgetSize(iconed, tokens);
+    const tree_size = canvas.intrinsicWidgetSize(tree_child, tokens);
     try std.testing.expect(iconed_size.width > plain_size.width);
     try std.testing.expectEqual(plain_size.height, iconed_size.height);
+    try std.testing.expectEqualDeep(plain_size, tree_size);
 }
 
 test "menu rows wash the active row, never outline, and checkmark the committed row" {
@@ -1748,7 +2125,12 @@ test "built-in component factory applies house composite defaults" {
         .layout = .{ .gap = 4 },
     });
     try std.testing.expectEqual(@as(f32, 3), custom_tabs.layout.padding.top);
+    try std.testing.expect(custom_tabs.layout.padding_is_kind_default);
     try std.testing.expectEqual(@as(f32, 4), custom_tabs.layout.gap);
+    const explicitly_padded_tabs = builtinComponentWidget(.tabs, .{
+        .layout = .{ .padding = geometry.InsetsF.all(3) },
+    });
+    try std.testing.expect(!explicitly_padded_tabs.layout.padding_is_kind_default);
     const padded_card = builtinComponentWidget(.card, .{
         .layout = .{ .padding = geometry.InsetsF.all(8) },
     });
@@ -3295,8 +3677,8 @@ test "label-exact controls at intrinsic width never elide under geometry pixel s
     // edge, at both snap scales, across labels whose fractional widths
     // land on both sides of the rounding boundary.
     const kinds = [_]canvas.WidgetKind{
-        .toggle_button, .button,   .toggle, .segmented_control,
-        .menu_item,     .checkbox, .radio,  .switch_control,
+        .toggle_button, .button,   .toggle,    .segmented_control,
+        .menu_item,     .checkbox, .radio,     .switch_control,
         .tooltip,       .badge,    .list_item,
     };
     const labels = [_][]const u8{ "PID", "CPU", "Memory", "Name", "Filter processes", "Quarterly report" };

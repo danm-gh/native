@@ -450,6 +450,7 @@ pub const builtinComponentDescriptor = widget_model.builtinComponentDescriptor;
 pub const WidgetActions = widget_model.WidgetActions;
 pub const WidgetSemantics = widget_model.WidgetSemantics;
 pub const WidgetContextMenuItem = widget_model.WidgetContextMenuItem;
+pub const CodeDiffLines = widget_model.CodeDiffLines;
 pub const Widget = widget_model.Widget;
 pub const BuiltinComponentOptions = widget_model.BuiltinComponentOptions;
 pub const WidgetCommandPart = widget_model.WidgetCommandPart;

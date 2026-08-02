@@ -1947,11 +1947,12 @@ pub const CodeModel = struct {
     show_lines: bool = true,
     wrap_code: bool = false,
     editable_code: bool = false,
+    added_spec: []const u8 = "2",
     count: usize = 3,
 };
 
 pub const code_markup_source =
-    \\<code source="{snippet}" language="tsx" editable="{editable_code}" on-input="edit" line-numbers="{show_lines}" wrap="{wrap_code}" width="240" label="Example code" />
+    \\<code source="{snippet}" language="tsx" editable="{editable_code}" on-input="edit" line-numbers="{show_lines}" added-lines="{added_spec}" removed-lines="3" wrap="{wrap_code}" width="240" label="Example code" />
 ;
 
 pub const CodeUi = canvas.Ui(CodeMsg);
@@ -1962,6 +1963,8 @@ pub fn handCodeView(ui: *CodeUi, model: *const CodeModel) CodeUi.Node {
         .editable = model.editable_code,
         .on_input = CodeUi.inputMsg(.edit),
         .line_numbers = model.show_lines,
+        .added_lines = &.{2},
+        .removed_lines = &.{3},
         .wrap = model.wrap_code,
         .width = 240,
         .semantics = .{ .label = "Example code" },
@@ -1995,7 +1998,9 @@ test "code markup builds the reusable component with opt-in numbers and horizont
     try testing.expect(markup_tree.root.style.radius == null);
     try testing.expectEqual(canvas.ScrollAxes.horizontal, findByKind(markup_tree.root, .scroll_view).?.scroll_axes);
     const source = findByText(markup_tree.root, .text, model.snippet).?;
-    try testing.expectEqual(@as(u8, 1), source.code_line_number_digits);
+    try testing.expectEqual(@as(u8, 1), source.codeLineNumberDigits());
+    try testing.expectEqual(@as(u128, 1) << 1, source.codeDiffLines().?.added);
+    try testing.expectEqual(@as(u128, 1) << 2, source.codeDiffLines().?.removed);
     try testing.expectEqualStrings("Example code", markup_tree.root.semantics.label);
 
     var editable_model = model;
@@ -2051,6 +2056,9 @@ test "code markup misuse reports the component's closed contract" {
         .{ .source = "<code source=\"literal\" />", .message = canvas.ui_markup.code_source_message },
         .{ .source = "<code source=\"{count}\" />", .message = canvas.ui_markup.code_source_message, .model_agnostic = false },
         .{ .source = "<code source=\"{snippet}\" language=\"brainwave\" />", .message = canvas.ui_markup.code_language_message },
+        .{ .source = "<code source=\"{snippet}\" added-lines=\"0\" />", .message = canvas.ui_markup.code_diff_lines_message },
+        .{ .source = "<code source=\"{snippet}\" removed-lines=\"4-2\" />", .message = canvas.ui_markup.code_diff_lines_message },
+        .{ .source = "<code source=\"{snippet}\" removed-lines=\"{count}\" />", .message = canvas.ui_markup.code_diff_lines_message, .model_agnostic = false },
         .{ .source = "<code source=\"{snippet}\" padding=\"8\" />", .message = canvas.ui_markup.code_attr_message },
         .{ .source = "<code source=\"{snippet}\">text</code>", .message = canvas.ui_markup.code_children_message },
     };

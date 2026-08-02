@@ -1356,6 +1356,15 @@ const Checker = struct {
                 _ = try self.attrKind(node, attribute, attribute.value);
                 continue;
             }
+            if (std.mem.eql(u8, attribute.name, "added-lines") or
+                std.mem.eql(u8, attribute.name, "removed-lines"))
+            {
+                const expression = markup.parseAttrExpression(attribute.value) orelse continue;
+                if (expression == .literal) continue;
+                const kind = try self.attrKind(node, attribute, attribute.value);
+                try self.requireAttrKind(node, attribute, kind, &.{.string}, markup.code_diff_lines_message);
+                continue;
+            }
             if (std.mem.eql(u8, attribute.name, "on-input")) {
                 try self.checkMessageAttr(node, attribute);
                 continue;

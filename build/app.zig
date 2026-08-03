@@ -103,7 +103,7 @@ const TsCoreStage = struct {
 /// The frontend's own sources — the staleness set of every build step
 /// that runs it (a frontend edit re-checks every core).
 const frontend_sources = [_][]const u8{
-    "checker.ts", "cli.ts", "contract.ts", "diagnostics.ts", "emitter.ts", "infer.ts", "modules.ts", "transpile.ts", "typed_ast.ts", "types.ts", "wyhash.ts",
+    "checker.ts", "cli.ts", "contract.ts", "diagnostics.ts", "frontend.ts", "infer.ts", "modules.ts", "typed_ast.ts", "types.ts", "wyhash.ts",
 };
 
 /// Whether the frontend's TypeScript compiler (@typescript/old, the
@@ -240,6 +240,29 @@ fn tsParseQuotedManifestValue(manifest_json: []const u8, comptime key: []const u
     const suffix = value[required_prefix.len..];
     if (suffix.len == 0) return null;
     return suffix;
+}
+
+/// The external core compiler's entry module (scriptc's dist/main.js),
+/// resolved by node's ancestor node_modules walk from the SDK's
+/// packages/core — the same origin the frontend toolchain resolves from
+/// (tsAliasedCompilerVersion's walk, kept in lockstep). Repo checkouts
+/// install it there with `npm ci`; the npm-installed CLI carries the
+/// compiler as a regular dependency, nested under the package on global
+/// prefixes and hoisted to the project root on local ones.
+fn tsExternalCompilerJs(b: *std.Build, dep: *std.Build.Dependency) ?[]const u8 {
+    const io = b.graph.io;
+    const sdk_root = tsSdkRoot(b.allocator, io, dep);
+    var dir: []const u8 = b.pathJoin(&.{ sdk_root, "packages", "core" });
+    while (true) {
+        if (!std.mem.eql(u8, std.fs.path.basename(dir), "node_modules")) {
+            const candidate = b.pathJoin(&.{ dir, "node_modules", "scriptc", "dist", "main.js" });
+            found: {
+                std.Io.Dir.cwd().access(io, candidate, .{}) catch break :found;
+                return candidate;
+            }
+        }
+        dir = std.fs.path.dirname(dir) orelse return null;
+    }
 }
 
 /// The SDK dependency's real root, resolved the way both the toolchain
@@ -398,8 +421,7 @@ fn tsCoreStage(b: *std.Build, dep: *std.Build.Dependency, app_root: []const u8, 
         // driver still refuses a release other than the SDK's pin.
         compile.addArgs(&.{ "--compiler", override });
     } else {
-        const main_js = "packages/core/node_modules/scriptc/dist/main.js";
-        dep.builder.build_root.handle.access(b.graph.io, main_js, .{}) catch {
+        const compiler_js = tsExternalCompilerJs(b, dep) orelse {
             const sdk_root = tsSdkRoot(dep.builder.allocator, dep.builder.graph.io, dep);
             std.debug.print(
                 \\
@@ -407,14 +429,16 @@ fn tsCoreStage(b: *std.Build, dep: *std.Build.Dependency, app_root: []const u8, 
                 \\through it). It ships as an exact-pinned dependency of the SDK's packages/core
                 \\— install it once with:
                 \\  cd {s}/packages/core && npm ci
-                \\(or point NATIVE_SDK_CORE_COMPILER at the pinned release's command).
+                \\(or point NATIVE_SDK_CORE_COMPILER at the pinned release's command; an
+                \\npm-installed @native-sdk/cli carries the compiler automatically — if it is
+                \\missing there, the install is broken: reinstall @native-sdk/cli).
                 \\
                 \\
             , .{sdk_root});
             std.process.exit(1);
         };
         compile.addArg("--compiler-js");
-        compile.addFileArg(dep.path(main_js));
+        compile.addFileArg(.{ .cwd_relative = compiler_js });
     }
 
     // The mirror, generated from the archive's OWN co-emitted contract.

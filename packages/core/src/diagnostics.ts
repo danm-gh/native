@@ -394,6 +394,12 @@ export const rules = {
     fix: "Declare `Model` as an interface record (`export interface Model { ... }`) and `Msg` as a kind-tagged union (`export type Msg = { kind: \"...\" } | ...`).",
     why: "The generated wiring commits `Model` as the reference-stored record root and dispatches `Msg` by its declaration-order kind tags; any other shape under those names has no dispatch or commit path and would fail deep inside the emitted module instead of teaching here.",
   },
+  NS1063: {
+    id: "NS1063",
+    title: "the contract sidecar carries every crossing shape",
+    fix: "Spell the crossing in a schema-carried form: value-stored records (object-literal aliases) for message payloads, named records around optional or array payloads, and integer aliases whose values reach past 255.",
+    why: "The contract sidecar is the machine-readable twin of the core's surface, and a shape its schema cannot state would silently drop from every consumer — so the build stops here with the spelling that carries it instead.",
+  },
   // NS9xxx: internal emit-time verification. A checker gap becomes a loud
   // internal error naming the construct, never silent misbehavior.
   NS9001: {

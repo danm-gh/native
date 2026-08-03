@@ -10,6 +10,7 @@ import { TypeTable } from "./types.ts";
 import { IntInference } from "./infer.ts";
 import { SubsetChecker } from "./checker.ts";
 import { Emitter, EmitError, type KernelCapacities } from "./emitter.ts";
+import { emitContractSidecar, ContractError } from "./contract.ts";
 import { makeDiagnostic, formatDiagnostic, type SubsetDiagnostic } from "./diagnostics.ts";
 import path from "node:path";
 import fs from "node:fs";
@@ -22,11 +23,19 @@ export interface TranspileOptions {
   /// Model heap capacity in bytes PER SPACE (the two-space committed-model
   /// heap): the live model graph plus not-yet-compacted garbage must fit.
   readonly heapCap?: number;
+  /// When set, also emit the contract sidecar (core.contract.json,
+  /// schema format 1) from the checked program — the entry spelling the
+  /// document states (never a filesystem-absolute leak). The emitted Zig
+  /// still gates the run: transpile-clean stays the contract's floor.
+  readonly contractEntry?: string;
 }
 
 export interface TranspileResult {
   readonly ok: boolean;
   readonly zig: string | null;
+  /// The contract sidecar JSON, when options.contractEntry asked for it
+  /// (null otherwise, and on any failed transpile).
+  readonly contract: string | null;
   readonly diagnostics: SubsetDiagnostic[];
   /// Non-fatal teaching notices (NS1028 today): surfaced as warnings,
   /// never failing the transpile.
@@ -58,7 +67,7 @@ export function transpileFile(entry: string, options: TranspileOptions = {}): Tr
   // otherwise surface as a raw resolution error.
   const graph = resolveModuleGraph(entry);
   if (graph.diagnostics.length > 0) {
-    return { ok: false, zig: null, diagnostics: graph.diagnostics, warnings: [], typeErrors: [], inputs: [...graph.files] };
+    return { ok: false, zig: null, contract: null, diagnostics: graph.diagnostics, warnings: [], typeErrors: [], inputs: [...graph.files] };
   }
 
   const program = createSubsetProgram(entry);
@@ -68,12 +77,12 @@ export function transpileFile(entry: string, options: TranspileOptions = {}): Tr
   for (const p of graph.files) {
     const file = byPath.get(path.resolve(p));
     if (!file) {
-      return { ok: false, zig: null, diagnostics: [], warnings: [], typeErrors: [`cannot read ${p}`], inputs: [...graph.files] };
+      return { ok: false, zig: null, contract: null, diagnostics: [], warnings: [], typeErrors: [`cannot read ${p}`], inputs: [...graph.files] };
     }
     files.push(file);
   }
   if (files.length === 0) {
-    return { ok: false, zig: null, diagnostics: [], warnings: [], typeErrors: [`cannot read ${entry}`], inputs: [] };
+    return { ok: false, zig: null, contract: null, diagnostics: [], warnings: [], typeErrors: [`cannot read ${entry}`], inputs: [] };
   }
 
   const typeErrors: string[] = [];
@@ -87,14 +96,14 @@ export function transpileFile(entry: string, options: TranspileOptions = {}): Tr
     }
   }
   if (typeErrors.length > 0) {
-    return { ok: false, zig: null, diagnostics: [], warnings: [], typeErrors: [...new Set(typeErrors)], inputs: [...graph.files] };
+    return { ok: false, zig: null, contract: null, diagnostics: [], warnings: [], typeErrors: [...new Set(typeErrors)], inputs: [...graph.files] };
   }
 
   const table = new TypeTable(tast, files);
   const checker = new SubsetChecker(tast, table, files);
   const checkResult = checker.check();
   if (checkResult.diagnostics.length > 0) {
-    return { ok: false, zig: null, diagnostics: checkResult.diagnostics, warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
+    return { ok: false, zig: null, contract: null, diagnostics: checkResult.diagnostics, warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
   }
 
   const infer = new IntInference(tast, table, files);
@@ -112,13 +121,26 @@ export function transpileFile(entry: string, options: TranspileOptions = {}): Tr
         column,
       );
     });
-    return { ok: false, zig: null, diagnostics, warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
+    return { ok: false, zig: null, contract: null, diagnostics, warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
   }
   const emitter = new Emitter(tast, table, infer, checkResult, files, path.basename(entry), capacities);
   try {
     const zig = emitter.emitModule();
-    return { ok: true, zig, diagnostics: [], warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
+    // The contract sidecar emits from the SAME checked analysis, after
+    // the emitter's own layer-3 re-derivations have all passed — so a
+    // contract-bearing run keeps every transpile-time teaching.
+    const contract =
+      options.contractEntry !== undefined
+        ? emitContractSidecar({ tast, table, infer, checkResult, files, entry: options.contractEntry })
+        : null;
+    return { ok: true, zig, contract, diagnostics: [], warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
   } catch (e) {
+    if (e instanceof ContractError) {
+      const file = e.node.getSourceFile();
+      const { line, column } = lineColumn(file, e.node.getStart());
+      const d = makeDiagnostic("NS1063", `${e.message[0].toUpperCase()}${e.message.slice(1)}.`, file.fileName, line, column);
+      return { ok: false, zig: null, contract: null, diagnostics: [d], warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
+    }
     if (e instanceof EmitError) {
       const file = e.node.getSourceFile();
       const { line, column } = lineColumn(file, e.node.getStart());
@@ -126,7 +148,7 @@ export function transpileFile(entry: string, options: TranspileOptions = {}): Tr
       // everything else is the internal NS9001 stop.
       const site = e.ruleId === "NS9001" ? `Internal: no v1 mapping for ${e.message}.` : `${e.message[0].toUpperCase()}${e.message.slice(1)}.`;
       const d = makeDiagnostic(e.ruleId, site, file.fileName, line, column);
-      return { ok: false, zig: null, diagnostics: [d], warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
+      return { ok: false, zig: null, contract: null, diagnostics: [d], warnings: checkResult.warnings, typeErrors: [], inputs: [...graph.files] };
     }
     throw e;
   }

@@ -139,6 +139,24 @@ if (cliAliasPin !== coreAliasPin) {
   console.error(`Pin mismatch: package.json dependencies["@typescript/old"]=${cliAliasPin}, expected ${coreAliasPin} from packages/core devDependencies`);
   errors++;
 }
+// The external core compiler rides the same way: a REGULAR dependency of
+// the CLI so npm installs it in the same transaction, resolved from
+// packages/core by node's ancestor walk. The profile's determinism-fence
+// tables are release-pinned data, so both manifests must carry one EXACT
+// pin (packages/core's dependencies entry is the authority).
+const coreCompilerPin = coreJson.dependencies?.scriptc;
+const cliCompilerPin = packageJson.dependencies?.scriptc;
+if (!coreCompilerPin) {
+  console.error('packages/core/package.json is missing the exact external core compiler pin in dependencies');
+  errors++;
+} else if (!/^\d+\.\d+\.\d+$/.test(coreCompilerPin)) {
+  console.error(`packages/core/package.json dependencies pin ${coreCompilerPin} is a range, not an exact version pin`);
+  errors++;
+}
+if (cliCompilerPin !== coreCompilerPin) {
+  console.error(`Pin mismatch: package.json carries external core compiler pin ${cliCompilerPin}, expected ${coreCompilerPin} from packages/core dependencies`);
+  errors++;
+}
 const coreLock = JSON.parse(readFileSync(join(repoRoot, 'packages', 'core', 'package-lock.json'), 'utf-8'));
 if (coreLock.version !== expectedVersion || coreLock.packages?.['']?.version !== expectedVersion) {
   console.error(`Version mismatch: packages/core/package-lock.json=${coreLock.version}/${coreLock.packages?.['']?.version}, expected ${expectedVersion}`);

@@ -74,6 +74,9 @@ jobs:
           NATIVE_SDK_EXTERNAL_CORE_SIDECAR_AI_CHAT: ${{ github.workspace }}/.zig-cache/compiled-cores/ai-chat/core.contract.json
           NATIVE_SDK_EXTERNAL_CORE_ARCHIVE_MARKUP: ${{ github.workspace }}/.zig-cache/compiled-cores/markup/libmarkup_core.a
           NATIVE_SDK_EXTERNAL_CORE_SIDECAR_MARKUP: ${{ github.workspace }}/.zig-cache/compiled-cores/markup/core.contract.json
+      # One real example built and tested on the OPT-IN external core lane (-Dcore-compiler=external), through the same CLI verbs a user runs. Env-gated locally; this job is where it always runs.
+      - name: Build and test an example on the external core lane
+        run: zig build test-example-soundboard-ts-external
 
   macos-webview:
     name: macOS WebView

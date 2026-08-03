@@ -127,7 +127,7 @@ done
 # reference module's byte-text ambient surface also stays out: no
 # fixture calls it, and its Uint8Array augmentation collides with the
 # toolchain's own node ambient typings.
-cp "$repo/tests/compiled-core/sdk_core_static.ts" "$work/sdk/core.ts"
+cp "$repo/packages/core/compile-surface/core.ts" "$work/sdk/core.ts"
 # Transform 4, duplicate-alias dedupe: a tabled type's member order must
 # derive from one declaration site, and the same effect-state alias is
 # spelled in more than one place across the corpus (a fixture declares

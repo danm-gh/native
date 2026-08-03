@@ -516,10 +516,17 @@ pub fn build(b: *std.Build) void {
             compiled_parity_step.dependOn(&battery_run.step);
             test_step.dependOn(&battery_run.step);
         }
+        // The contract-equivalence pin: the frontend-emitted sidecar
+        // byte-identical to the extraction-path document, per fixture.
+        const equivalence_step = b.step("test-contract-equivalence", "Hold the frontend-emitted contract sidecar byte-identical to the extraction-path document, per ts-core fixture (requires node)");
+        for (ts_core_artifacts.contract_equivalence) |diff| {
+            equivalence_step.dependOn(&diff.step);
+            test_step.dependOn(&diff.step);
+        }
         // The corpus contract artifacts an external core toolchain
-        // consumes: per fixture, the extracted contract sidecar, the
-        // generated entry module, and the compiler profile that builds
-        // it, under zig-out/core-contracts.
+        // consumes: per fixture, the frontend-emitted contract sidecar
+        // (after projection), the generated entry module, and the
+        // compiler profile that builds it, under zig-out/core-contracts.
         const contracts_step = b.step("stage-core-contracts", "Install each ts-core fixture's contract sidecar, generated entry module, and compiler profile under zig-out/core-contracts (requires node)");
         for (ts_core_artifacts.core_contracts) |contract| {
             const dir: std.Build.InstallDir = .{ .custom = b.fmt("core-contracts/{s}", .{contract.name}) };
@@ -1450,6 +1457,36 @@ pub fn build(b: *std.Build) void {
     addFileContainsCheckStep(b, file_contains_checker, native_example_shard_steps[2], "test-example-capabilities-events", "Verify capabilities example event bridge names", &.{
         .{ .path = "examples/capabilities/src/main.zig", .pattern = "native-sdk:drop:files" },
     });
+
+    // The external-core example pin: one real managed example built AND
+    // tested on the OPT-IN external compile lane (-Dcore-compiler=external),
+    // through the same CLI verbs a user runs. Env-gated like the
+    // compiled-core batteries — the repo compiles no external core on a
+    // stock checkout, so without NATIVE_SDK_CORE_COMPILER the step is a
+    // clean no-op and every default step is untouched. CI runs it in the
+    // Compiled-Core Parity job, where the pinned compiler is installed.
+    const example_external_step = b.step(
+        "test-example-soundboard-ts-external",
+        "Build and test the soundboard-ts example on the opt-in external core lane (requires NATIVE_SDK_CORE_COMPILER; skipped when unset)",
+    );
+    if (b.graph.environ_map.get("NATIVE_SDK_CORE_COMPILER") != null) {
+        const external_build = managedExampleRun(b, host_cli_exe, &.{ "build", "-Dplatform=null", "-Dcore-compiler=external" });
+        external_build.setCwd(b.path("examples/soundboard-ts"));
+        external_build.has_side_effects = true;
+        _ = external_build.captureStdOut(.{});
+        _ = external_build.captureStdErr(.{});
+        external_build.setName("test-example-soundboard-ts-external (build)");
+        const external_test = managedExampleRun(b, host_cli_exe, &.{ "test", "-Dplatform=null", "-Dcore-compiler=external" });
+        external_test.setCwd(b.path("examples/soundboard-ts"));
+        external_test.has_side_effects = true;
+        _ = external_test.captureStdOut(.{});
+        _ = external_test.captureStdErr(.{});
+        external_test.setName("test-example-soundboard-ts-external (test)");
+        // Serial on purpose: both verbs drive one generated graph in the
+        // example's .native/build, and racing them races its cache.
+        external_test.step.dependOn(&external_build.step);
+        example_external_step.dependOn(&external_test.step);
+    }
 
     const mobile_examples_step = b.step("test-examples-mobile", "Verify mobile example project layouts");
     addLayoutCheckStep(b, mobile_examples_step, "test-example-ios-layout", "Verify iOS example layout", &.{
@@ -3019,6 +3056,9 @@ const TsCoreE2eArtifacts = struct {
     /// the effective contract sidecar and its TypeScript facade/profile
     /// projections, installed by the stage-core-contracts step.
     core_contracts: []const CoreContract,
+    /// Per-fixture equivalence pins: the frontend-emitted contract
+    /// sidecar held byte-identical to the extraction-path document.
+    contract_equivalence: []const *std.Build.Step.Run,
 };
 
 const CompiledCoreParity = struct {
@@ -3078,8 +3118,10 @@ fn tsCoreE2eArtifact(
     // Each fixture stages its own copy of rt.zig, so each emitted core
     // owns a distinct rt kernel instance — the process contract the
     // coexistence e2e test pins (two live cores, no shared arenas).
-    const fixture_mod = tsCoreFixtureModule(b, target, optimize, node, "tests/ts-core/fixture.ts");
-    const markup_fixture_mod = tsCoreFixtureModule(b, target, optimize, node, "tests/ts-core/markup_fixture.ts");
+    const host_fixture = tsCoreFixtureModule(b, target, optimize, node, "tests/ts-core/fixture.ts");
+    const fixture_mod = host_fixture.module;
+    const markup_fixture = tsCoreFixtureModule(b, target, optimize, node, "tests/ts-core/markup_fixture.ts");
+    const markup_fixture_mod = markup_fixture.module;
 
     const e2e_mod = module(b, target, optimize, "tests/ts-core/host_e2e_tests.zig");
     e2e_mod.addImport("native_sdk", desktop_mod);
@@ -3090,7 +3132,8 @@ fn tsCoreE2eArtifact(
     // the test root stages beside a copy of the example's app.native so
     // the compiled markup engine builds the SHIPPING view over the
     // emitted model.
-    const soundboard_core_mod = tsCoreFixtureModule(b, target, optimize, node, "examples/soundboard-ts/src/core.ts");
+    const soundboard_fixture = tsCoreFixtureModule(b, target, optimize, node, "examples/soundboard-ts/src/core.ts");
+    const soundboard_core_mod = soundboard_fixture.module;
     const soundboard_stage = b.addWriteFiles();
     const soundboard_root = soundboard_stage.addCopyFile(b.path("tests/ts-core/soundboard_e2e_tests.zig"), "soundboard_e2e_tests.zig");
     _ = soundboard_stage.addCopyFile(b.path("examples/soundboard-ts/src/app.native"), "app.native");
@@ -3105,7 +3148,8 @@ fn tsCoreE2eArtifact(
     // The system-monitor-ts example's core and markup, tested the same
     // way — plus the ORIGINAL Zig example's committed sampler captures,
     // staged as fixtures so both ports parse the same recorded truth.
-    const monitor_core_mod = tsCoreFixtureModule(b, target, optimize, node, "examples/system-monitor-ts/src/core.ts");
+    const monitor_fixture = tsCoreFixtureModule(b, target, optimize, node, "examples/system-monitor-ts/src/core.ts");
+    const monitor_core_mod = monitor_fixture.module;
     const monitor_stage = b.addWriteFiles();
     const monitor_root = monitor_stage.addCopyFile(b.path("tests/ts-core/system_monitor_e2e_tests.zig"), "system_monitor_e2e_tests.zig");
     _ = monitor_stage.addCopyFile(b.path("examples/system-monitor-ts/src/app.native"), "app.native");
@@ -3129,7 +3173,8 @@ fn tsCoreE2eArtifact(
     // The ai-chat-ts example's core and markup, tested the same way:
     // the chat client for an OpenAI-compatible endpoint, driven through
     // the fake fetch feed (no network) with its shipping markup.
-    const ai_chat_core_mod = tsCoreFixtureModule(b, target, optimize, node, "examples/ai-chat-ts/src/core.ts");
+    const ai_chat_fixture = tsCoreFixtureModule(b, target, optimize, node, "examples/ai-chat-ts/src/core.ts");
+    const ai_chat_core_mod = ai_chat_fixture.module;
     const ai_chat_stage = b.addWriteFiles();
     const ai_chat_root = ai_chat_stage.addCopyFile(b.path("tests/ts-core/ai_chat_e2e_tests.zig"), "ai_chat_e2e_tests.zig");
     _ = ai_chat_stage.addCopyFile(b.path("examples/ai-chat-ts/src/app.native"), "app.native");
@@ -3174,25 +3219,26 @@ fn tsCoreE2eArtifact(
         ts_import: []const u8,
         shim_import: []const u8,
         contract_name: []const u8,
-        core_mod: *std.Build.Module,
+        core: TsCoreFixture,
         entry: []const u8,
         /// Attested integer slots the compiled projection carries as f64
         /// (values that reach the f64-exact boundary have no honest i64
         /// declaration on that side).
         f64_slots: []const []const u8 = &.{},
     }{
-        .{ .ts_import = "ts_host_core", .shim_import = "shim_host_core", .contract_name = "host-fixture", .core_mod = fixture_mod, .entry = "tests/ts-core/fixture.ts", .f64_slots = &.{"Model.pastBytes"} },
-        .{ .ts_import = "ts_soundboard_core", .shim_import = "shim_soundboard_core", .contract_name = "soundboard", .core_mod = soundboard_core_mod, .entry = "examples/soundboard-ts/src/core.ts" },
-        .{ .ts_import = "ts_monitor_core", .shim_import = "shim_monitor_core", .contract_name = "system-monitor", .core_mod = monitor_core_mod, .entry = "examples/system-monitor-ts/src/core.ts" },
-        .{ .ts_import = "ts_ai_chat_core", .shim_import = "shim_ai_chat_core", .contract_name = "ai-chat", .core_mod = ai_chat_core_mod, .entry = "examples/ai-chat-ts/src/core.ts" },
+        .{ .ts_import = "ts_host_core", .shim_import = "shim_host_core", .contract_name = "host-fixture", .core = host_fixture, .entry = "tests/ts-core/fixture.ts", .f64_slots = &.{"Model.pastBytes"} },
+        .{ .ts_import = "ts_soundboard_core", .shim_import = "shim_soundboard_core", .contract_name = "soundboard", .core = soundboard_fixture, .entry = "examples/soundboard-ts/src/core.ts" },
+        .{ .ts_import = "ts_monitor_core", .shim_import = "shim_monitor_core", .contract_name = "system-monitor", .core = monitor_fixture, .entry = "examples/system-monitor-ts/src/core.ts" },
+        .{ .ts_import = "ts_ai_chat_core", .shim_import = "shim_ai_chat_core", .contract_name = "ai-chat", .core = ai_chat_fixture, .entry = "examples/ai-chat-ts/src/core.ts" },
     };
     // The corpus contract artifacts an external core toolchain consumes
     // (stage-core-contracts): the effective sidecar plus its generated
-    // entry module and compiler profile, per fixture.
+    // entry module and compiler profile, per fixture. Every corewire
+    // consumer reads the FRONTEND-emitted contract; the extraction path
+    // survives solely as the equivalence pin below.
     var core_contracts: std.ArrayList(CoreContract) = .empty;
     {
-        const markup_sidecar = sidecarExtractJson(b, target, optimize, extract_mod, markup_fixture_mod, "tests/ts-core/markup_fixture.ts");
-        const projections = facadeProjections(b, corewire_exe, markup_sidecar, &.{});
+        const projections = facadeProjections(b, corewire_exe, markup_fixture.contract, &.{});
         core_contracts.append(b.allocator, .{
             .name = "markup-fixture",
             .sidecar = projections.sidecar,
@@ -3201,16 +3247,42 @@ fn tsCoreE2eArtifact(
         }) catch @panic("OOM");
     }
     for (conformance_fixtures) |fixture| {
-        const sidecar_json = sidecarExtractJson(b, target, optimize, extract_mod, fixture.core_mod, fixture.entry);
-        conformance_mod.addImport(fixture.ts_import, fixture.core_mod);
-        conformance_mod.addImport(fixture.shim_import, sidecarShimModule(b, target, optimize, corewire_exe, sidecar_json));
-        const projections = facadeProjections(b, corewire_exe, sidecar_json, fixture.f64_slots);
+        conformance_mod.addImport(fixture.ts_import, fixture.core.module);
+        conformance_mod.addImport(fixture.shim_import, sidecarShimModule(b, target, optimize, corewire_exe, fixture.core.contract));
+        const projections = facadeProjections(b, corewire_exe, fixture.core.contract, fixture.f64_slots);
         core_contracts.append(b.allocator, .{
             .name = fixture.contract_name,
             .sidecar = projections.sidecar,
             .facade = projections.facade,
             .profile = projections.profile,
         }) catch @panic("OOM");
+    }
+
+    // The contract-equivalence pin: per fixture, extract the sidecar
+    // from the transpiled module (the historical producer) and hold the
+    // frontend-emitted document byte-identical to it. This is the fence
+    // that lets every corewire consumer read the frontend document while
+    // the extraction path still exists to attest it.
+    var contract_equivalence: std.ArrayList(*std.Build.Step.Run) = .empty;
+    const equivalence_fixtures = [_]struct {
+        name: []const u8,
+        core: TsCoreFixture,
+        entry: []const u8,
+    }{
+        .{ .name = "host-fixture", .core = host_fixture, .entry = "tests/ts-core/fixture.ts" },
+        .{ .name = "markup-fixture", .core = markup_fixture, .entry = "tests/ts-core/markup_fixture.ts" },
+        .{ .name = "soundboard", .core = soundboard_fixture, .entry = "examples/soundboard-ts/src/core.ts" },
+        .{ .name = "system-monitor", .core = monitor_fixture, .entry = "examples/system-monitor-ts/src/core.ts" },
+        .{ .name = "ai-chat", .core = ai_chat_fixture, .entry = "examples/ai-chat-ts/src/core.ts" },
+    };
+    for (equivalence_fixtures) |fixture| {
+        const extracted = sidecarExtractJson(b, target, optimize, extract_mod, fixture.core.module, fixture.entry);
+        const diff = b.addSystemCommand(&.{node});
+        diff.addFileArg(b.path("packages/core/scripts/contract_diff.mjs"));
+        diff.addFileArg(extracted);
+        diff.addFileArg(fixture.core.contract);
+        diff.setName(b.fmt("contract-equivalence-{s}", .{fixture.name}));
+        contract_equivalence.append(b.allocator, diff) catch @panic("OOM");
     }
 
     // Compiled-core behavior parity (tests/sidecar/
@@ -3305,6 +3377,7 @@ fn tsCoreE2eArtifact(
         .external_core_parity = external_core_parity,
         .compiled_core_parity = compiled_core_parity.toOwnedSlice(b.allocator) catch @panic("OOM"),
         .core_contracts = core_contracts.toOwnedSlice(b.allocator) catch @panic("OOM"),
+        .contract_equivalence = contract_equivalence.toOwnedSlice(b.allocator) catch @panic("OOM"),
     };
 }
 
@@ -3466,6 +3539,16 @@ fn sidecarExtractJson(
     return run.addOutputFileArg("core.contract.json");
 }
 
+/// One transpiled TS fixture core: the emitted Zig paired with its rt
+/// kernel in one generated module, plus the frontend-emitted contract
+/// sidecar the same transpile invocation wrote (the document corewire's
+/// projections consume; test-contract-equivalence pins it against the
+/// extraction path).
+const TsCoreFixture = struct {
+    module: *std.Build.Module,
+    contract: std.Build.LazyPath,
+};
+
 /// Transpile one TS fixture core at build time and pair the emitted
 /// Zig with its rt kernel in one generated module.
 fn tsCoreFixtureModule(
@@ -3474,12 +3557,19 @@ fn tsCoreFixtureModule(
     optimize: std.builtin.OptimizeMode,
     node: []const u8,
     fixture_path: []const u8,
-) *std.Build.Module {
+) TsCoreFixture {
     const transpile = b.addSystemCommand(&.{node});
     transpile.addFileArg(b.path("packages/core/src/cli.ts"));
     transpile.addFileArg(b.path(fixture_path));
     transpile.addArg("-o");
     const emitted_core = transpile.addOutputFileArg("core.zig");
+    // The contract sidecar, emitted from the SAME checked program in the
+    // same invocation, stating the build-root-relative entry spelling
+    // (the extractor's convention).
+    transpile.addArg("--contract");
+    const contract = transpile.addOutputFileArg("core.contract.json");
+    transpile.addArg("--contract-entry");
+    transpile.addArg(fixture_path);
     // The transpiler reads its own sources, the SDK modules, and the
     // core's WHOLE import graph at run time; declare them all so edits
     // re-emit the fixture. The graph is declared as every sibling .ts of
@@ -3488,7 +3578,7 @@ fn tsCoreFixtureModule(
     tsCoreAddDirInputs(b, transpile, "packages/core/sdk");
     tsCoreAddDirInputs(b, transpile, std.fs.path.dirname(fixture_path) orelse ".");
     const transpiler_sources = [_][]const u8{
-        "checker.ts", "cli.ts", "diagnostics.ts", "emitter.ts", "infer.ts", "modules.ts", "transpile.ts", "typed_ast.ts", "types.ts",
+        "checker.ts", "cli.ts", "contract.ts", "diagnostics.ts", "emitter.ts", "infer.ts", "modules.ts", "transpile.ts", "typed_ast.ts", "types.ts", "wyhash.ts",
     };
     for (transpiler_sources) |source| {
         transpile.addFileInput(b.path(b.fmt("packages/core/src/{s}", .{source})));
@@ -3499,11 +3589,14 @@ fn tsCoreFixtureModule(
     const staged = b.addWriteFiles();
     const core_root = staged.addCopyFile(emitted_core, "core.zig");
     _ = staged.addCopyFile(b.path("packages/core/rt/rt.zig"), "rt.zig");
-    return b.createModule(.{
-        .root_source_file = core_root,
-        .target = target,
-        .optimize = optimize,
-    });
+    return .{
+        .module = b.createModule(.{
+            .root_source_file = core_root,
+            .target = target,
+            .optimize = optimize,
+        }),
+        .contract = contract,
+    };
 }
 
 /// Declare every .ts file in `dir_path` (relative to the build root) as a

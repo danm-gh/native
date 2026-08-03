@@ -1,0 +1,65 @@
+export type { TextCaretDirection, TextCaretMove, TextSelection, TextInputEvent } from "./text.js";
+export interface ScrollState {
+    readonly offsetX: number;
+    readonly offsetY: number;
+    readonly velocityX: number;
+    readonly velocityY: number;
+    readonly viewportExtentX: number;
+    readonly viewportExtentY: number;
+    readonly contentExtentX: number;
+    readonly contentExtentY: number;
+}
+export interface FrameEvent {
+    readonly width: number;
+    readonly height: number;
+    readonly timestampMs: number;
+    readonly intervalMs: number;
+}
+export interface KeyEvent {
+    readonly key: string;
+    readonly shift: boolean;
+    readonly control: boolean;
+    readonly alt: boolean;
+    readonly super: boolean;
+}
+export type PinchPhase = "begin" | "change" | "end";
+export interface PinchEvent {
+    readonly windowId: number;
+    readonly label: string;
+    readonly phase: PinchPhase;
+    readonly scale: number;
+    readonly x: number;
+    readonly y: number;
+}
+export type ColorScheme = "light" | "dark";
+export interface AppearanceEvent {
+    readonly colorScheme: ColorScheme;
+    readonly reduceMotion: boolean;
+    readonly highContrast: boolean;
+}
+export interface ChromeInsets {
+    readonly top: number;
+    readonly right: number;
+    readonly bottom: number;
+    readonly left: number;
+}
+export interface ChromeButtons {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+}
+export interface ChromeEvent {
+    readonly insets: ChromeInsets;
+    readonly buttons: ChromeButtons;
+    readonly tabsProjected: boolean;
+}
+export type AudioState = "loaded" | "position" | "completed" | "failed" | "rejected" | "spectrum";
+export interface AudioEvent {
+    readonly state: AudioState;
+    readonly positionMs: number;
+    readonly durationMs: number;
+    readonly playing: boolean;
+    readonly buffering: boolean;
+    readonly bands: Uint8Array;
+}

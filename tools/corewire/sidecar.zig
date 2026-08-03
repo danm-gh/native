@@ -474,11 +474,11 @@ const Mapper = struct {
 
     fn mapRoot(self: *Mapper, value: std.json.Value) error{ Refused, OutOfMemory }!Sidecar {
         const top = try self.members(value, "", &.{
-            "format",           "wire_version",       "abi_version",       "compiler_version",   "entry",
-            "source_hash",      "build_id",           "types",             "model",              "model_helpers",
-            "model_unbound",    "msg",                "init_returns_cmd",  "update_returns_cmd", "init_returns_bare",
-            "update_returns_bare", "has_subscriptions", "channels",        "abi",                "integer_slots",
-            "deterministic",    "async_free",
+            "format",              "wire_version",      "abi_version",      "compiler_version",   "entry",
+            "source_hash",         "build_id",          "types",            "model",              "model_helpers",
+            "model_unbound",       "msg",               "init_returns_cmd", "update_returns_cmd", "init_returns_bare",
+            "update_returns_bare", "has_subscriptions", "channels",         "abi",                "integer_slots",
+            "deterministic",       "async_free",
         });
         top.warnUnknown();
 

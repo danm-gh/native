@@ -68,7 +68,7 @@ pub fn failBothCores() Error {
 
 fn nodeMissing() Error {
     std.debug.print(
-        \\TypeScript app cores need node on PATH (the @native-sdk/core transpiler and the
+        \\TypeScript app cores need node on PATH (the @native-sdk/core frontend and the
         \\core dev-harness run under it; the binary you ship carries no JS runtime).
         \\Install Node.js 22.15+ (on the 23 line: 23.5+) - https://nodejs.org or
         \\`brew install node` - and re-run.
@@ -87,7 +87,7 @@ fn transpilerPath(allocator: std.mem.Allocator, io: std.Io, framework_root: []co
     return path;
 }
 
-/// The layout-neutral runner for the transpiler tier's .ts modules
+/// The layout-neutral runner for the frontend tier's .ts modules
 /// (build/ts_run.mjs): a pass-through on a repo checkout, and the type
 /// stripper for the npm-installed layout, where the same modules sit
 /// inside node_modules and node refuses its builtin stripping. Every
@@ -313,7 +313,7 @@ fn pinnedCompilerVersion(allocator: std.mem.Allocator, io: std.Io, framework_roo
 /// `npm ci` there would teach mutating an npm-owned tree.
 fn transpilerDepsMissing(framework_root: []const u8) Error {
     std.debug.print(
-        \\the @native-sdk/core transpiler's dependencies are not installed
+        \\the @native-sdk/core frontend's dependencies are not installed
         \\(its TypeScript compiler, @typescript/old, resolves nowhere). Fix with:
         \\  cd {s}/packages/core && {s}
         \\
@@ -351,7 +351,7 @@ fn toolchainInstallBroken(framework_root: []const u8) Error {
 /// conflict instead.
 fn compilerVersionMismatch(resolved: []const u8, pinned: []const u8) Error {
     std.debug.print(
-        \\the transpiler's TypeScript compiler resolves at the wrong version:
+        \\the frontend's TypeScript compiler resolves at the wrong version:
         \\@typescript/old resolves to typescript {s}, but the SDK pins npm:typescript@{s}.
         \\Another package in this tree pins a conflicting @typescript/old - align it with
         \\the SDK's pin (or remove it) and reinstall, so the SDK's exact pin is the copy
@@ -461,7 +461,7 @@ pub fn runDevHost(allocator: std.mem.Allocator, io: std.Io, framework_root: []co
     defer allocator.free(devhost_path);
     const runner_path = try tsRunnerPath(allocator, io, framework_root);
     defer allocator.free(runner_path);
-    // The harness runs the transpiler tier under node, so it needs the
+    // The harness runs the frontend tier under node, so it needs the
     // TypeScript toolchain to resolve exactly like check/build do.
     try ensureResolvedTranspiler(allocator, io, framework_root);
 
@@ -513,8 +513,8 @@ pub fn runDevHost(allocator: std.mem.Allocator, io: std.Io, framework_root: []co
 // the `files: ["sdk"]` allowlist: sdk/core.ts, sdk/text.ts, sdk/events.ts,
 // and the ambient bytes-text method surface core.ts references).
 // The copy is
-// EDITOR-AND-VERSIONING SURFACE ONLY: builds transpile against the SDK
-// checkout's own sources and never read node_modules — delete it and
+// EDITOR-AND-VERSIONING SURFACE ONLY: builds check and compile against the
+// SDK checkout's own sources and never read node_modules — delete it and
 // `native build|dev|check|test` still work; the next check/dev/build puts
 // it back. Once the real package is published, a user-run `npm install`
 // overwrites the copy with identical content; the refresh below compares

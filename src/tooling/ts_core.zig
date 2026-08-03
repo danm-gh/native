@@ -434,6 +434,35 @@ pub fn checkCore(allocator: std.mem.Allocator, io: std.Io, base_env: *std.proces
     return error.CoreCheckFailed;
 }
 
+/// The compiler-truth pass `checkCore` chains after the frontend: the
+/// pinned external core compiler's analyzer over the same entry, with
+/// the shipped SDK declarations mapped — the check verdict and the
+/// build verdict come from ONE compiler. Analyzer type errors fail the
+/// check with the compiler's own diagnostics; a toolchain that cannot
+/// reach a verdict defers to the build rather than wedging check.
+pub fn compilerTypecheckCore(allocator: std.mem.Allocator, io: std.Io, base_env: *std.process.Environ.Map, framework_root: []const u8) !void {
+    const script_path = try transpilerPath(allocator, io, framework_root, "scripts/compiler_typecheck.mjs");
+    defer allocator.free(script_path);
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "node", script_path, "src/core.ts" },
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+        .environ_map = base_env,
+    }) catch return nodeMissing();
+    const term = try child.wait(io);
+    switch (term) {
+        .exited => |code| switch (code) {
+            0 => return,
+            2 => return error.MissingTranspiler,
+            else => {},
+        },
+        else => {},
+    }
+    std.debug.print("native check: src/core.ts does not typecheck under the external core compiler (its diagnostics above are the build's verdict too)\n", .{});
+    return error.CoreCheckFailed;
+}
+
 pub const DevHostOptions = struct {
     base_env: *std.process.Environ.Map,
     /// NDJSON message script; null = interactive stdin.

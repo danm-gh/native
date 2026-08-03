@@ -3,9 +3,14 @@
 // The frontend needs resolved types (union discrimination, literal types,
 // readonly-ness, symbol resolution, contextual types) but must not couple to
 // a particular checker API: today the provider is the `@typescript/old`
-// alias (the 6.x compiler line, same checker semantics as the author-facing
-// TS7 tsc by upstream design); when the stable Go-native programmatic API
-// ships, only this adapter changes.
+// alias (the 6.x compiler line). It powers the TEACHINGS; the
+// author-facing typecheck VERDICT comes from the pinned external core
+// compiler itself, which `native check` runs as its final pass
+// (scripts/compiler_typecheck.mjs) — check and build judge with one
+// compiler. The Go-native 7.x line ships no in-process API (its
+// programmatic surface is an out-of-process protocol, still marked
+// unstable); when a stable in-process-equivalent API exists, only this
+// adapter changes.
 //
 // Surface discipline:
 //   - Syntax (node kinds, tree walking) passes through as `ts` — syntax trees

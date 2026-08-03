@@ -579,6 +579,7 @@ fn runCheck(allocator: std.mem.Allocator, io: std.Io, env_map: *std.process.Envi
         // check failure.
         tooling.ts_core.selfHealEditorPackage(allocator, io, framework_root);
         try tooling.ts_core.checkCore(allocator, io, env_map, framework_root);
+        try tooling.ts_core.compilerTypecheckCore(allocator, io, env_map, framework_root);
     }
 
     var markup_files: std.ArrayList([]const u8) = .empty;

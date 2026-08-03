@@ -47,7 +47,12 @@ const args = parseArgs(process.argv);
 for (const key of ["stage", "manifest", "out-archive", "out-sidecar", "compiler-js"]) {
   if (key in args) args[key] = path.resolve(args[key]);
 }
-const argv0 = args.compiler ? [args.compiler] : [process.execPath, args["compiler-js"]];
+// --compiler is a COMMAND: a bare executable path (possibly containing
+// spaces) or an interpreter plus script ("node .../main.js"). A path
+// that exists is taken whole; anything else splits on whitespace.
+const argv0 = args.compiler
+  ? (fs.existsSync(args.compiler) ? [args.compiler] : args.compiler.split(/\s+/))
+  : [process.execPath, args["compiler-js"]];
 
 // The profile's determinism-fence table is RELEASE-PINNED DATA (see
 // tools/corewire/emit_profile.zig): its ids resolve against one

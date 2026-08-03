@@ -12860,6 +12860,15 @@ pub fn Effects(comptime Msg: type) type {
                 try body.writer.writeAll(slot.fetchPayload());
                 try body.end();
                 try request.connection.?.flush();
+            } else if (slot.method.requestHasBody()) {
+                // POST, PUT and PATCH carry a body by definition, so
+                // `sendBodiless` asserts against them. A payload-free
+                // request of one of those methods is still valid HTTP;
+                // send an explicit zero-length body instead.
+                request.transfer_encoding = .{ .content_length = 0 };
+                var body = try request.sendBodyUnflushed(&.{});
+                try body.end();
+                try request.connection.?.flush();
             } else {
                 try request.sendBodiless();
             }

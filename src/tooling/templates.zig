@@ -384,9 +384,12 @@ fn tsCoreStarter() []const u8 {
     \\export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     \\  switch (msg.kind) {
     \\    case "increment":
-    \\      return { ...model, count: model.count + 1 };
+    \\      // Bounded on purpose: integer model fields carry a compile-time
+    \\      // range proof, and the literal comparison is what makes `+ 1`
+    \\      // provable.
+    \\      return { ...model, count: model.count < 1000000 ? model.count + 1 : model.count };
     \\    case "decrement":
-    \\      return { ...model, count: model.count - 1 };
+    \\      return { ...model, count: model.count > -1000000 ? model.count - 1 : model.count };
     \\    case "reset":
     \\      return { ...model, count: 0, tickCount: 0 };
     \\    case "toggle_ticking":
@@ -398,7 +401,7 @@ fn tsCoreStarter() []const u8 {
     \\    case "stamped":
     \\      return { ...model, stampedMs: msg.at };
     \\    case "tick":
-    \\      return { ...model, tickCount: model.tickCount + 1 };
+    \\      return { ...model, tickCount: model.tickCount < 1000000 ? model.tickCount + 1 : model.tickCount };
     \\  }
     \\}
     \\

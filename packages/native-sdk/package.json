@@ -20,7 +20,6 @@
     "packages/core/src",
     "packages/core/sdk",
     "packages/core/compile-surface",
-    "packages/core/rt",
     "packages/core/scripts",
     "packages/core/package.json",
     "packages/core/package-lock.json",

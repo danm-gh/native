@@ -7,8 +7,8 @@
 //!     example port) typechecks through nothing but its own tsconfig.json
 //!     and the materialized node_modules/@native-sdk/core copy, resolving
 //!     `@native-sdk/core` AND the `@native-sdk/core/text` subpath;
-//!   - build truth: with node_modules deleted, the transpiler (the build's
-//!     checker + emitter) still runs the same core clean — builds never
+//!   - build truth: with node_modules deleted, the frontend (the build's
+//!     check-only pass) still takes the same core clean — builds never
 //!     read the editor surface — and the ensure hook check/dev/build run
 //!     re-materializes the copy for the editor.
 //!
@@ -84,16 +84,13 @@ test "a fresh ts scaffold typechecks under stock tsc, and builds never need the 
     // paths — `@native-sdk/core` resolves through node_modules alone.
     try expectTscClean(allocator, io, root);
 
-    // Build truth: delete the editor surface entirely; the transpiler (the
-    // exact checker + emitter every build runs) still takes the core clean.
+    // Build truth: delete the editor surface entirely; the frontend (the
+    // exact check-only pass every build runs) still takes the core clean.
     try cwd.deleteTree(io, root ++ "/node_modules");
-    try cwd.createDirPath(io, ".zig-cache/e2e-ide-scaffold-out");
     try runExpectZero(allocator, io, &.{
         "node",
         "packages/core/src/cli.ts",
         root ++ "/src/core.ts",
-        "-o",
-        ".zig-cache/e2e-ide-scaffold-out/core.zig",
     });
 
     // The self-heal hook check/dev/build run puts the copy back current.

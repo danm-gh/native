@@ -1458,6 +1458,36 @@ pub fn build(b: *std.Build) void {
         .{ .path = "examples/capabilities/src/main.zig", .pattern = "native-sdk:drop:files" },
     });
 
+    // The external-core example pin: one real managed example built AND
+    // tested on the OPT-IN external compile lane (-Dcore-compiler=external),
+    // through the same CLI verbs a user runs. Env-gated like the
+    // compiled-core batteries — the repo compiles no external core on a
+    // stock checkout, so without NATIVE_SDK_CORE_COMPILER the step is a
+    // clean no-op and every default step is untouched. CI runs it in the
+    // Compiled-Core Parity job, where the pinned compiler is installed.
+    const example_external_step = b.step(
+        "test-example-soundboard-ts-external",
+        "Build and test the soundboard-ts example on the opt-in external core lane (requires NATIVE_SDK_CORE_COMPILER; skipped when unset)",
+    );
+    if (b.graph.environ_map.get("NATIVE_SDK_CORE_COMPILER") != null) {
+        const external_build = managedExampleRun(b, host_cli_exe, &.{ "build", "-Dplatform=null", "-Dcore-compiler=external" });
+        external_build.setCwd(b.path("examples/soundboard-ts"));
+        external_build.has_side_effects = true;
+        _ = external_build.captureStdOut(.{});
+        _ = external_build.captureStdErr(.{});
+        external_build.setName("test-example-soundboard-ts-external (build)");
+        const external_test = managedExampleRun(b, host_cli_exe, &.{ "test", "-Dplatform=null", "-Dcore-compiler=external" });
+        external_test.setCwd(b.path("examples/soundboard-ts"));
+        external_test.has_side_effects = true;
+        _ = external_test.captureStdOut(.{});
+        _ = external_test.captureStdErr(.{});
+        external_test.setName("test-example-soundboard-ts-external (test)");
+        // Serial on purpose: both verbs drive one generated graph in the
+        // example's .native/build, and racing them races its cache.
+        external_test.step.dependOn(&external_build.step);
+        example_external_step.dependOn(&external_test.step);
+    }
+
     const mobile_examples_step = b.step("test-examples-mobile", "Verify mobile example project layouts");
     addLayoutCheckStep(b, mobile_examples_step, "test-example-ios-layout", "Verify iOS example layout", &.{
         "examples/ios/README.md",

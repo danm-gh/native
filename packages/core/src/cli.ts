@@ -62,7 +62,7 @@ function main(argv: string[]): number {
   }
   if (!entry) {
     console.error(
-      "usage: native-core <entry.ts> -o <out.zig> [--frame-cap <bytes>] [--heap-cap <bytes>] [--contract <out.contract.json>] [--contract-entry <spelling>]",
+      "usage: native-core <entry.ts> [--contract <out.contract.json>] [--contract-entry <spelling>]",
     );
     return 2;
   }
@@ -81,16 +81,14 @@ function main(argv: string[]): number {
   if (!result.ok || result.zig === null) return 1;
   if (contractOut !== null) {
     if (result.contract === null) {
-      console.error("internal: the transpile produced no contract sidecar");
+      console.error("internal: the check produced no contract sidecar");
       return 1;
     }
     fs.writeFileSync(contractOut, result.contract);
   }
-  if (out) {
-    fs.writeFileSync(out, result.zig);
-  } else {
-    process.stdout.write(result.zig);
-  }
+  // Check-only is the default: without -o the run checks (and writes the
+  // contract when asked) and emits nothing.
+  if (out) fs.writeFileSync(out, result.zig);
   return 0;
 }
 

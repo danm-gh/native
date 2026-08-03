@@ -1,5 +1,5 @@
 //! TypeScript-core plumbing for the `native` CLI: tree detection (which
-//! core does this app carry?), the transpiler-checker pass `native check`
+//! core does this app carry?), the frontend check pass `native check`
 //! runs over src/core.ts, and the node dev-harness `native dev --core`
 //! launches. The build graph re-derives the same detection in
 //! build/app.zig; the CLI checks first so a both-cores tree fails with one
@@ -8,7 +8,7 @@
 //! Multi-file cores: src/core.ts stays the detection root AND the entry
 //! module, but a core may split into modules under src/ (relative imports
 //! with real .ts filenames) plus SDK library modules
-//! ("@native-sdk/core/text"). The transpiler walks that import graph
+//! ("@native-sdk/core/text"). The frontend walks that import graph
 //! itself, so `native check` reports diagnostics with each module's own
 //! path, and `native dev --core` runs the same graph under node (relative
 //! imports are real files; the resolver hook maps only the SDK names).
@@ -409,23 +409,21 @@ pub fn ensureResolvedTranspiler(allocator: std.mem.Allocator, io: std.Io, framew
     return transpilerDepsMissing(resolved);
 }
 
-/// `native check` over a TypeScript core: run the transpiler (checker +
-/// emitter) on src/core.ts — and, through it, the core's whole import
-/// graph under src/ — and surface its NS diagnostics verbatim — they
-/// are the teaching layer, nothing wraps them (each diagnostic carries
-/// the owning module's path). The emitted Zig lands in .native/check/ (a
-/// scratch product, gitignored with the rest of .native/). Exit 0 =
-/// typechecked, subset-clean, emitted.
+/// `native check` over a TypeScript core: run the frontend in
+/// check-only mode on src/core.ts — and, through it, the core's whole
+/// import graph under src/ — and surface its NS diagnostics verbatim —
+/// they are the teaching layer, nothing wraps them (each diagnostic
+/// carries the owning module's path). Exit 0 = typechecked,
+/// subset-clean.
 pub fn checkCore(allocator: std.mem.Allocator, io: std.Io, base_env: *std.process.Environ.Map, framework_root: []const u8) !void {
     const cli_path = try transpilerPath(allocator, io, framework_root, "src/cli.ts");
     defer allocator.free(cli_path);
     const runner_path = try tsRunnerPath(allocator, io, framework_root);
     defer allocator.free(runner_path);
     try ensureResolvedTranspiler(allocator, io, framework_root);
-    try std.Io.Dir.cwd().createDirPath(io, ".native/check");
 
     var child = std.process.spawn(io, .{
-        .argv = &.{ "node", runner_path, cli_path, "src/core.ts", "-o", ".native/check/core.zig" },
+        .argv = &.{ "node", runner_path, cli_path, "src/core.ts" },
         .stdin = .ignore,
         .stdout = .inherit,
         .stderr = .inherit,
@@ -436,7 +434,7 @@ pub fn checkCore(allocator: std.mem.Allocator, io: std.Io, base_env: *std.proces
         .exited => |code| if (code == 0) return,
         else => {},
     }
-    // The transpiler's own diagnostics are already on screen; name the
+    // The frontend's own diagnostics are already on screen; name the
     // failing pass without burying them.
     std.debug.print("native check: src/core.ts failed the @native-sdk/core checker (diagnostics above)\n", .{});
     return error.CoreCheckFailed;

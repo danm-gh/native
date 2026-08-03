@@ -2,9 +2,37 @@
 
 All notable changes to the Native SDK (formerly zero-native) will be documented in this file.
 
-## 0.7.1
+## 0.7.2
 
 <!-- release:start -->
+
+### New Features
+
+- **Geist-style code diffs**: `ui.code` and `<code>` can mark added and removed logical lines with theme-aware full-row washes, renderer-owned `+`/`-` markers, optional line numbers, and unchanged syntax-highlighted clipboard source.
+
+### Improvements
+
+- **Verified Zig setup**: repository and generated CI workflows now install Zig with `vercel-labs/setup-zig`, including signed archive and checksum verification.
+
+### Bug Fixes
+
+- **Theme-accurate disabled buttons**: disabled buttons now keep shadcn's knockout label treatment in the default theme and use Geist's gray-100/gray-700 swap, gray-400 edge, and distinct half-opacity tertiary register in the Geist theme.
+- **Canonical documentation routes**: documentation now lives under `/docs/`, with permanent redirects from every previous URL, explicit canonical metadata, `.md` siblings, and a generated `llms.txt` that stays aligned with each page's canonical MDX source.
+- **Geist primary tabs match the design system**: tab strips now use the reference 50px row, full-width bottom rail, content-hugging 14px triggers, 24px spacing, and 16px icon treatment without changing default-theme pill tabs; the GPU component gallery now pairs a compact theme picker with a scrollable component tree and focused specimen views.
+- **Quiet Windows subprocesses**: `Effects.spawn` no longer opens or flashes a console window when a GUI or tray app launches a console-subsystem helper such as `node.exe`; interactive terminal children remain on the separate PTY API.
+- **Responsive Windows GPU surfaces**: Windows now renders retained binary canvas packets with Direct2D and DirectWrite, applies dirty-region patches (including edge-safe GPU-resident backdrop blur), and limits RGBA-to-BGRA conversion and invalidation to dirty pixels when software fallback is required.
+- **Exact Windows packet text and chrome**: Packet rendering now refuses when the bundled/custom font path cannot preserve engine-planned metrics, preserves explicitly positioned glyph runs, prevents system glyph substitution, and samples a covered, changed hidden-titlebar pixel for native caption contrast.
+- **Truthful GPU backend types**: TypeScript creation options now expose only portable backend requests while view and frame state can report the concrete Direct2D renderer; explicit software requests bypass packet encoding and image uploads and stay on the reference renderer and pixel presenter.
+- **Reliable registered-image replacement**: Unregistering and then re-registering identical pixels now recreates the removed GPU resource instead of retaining a stale cache key and silently omitting the image.
+
+### Contributors
+
+- @ctate
+- @oshtz
+
+<!-- release:end -->
+
+## 0.7.1
 
 ### New Features
 
@@ -46,8 +74,6 @@ All notable changes to the Native SDK (formerly zero-native) will be documented 
 ### Contributors
 
 - @ctate
-
-<!-- release:end -->
 
 ## 0.7.0
 

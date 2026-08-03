@@ -1,5 +1,5 @@
 //! End-to-end: the stock-IDE contract of TypeScript apps, proved with the
-//! REAL tsc (the repo's own @typescript/typescript6 install) and zero
+//! REAL tsc (the repo's own pinned @typescript/old install) and zero
 //! injected paths — exactly the view VS Code's TypeScript service has.
 //!
 //! Both directions of the independence contract are pinned:
@@ -18,7 +18,7 @@
 const std = @import("std");
 const tooling = @import("tooling");
 
-const tsc_js = "packages/core/node_modules/@typescript/typescript6/lib/tsc.js";
+const tsc_js = "packages/core/node_modules/@typescript/old/lib/tsc.js";
 
 /// The editor view: real tsc over the app's own tsconfig, no flags beyond
 /// the project pointer. Non-zero exit prints tsc's diagnostics verbatim.

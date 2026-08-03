@@ -1,11 +1,11 @@
 // The TypedAst seam — the ONLY file that imports the type-checker provider.
 //
-// The transpiler needs resolved types (union discrimination, literal types,
+// The frontend needs resolved types (union discrimination, literal types,
 // readonly-ness, symbol resolution, contextual types) but must not couple to
-// a particular checker API: today the provider is the `@typescript/typescript6`
-// compat package (same checker semantics as the author-facing TS7 tsc by
-// upstream design); when the stable Go-native programmatic API ships, only
-// this adapter changes.
+// a particular checker API: today the provider is the `@typescript/old`
+// alias (the 6.x compiler line, same checker semantics as the author-facing
+// TS7 tsc by upstream design); when the stable Go-native programmatic API
+// ships, only this adapter changes.
 //
 // Surface discipline:
 //   - Syntax (node kinds, tree walking) passes through as `ts` — syntax trees
@@ -13,16 +13,12 @@
 //   - Every TYPE question goes through the named queries on `TypedAst` below.
 //     Checker/emitter code never touches `program.getTypeChecker()` directly.
 
-// The IMPORT deliberately bypasses the `@typescript/typescript6` wrapper
-// (which stays the declared dependency — it is the provider named above,
-// and its own dependency IS this alias): the wrapper's lib/typescript.js
-// re-exports "@typescript/old" resolved from the WRAPPER's location, so a
-// consumer tree already carrying a conflicting hoisted @typescript/old
-// would win node's nearest-wins walk there while our exactly pinned copy
-// sat nested and unused. Importing the alias directly resolves it from
-// THIS file — inside our package, where our own nested/hoisted exact pin
-// is always the nearest — and the CLI's resolution gate additionally
-// verifies the resolved version against the pin.
+// The IMPORT resolves the alias from THIS file — inside our package,
+// where our own nested/hoisted exact pin is always the nearest in node's
+// walk — so a consumer tree carrying a conflicting hoisted
+// @typescript/old can never shadow the pinned compiler; the CLI's
+// resolution gate additionally verifies the resolved version against the
+// pin.
 import tsImpl from "@typescript/old";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

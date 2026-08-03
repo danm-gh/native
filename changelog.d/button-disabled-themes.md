@@ -1,1 +1,0 @@
-fix: **Theme-accurate disabled buttons**: disabled buttons now keep shadcn's knockout label treatment in the default theme and use Geist's gray-100/gray-700 swap, gray-400 edge, and distinct half-opacity tertiary register in the Geist theme.

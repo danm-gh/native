@@ -1,1 +1,0 @@
-feature: **Geist-style code diffs**: `ui.code` and `<code>` can mark added and removed logical lines with theme-aware full-row washes, renderer-owned `+`/`-` markers, optional line numbers, and unchanged syntax-highlighted clipboard source.

@@ -557,7 +557,7 @@ pub fn build(b: *std.Build) void {
         .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "export type NativeSdkGpuSurfaceBackendRequest = \"metal\" | \"software\";" },
         .{ .path = "packages/native-sdk/native-sdk.d.ts", .pattern = "gpuBackend?: NativeSdkGpuSurfaceBackendRequest;" },
     });
-    addFileContainsCheckStep(b, file_contains_checker, test_step, "test-ts-toolchain-twins", "Verify the CLI's toolchain-resolution gate and its direct-`zig build` twin stay in lockstep (both resolve the aliased real compiler @typescript/old from packages/core — the same origin runtime imports it from — hold its resolved version against the manifest-read pin, never probe the unused @typescript/typescript6 wrapper, and teach instead of panicking)", &.{
+    addFileContainsCheckStep(b, file_contains_checker, test_step, "test-ts-toolchain-twins", "Verify the CLI's toolchain-resolution gate and its direct-`zig build` twin stay in lockstep (both resolve the aliased real compiler @typescript/old from packages/core — the same origin runtime imports it from — hold its resolved version against the manifest-read pin, never probe a stray compat wrapper, and teach instead of panicking)", &.{
         // The resolution twins probe the aliased REAL compiler
         // (@typescript/old — the package typed_ast.ts and ts_run.mjs
         // actually load) — manifest AND entrypoint, in lockstep. The
@@ -572,9 +572,9 @@ pub fn build(b: *std.Build) void {
         // only what runtime loads, from runtime's own walk origin, and
         // leave the declared-but-unimported wrapper out of the verdict.
         .{ .path = "src/tooling/ts_core.zig", .pattern = "Validation tracks ONLY what runtime loads" },
-        .{ .path = "src/tooling/ts_core.zig", .pattern = "wrapper is deliberately NOT probed" },
+        .{ .path = "src/tooling/ts_core.zig", .pattern = "deliberately NOT probed" },
         .{ .path = "build/app.zig", .pattern = "Validation tracks ONLY what runtime loads" },
-        .{ .path = "build/app.zig", .pattern = "wrapper is deliberately NOT probed" },
+        .{ .path = "build/app.zig", .pattern = "deliberately NOT probed" },
         // The reciprocal cross-references that keep the twins findable
         // from each other.
         .{ .path = "src/tooling/ts_core.zig", .pattern = "build/app.zig's tsToolchainResolution" },
@@ -3023,7 +3023,7 @@ fn tsCoreE2eArtifact(
     // command directly).
     b.build_root.handle.access(
         b.graph.io,
-        "packages/core/node_modules/@typescript/typescript6",
+        "packages/core/node_modules/@typescript/old",
         .{},
     ) catch return null;
     if (b.graph.environ_map.get("NATIVE_SDK_CORE_COMPILER") == null) {

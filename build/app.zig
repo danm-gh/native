@@ -124,17 +124,13 @@ const frontend_sources = [_][]const u8{
 /// (nested under the package on global prefixes, hoisted to the project
 /// root on local ones, pnpm's sibling node_modules).
 ///
-/// The @typescript/typescript6 wrapper is deliberately NOT probed:
-/// nothing imports it at run time (typed_ast.ts bypasses its one-line
-/// re-export on purpose), so holding the wrapper's resolution — or the
-/// alias's version as seen FROM the wrapper's origin — against the pin
-/// can only FALSE-REJECT healthy trees: npm's own conflict shape hoists
-/// a consumer's conflicting `@typescript/old` at the project root while
-/// our exact pin lands nested under the CLI, which is precisely the copy
-/// runtime loads from packages/core; a consumer's own shadowing wrapper
-/// must not sway the verdict either. The wrapper stays a DECLARED
-/// dependency in both manifests — it is just not what validation vouches
-/// for (see the twin's doc comment).
+/// A stray `@typescript/typescript6` compat wrapper in a consumer tree
+/// (a former dependency of this package, or the consumer's own) is
+/// deliberately NOT probed: nothing imports it at run time, and holding
+/// the alias's version as seen FROM a wrapper's origin against the pin
+/// can only FALSE-REJECT healthy trees — a consumer's hoisted conflicting
+/// `@typescript/old` wins the walk from there while the copy runtime
+/// actually loads sits correctly pinned under packages/core.
 ///
 /// Resolvable means the alias's manifest AND its entrypoint are present
 /// (see tsAliasedCompilerVersion for node's error shape and the

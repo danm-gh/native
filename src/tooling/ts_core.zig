@@ -103,7 +103,7 @@ fn tsRunnerPath(allocator: std.mem.Allocator, io: std.Io, framework_root: []cons
 }
 
 /// The install command the repo-checkout teaching names. `--include=dev`
-/// is correctness, not style: @typescript/typescript6 is packages/core's
+/// is correctness, not style: @typescript/old is packages/core's
 /// devDependency, and a plain `npm ci` under ambient production npm config
 /// (NODE_ENV=production, `omit=dev` in an npmrc) skips devDependencies
 /// while exiting 0 — the named command would "succeed" and install
@@ -131,19 +131,13 @@ pub const npm_ci_teaching_command = "npm ci --include=dev";
 ///     (nested under the CLI on global prefixes, hoisted to the project
 ///     root on local ones, pnpm's sibling node_modules)
 ///
-/// The @typescript/typescript6 wrapper is deliberately NOT probed:
-/// nothing imports it at run time (typed_ast.ts bypasses its one-line
-/// re-export on purpose — see the comment there), so holding the
-/// wrapper's resolution — or the alias's version as seen FROM the
-/// wrapper's origin — against the pin can only FALSE-REJECT healthy
-/// trees. npm's own conflict shape hoists a consumer's conflicting
-/// `@typescript/old` at the project root (where it wins the walk from a
-/// hoisted wrapper) while our exact pin lands nested under the CLI — and
-/// that nested copy is precisely what runtime loads from packages/core;
-/// a consumer's own shadowing wrapper install must not sway the verdict
-/// either. The wrapper stays a DECLARED dependency in both manifests
-/// (continuity semantics, and it keeps npm shipping the package) — it is
-/// just not what validation vouches for.
+/// A stray `@typescript/typescript6` compat wrapper in a consumer tree
+/// (a former dependency of this package, or the consumer's own) is
+/// deliberately NOT probed: nothing imports it at run time, and holding
+/// the alias's version as seen FROM a wrapper's origin against the pin
+/// can only FALSE-REJECT healthy trees — a consumer's hoisted conflicting
+/// `@typescript/old` wins the walk from there while the copy runtime
+/// actually loads sits correctly pinned under packages/core.
 ///
 /// Resolvable means the alias's manifest AND its entrypoint are present
 /// and its installed version equals the pin — see
@@ -774,7 +768,7 @@ test "the checkout teaching's npm command survives production npm config" {
     try std.testing.expect(std.mem.indexOf(u8, npm_ci_teaching_command, "--include=dev") != null);
 }
 
-/// The minimal manifest of the @typescript/typescript6 WRAPPER a fake
+/// The minimal manifest of a stray @typescript/typescript6 wrapper a fake
 /// COMPLETED install also lands (npm keeps installing it as a declared
 /// dependency). The gate never probes it — validation tracks only the
 /// aliased real compiler runtime loads — so tests land it exactly where

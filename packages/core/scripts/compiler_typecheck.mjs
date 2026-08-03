@@ -14,13 +14,14 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
 const entry = process.argv[2];
 if (!entry) {
   console.error("usage: compiler_typecheck.mjs <entry.ts>");
   process.exit(2);
 }
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const coreRoot = path.resolve(here, "..");
 let compilerJs;
 try {

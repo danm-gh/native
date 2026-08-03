@@ -220,9 +220,8 @@ class ContractEmitter {
 
   // --------------------------------------------------------------- origins
 
-  /// The declaring module of every named table type — the same walk the
-  /// emitter's type_origins table performs (emitter.ts emitTypeOrigins):
-  /// SDK modules spell their shipped staging path, core modules their
+  /// The declaring module of every named table type: SDK modules spell
+  /// their shipped staging path, core modules their
   /// entry-relative POSIX path; a private declaration carries the
   /// additive `"exported": false` marker; synthesized names stay out.
   private collectOrigins(): void {

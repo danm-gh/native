@@ -6,7 +6,10 @@
 // generic value instantiation — the routing/arm-name rigor those
 // generics carry is tsc's job in the authoring lane, and the paired
 // e2e batteries hold every produced byte to the transpiler lane's
-// output. Staged as ./sdk/core.ts by tests/compiled-core/build_core.sh.
+// output. Every external-compile stage copies this ONE file in as its
+// ./sdk/core.ts: the fixture driver (tests/compiled-core/build_core.sh)
+// and the product lane's stager (packages/core/scripts/
+// stage_external_core.mjs) alike.
 
 export function asciiBytes(s: string): Uint8Array {
   const out = new Uint8Array(s.length);

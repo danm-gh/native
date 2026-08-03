@@ -5,14 +5,19 @@
 // stock editor TypeScript resolves `@native-sdk/core` — builds never read
 // it. That contract only holds while this manifest keeps its shape:
 //
-//   - the artifact is package.json + sdk/ and nothing else (`files`), so
-//     the CLI's pre-publish copy and the published tarball stay identical;
+//   - the artifact is package.json + sdk/ + compile-surface/ and nothing
+//     else (`files`), so the CLI's pre-publish copy and the published
+//     tarball stay identical (compile-surface/ is the external-compile
+//     stage's static restatement of the SDK module; sdk/*.d.ts are the
+//     generated declaration twins external tooling resolves);
 //   - the exports map resolves ".", "./text", and "./events" to the shipped
 //     TS sources,
 //     with a `types` condition, so tsc's bundler resolution types both;
-//   - no runtime dependencies and no bin: installing the package into an
-//     app must add types, not a toolchain (the transpiler runs from the
-//     SDK checkout with its own dev install).
+//   - exactly one runtime dependency — the external core compiler at the
+//     exact release the repository pins (tests/compiled-core/
+//     core_compiler_pin) — and no bin: the compiler resolves from this
+//     package's own node_modules for the opt-in external lane, and the
+//     transpiler still runs from the SDK checkout with its dev install.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -39,11 +44,17 @@ test("provenance metadata names the real repository", () => {
   assert.equal(manifest.homepage, "https://native-sdk.dev");
 });
 
-test("the artifact is exactly package.json + sdk/", () => {
-  assert.deepEqual(manifest.files, ["sdk"]);
+test("the artifact is exactly package.json + sdk/ + compile-surface/", () => {
+  assert.deepEqual(manifest.files, ["sdk", "compile-surface"]);
   // A bin entry would drag its target file into the tarball behind the
   // `files` allowlist and break the copy-equals-publish contract.
   assert.equal(manifest.bin, undefined);
+  // The external-compile stage's one static SDK surface.
+  assert.ok(fs.existsSync(path.join(pkg, "compile-surface", "core.ts")));
+  // The generated declaration twins ship beside the sources.
+  for (const name of ["core.d.ts", "text.d.ts", "events.d.ts"]) {
+    assert.ok(fs.existsSync(path.join(pkg, "sdk", name)), `sdk/${name} does not exist`);
+  }
 });
 
 test("exports resolve ., ./text, and ./events to shipped sources, types included", () => {
@@ -62,6 +73,15 @@ test("exports resolve ., ./text, and ./events to shipped sources, types included
   assert.equal(manifest.types, "./sdk/core.ts");
 });
 
-test("installing the package adds types, never a toolchain", () => {
-  assert.equal(manifest.dependencies, undefined);
+test("the one runtime dependency is the exact-pinned external core compiler", () => {
+  // One dependency, exactly the release the repository's compiled-core
+  // pin names: the opt-in external lane resolves the compiler from this
+  // package's own node_modules, and an exact pin is what makes the
+  // profile's release-pinned fence table trustworthy. No bin joins it —
+  // installing the package must never put a toolchain on a consumer's
+  // PATH.
+  const pinPath = path.join(pkg, "..", "..", "tests", "compiled-core", "core_compiler_pin");
+  const pin = fs.readFileSync(pinPath, "utf8").trim();
+  assert.match(pin, /^\d+\.\d+\.\d+$/);
+  assert.deepEqual(manifest.dependencies, { scriptc: pin });
 });

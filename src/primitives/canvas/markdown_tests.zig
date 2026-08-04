@@ -291,6 +291,75 @@ test "HTML block closers may follow content without absorbing later blocks" {
     try testing.expectEqualStrings("After pre", tree.root.children[5].text);
 }
 
+test "multiline HTML blocks keep semantics when content follows the opener" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<blockquote>First line
+        \\Second line</blockquote>After quote
+        \\<pre><code>first
+        \\second</code></pre>After pre
+    , .{});
+
+    try testing.expectEqual(@as(usize, 4), tree.root.children.len);
+    try testing.expectEqual(@as(usize, 1), countKind(tree.root.children[0], .separator));
+    try testing.expect(findParagraphContaining(tree.root.children[0], "First line Second line") != null);
+    try testing.expectEqualStrings("After quote", tree.root.children[1].text);
+    const code = findParagraphContaining(tree.root.children[2], "first\nsecond").?;
+    try testing.expect(allSpansMonospace(code));
+    try testing.expectEqualStrings("After pre", tree.root.children[3].text);
+}
+
+test "multiline HTML list items retain their native marker" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<ul>
+        \\<li>
+        \\First <strong>bold</strong>
+        \\</li>
+        \\</ul>
+    , .{});
+
+    const item = findRowWithDirectParagraph(tree.root, "First bold").?;
+    try testing.expect(findKindLabel(item, .text, "•") != null);
+    try testing.expectEqual(canvas.TextSpanWeight.bold, findSpan(item, "bold").?.weight);
+}
+
+test "multiline HTML headings honor align" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<h2 align="center">
+        \\Heading
+        \\</h2>
+        \\Outside
+    , .{});
+
+    const heading = findParagraphContaining(tree.root, "Heading").?;
+    const outside = findParagraphContaining(tree.root, "Outside").?;
+    try testing.expectEqual(canvas.TextAlign.center, heading.text_alignment);
+    try testing.expectEqual(markdown.heading_scales[1], heading.spans[0].scale);
+    try testing.expectEqual(canvas.TextAlign.start, outside.text_alignment);
+}
+
+test "HTML blockquotes contain malformed child presentation scopes" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<blockquote>
+        \\<div align="center">
+        \\Inside
+        \\</blockquote>
+        \\Outside
+    , .{});
+
+    const inside = findParagraphContaining(tree.root.children[0], "Inside").?;
+    const outside = findParagraphContaining(tree.root.children[1], "Outside").?;
+    try testing.expectEqual(canvas.TextAlign.center, inside.text_alignment);
+    try testing.expectEqual(canvas.TextAlign.start, outside.text_alignment);
+}
+
 test "self-closing HTML wrappers do not leak block presentation" {
     var doc = TestDoc.init();
     defer doc.deinit();
@@ -315,7 +384,7 @@ test "HTML comments hide content while unsupported and malformed tags stay liter
     var doc = TestDoc.init();
     defer doc.deinit();
     const tree = try doc.build(
-        \\Visible <!-- hidden **secret** --> text. <script>alert(1)</script> <span onclick="boom()">safe</span>.
+        \\Visible <!-- hidden **secret** --> text. <script><strong>alert</strong>&amp;</script> <span onclick="boom()">safe</span>.
         \\
         \\Malformed <strong never closes.
     , .{});
@@ -323,12 +392,28 @@ test "HTML comments hide content while unsupported and malformed tags stay liter
     const visible = findParagraphContaining(tree.root, "Visible").?;
     try testing.expect(std.mem.indexOf(u8, visible.text, "hidden") == null);
     try testing.expect(std.mem.indexOf(u8, visible.text, "secret") == null);
-    try testing.expect(std.mem.indexOf(u8, visible.text, "<script>alert(1)</script>") != null);
+    try testing.expect(std.mem.indexOf(u8, visible.text, "<script><strong>alert</strong>&amp;</script>") != null);
     try testing.expect(std.mem.indexOf(u8, visible.text, "onclick") == null);
     try testing.expect(std.mem.indexOf(u8, visible.text, "safe") != null);
 
     const malformed = findParagraphContaining(tree.root, "Malformed").?;
     try testing.expect(std.mem.indexOf(u8, malformed.text, "<strong never closes.") != null);
+}
+
+test "multiline HTML comments stay hidden across blank lines" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\Before
+        \\<!-- hidden
+        \\
+        \\still hidden -->
+        \\After
+    , .{});
+
+    try testing.expectEqual(@as(usize, 2), tree.root.children.len);
+    try testing.expectEqualStrings("Before", tree.root.children[0].text);
+    try testing.expectEqualStrings("After", tree.root.children[1].text);
 }
 
 test "markdown maps lists, task lists, code fences, quotes, and rules" {

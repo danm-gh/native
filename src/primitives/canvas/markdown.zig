@@ -93,6 +93,11 @@ pub const max_markdown_table_rows: usize = 64;
 /// the runtime's registered-image slot bound and keeps hostile model slices
 /// from turning every inline image into an unbounded lookup.
 pub const max_markdown_images: usize = 16;
+/// Image sources discovered for the documented `fx.loadImage` workflow use
+/// the effect channel's URL bound. Keeping the copy here model-owned lets the
+/// collector decode HTML entities before either network loading or renderer
+/// lookup, so both sides use one canonical source string.
+pub const max_markdown_image_source_bytes: usize = 2048;
 /// Joined bytes per paragraph or blockquote (consecutive source lines
 /// collapse into one text widget). Sized generously past real GitHub
 /// prose — paragraphs beyond a couple of KiB are pathological input —
@@ -118,44 +123,138 @@ pub const ResolvedImage = struct {
     height: f32,
 };
 
+/// One canonical image source copied into caller-owned collection storage.
+/// `value()` remains valid while this record remains alive; consume or copy
+/// the slice before the caller's storage goes out of scope.
+pub const CollectedImageSource = struct {
+    bytes: [max_markdown_image_source_bytes]u8 = undefined,
+    len: usize = 0,
+
+    pub fn value(self: *const CollectedImageSource) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
 /// Collect distinct leading image sources the renderer can replace with native
 /// image leaves, into caller-owned bounded storage. Fenced blocks, inline code,
 /// comments, mid-paragraph images, and unsupported HTML tags stay inert,
 /// matching the renderer's security posture and avoiding effects for sources
-/// that can only use the alt-text fallback. Returned slices alias `source`; an
-/// app can use this during `update` to issue `fx.loadImage` effects, then pass
-/// successful mappings back through `Options.images` on the next view.
-pub fn collectImageSources(source: []const u8, output: [][]const u8) []const []const u8 {
+/// that can only use the alt-text fallback. Sources are HTML-entity-decoded
+/// into `output`, so the URL loaded and the key later matched by the renderer
+/// are byte-identical. An app can use this during `update` to issue
+/// `fx.loadImage` effects, then pass successful mappings back through
+/// `Options.images` on the next view.
+pub fn collectImageSources(source: []const u8, output: []CollectedImageSource) []const CollectedImageSource {
     var lines = LineIterator{ .source = source };
     var len: usize = 0;
     var in_fence = false;
+    var paragraph_open = false;
+    var blockquote_open = false;
+    var html_state = ImageDiscoveryHtmlState{};
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t");
+
+        // HTML comments, code/pre blocks, and unsupported elements remain
+        // opaque across physical lines. Scan them before considering Markdown
+        // block prefixes so hidden `<img>` lines can never become effects.
+        if (html_state.active()) {
+            _ = imageDiscoveryVisiblePrefix(line, &html_state);
+            continue;
+        }
         if (std.mem.startsWith(u8, trimmed, "```")) {
             in_fence = !in_fence;
+            paragraph_open = false;
+            blockquote_open = false;
             continue;
         }
         if (in_fence) continue;
-        appendLeadingImageSource(output, &len, line);
-        if (splitTableRow(line)) |row| {
-            for (row.cells) |cell| appendLeadingImageSource(output, &len, cell);
+
+        const visible = imageDiscoveryVisiblePrefix(line, &html_state);
+        const visible_trimmed = std.mem.trim(u8, visible, " \t");
+        if (visible_trimmed.len == 0) {
+            if (trimmed.len == 0) {
+                paragraph_open = false;
+                blockquote_open = false;
+            } else if (startsStandaloneInertHtmlBlock(trimmed)) {
+                // Comments and `<pre>` lower as standalone blocks. Once
+                // their multiline body ends, the next source line starts a
+                // fresh renderable block and may expose a leading image.
+                paragraph_open = false;
+            } else {
+                // A comment/opaque element on an otherwise nonblank line is
+                // still part of the surrounding paragraph. Do not let the
+                // next physical line masquerade as a leading image.
+                paragraph_open = true;
+            }
+            continue;
         }
+
+        if (isLinkReferenceDefinition(visible)) {
+            paragraph_open = false;
+            blockquote_open = false;
+            continue;
+        }
+
+        if (headingLevel(visible_trimmed)) |level| {
+            appendLeadingImageSource(output, &len, std.mem.trim(u8, visible_trimmed[level..], " \t#"));
+            paragraph_open = false;
+            blockquote_open = false;
+            if (len >= output.len) break;
+            continue;
+        }
+        if (listMarker(visible)) |marker| {
+            appendLeadingImageSource(output, &len, marker.content);
+            paragraph_open = false;
+            blockquote_open = false;
+            if (len >= output.len) break;
+            continue;
+        }
+        if (std.mem.startsWith(u8, visible_trimmed, ">")) {
+            var inner = visible_trimmed[1..];
+            if (std.mem.startsWith(u8, inner, " ")) inner = inner[1..];
+            inner = std.mem.trim(u8, inner, " \t");
+            if (!blockquote_open and inner.len > 0) appendLeadingImageSource(output, &len, inner);
+            if (inner.len > 0) blockquote_open = true;
+            paragraph_open = false;
+            if (len >= output.len) break;
+            continue;
+        }
+        blockquote_open = false;
+
+        if (visible.len == line.len and collectTableImageSources(&lines, visible, output, &len, &html_state)) {
+            paragraph_open = false;
+            if (len >= output.len) break;
+            continue;
+        }
+
+        if (collectHtmlBlockImageSource(visible_trimmed, output, &len, &paragraph_open)) {
+            if (len >= output.len) break;
+            continue;
+        }
+
+        if (isHorizontalRule(visible_trimmed)) {
+            paragraph_open = false;
+            continue;
+        }
+        if (!paragraph_open) appendLeadingImageSource(output, &len, visible);
+        paragraph_open = true;
         if (len >= output.len) break;
     }
     return output[0..len];
 }
 
-fn appendLeadingImageSource(output: [][]const u8, len: *usize, text: []const u8) void {
+fn appendLeadingImageSource(output: []CollectedImageSource, len: *usize, text: []const u8) void {
     const image = parseLeadingInlineImage(text) orelse return;
     appendDistinctImageSource(output, len, image.source);
 }
 
-fn appendDistinctImageSource(output: [][]const u8, len: *usize, source: []const u8) void {
+fn appendDistinctImageSource(output: []CollectedImageSource, len: *usize, source: []const u8) void {
     if (source.len == 0 or len.* >= output.len) return;
-    for (output[0..len.*]) |existing| {
-        if (std.mem.eql(u8, existing, source)) return;
+    const decoded = decodeHtmlEntitiesInto(source, &output[len.*].bytes) orelse return;
+    for (output[0..len.*]) |*existing| {
+        if (std.mem.eql(u8, existing.value(), decoded)) return;
     }
-    output[len.*] = source;
+    output[len.*].len = decoded.len;
     len.* += 1;
 }
 
@@ -511,6 +610,7 @@ pub fn Markdown(comptime Msg: type) type {
                         .grow = options.grow,
                         .padding = options.padding,
                         .gap = 6,
+                        .main = imageMainAlignment(options.text_alignment),
                         .cross = .center,
                     }, .{children[0..child_len]});
                 }
@@ -1009,6 +1109,7 @@ pub fn Markdown(comptime Msg: type) type {
                         .grow = 1,
                         .padding = 8,
                         .gap = 6,
+                        .main = imageMainAlignment(alignment),
                         .cross = .center,
                     }, .{children[0..child_len]});
                     cell.widget.text_alignment = alignment;
@@ -1521,6 +1622,81 @@ fn parseLeadingInlineImage(text: []const u8) ?LeadingInlineImage {
     return null;
 }
 
+/// Decode the entity forms accepted by the renderer into caller-owned storage.
+/// Entity decoding never expands the input, but the explicit capacity check
+/// keeps the public source bound honest even for a pathological URL.
+fn decodeHtmlEntitiesInto(text: []const u8, output: []u8) ?[]const u8 {
+    var source_index: usize = 0;
+    var out_len: usize = 0;
+    while (source_index < text.len) {
+        if (text[source_index] == '&') {
+            const rest = text[source_index..];
+            const named: ?[]const u8 = if (std.mem.startsWith(u8, rest, "&amp;"))
+                "&"
+            else if (std.mem.startsWith(u8, rest, "&lt;"))
+                "<"
+            else if (std.mem.startsWith(u8, rest, "&gt;"))
+                ">"
+            else if (std.mem.startsWith(u8, rest, "&quot;"))
+                "\""
+            else if (std.mem.startsWith(u8, rest, "&apos;"))
+                "'"
+            else if (std.mem.startsWith(u8, rest, "&nbsp;"))
+                "\u{a0}"
+            else
+                null;
+            if (named) |decoded| {
+                if (out_len + decoded.len > output.len) return null;
+                @memcpy(output[out_len..][0..decoded.len], decoded);
+                out_len += decoded.len;
+                source_index += if (std.mem.startsWith(u8, rest, "&amp;"))
+                    5
+                else if (std.mem.startsWith(u8, rest, "&lt;") or std.mem.startsWith(u8, rest, "&gt;"))
+                    4
+                else
+                    6;
+                continue;
+            }
+
+            if (std.mem.startsWith(u8, rest, "&#")) {
+                const semi = std.mem.indexOfScalar(u8, rest[2..@min(rest.len, 14)], ';');
+                if (semi) |relative_semi| {
+                    const body_end = relative_semi + 2;
+                    var digits = rest[2..body_end];
+                    var radix: u8 = 10;
+                    if (digits.len > 1 and (digits[0] == 'x' or digits[0] == 'X')) {
+                        radix = 16;
+                        digits = digits[1..];
+                    }
+                    if (digits.len > 0) {
+                        if (std.fmt.parseUnsigned(u21, digits, radix)) |codepoint| {
+                            if (codepoint != 0 and codepoint <= 0x10ffff and
+                                !(codepoint >= 0xd800 and codepoint <= 0xdfff))
+                            {
+                                var encoded_storage: [4]u8 = undefined;
+                                const encoded = std.unicode.utf8Encode(codepoint, &encoded_storage) catch 0;
+                                if (encoded > 0) {
+                                    if (out_len + encoded > output.len) return null;
+                                    @memcpy(output[out_len..][0..encoded], encoded_storage[0..encoded]);
+                                    out_len += encoded;
+                                    source_index += body_end + 1;
+                                    continue;
+                                }
+                            }
+                        } else |_| {}
+                    }
+                }
+            }
+        }
+
+        if (out_len >= output.len) return null;
+        output[out_len] = text[source_index];
+        out_len += 1;
+        source_index += 1;
+    }
+    return output[0..out_len];
+}
+
 fn htmlImageDimension(tag: HtmlTag, name: []const u8) ?f32 {
     const raw = htmlAttribute(tag, name) orelse return null;
     const value = std.fmt.parseFloat(f32, std.mem.trim(u8, raw, " \t")) catch return null;
@@ -1540,8 +1716,19 @@ fn resolvedInlineImageDimensions(mapping: ResolvedImage, requested_width: ?f32, 
         width = height * mapping.width / mapping.height;
     }
     // Inline source dimensions are presentation hints, not permission for an
-    // untrusted document to manufacture unbounded layout extents.
-    return .{ .width = @min(width, 512), .height = @min(height, 512) };
+    // untrusted document to manufacture unbounded layout extents. Scale both
+    // axes together so either natural or author-requested proportions survive
+    // the cap instead of turning a wide banner into a squashed rectangle.
+    const scale = @min(@as(f32, 1), @min(512 / width, 512 / height));
+    return .{ .width = width * scale, .height = height * scale };
+}
+
+fn imageMainAlignment(alignment: canvas.TextAlign) canvas.WidgetMainAlignment {
+    return switch (alignment) {
+        .start => .start,
+        .center => .center,
+        .end => .end,
+    };
 }
 
 // ------------------------------------------------------------- safe HTML
@@ -1623,6 +1810,186 @@ const HtmlOpaqueState = struct {
         return self.depth > 0;
     }
 };
+
+/// The source collector has no widget tree to consult, so it carries the
+/// subset of HTML state that makes image effects inert. Unsupported elements
+/// and comments reuse the renderer's opaque model; HTML code/pre tags have a
+/// small exact-name stack because their contents render as text, never images.
+const ImageDiscoveryHtmlState = struct {
+    opaque_html: HtmlOpaqueState = .{},
+    code_stack: [8][]const u8 = undefined,
+    code_depth: usize = 0,
+    code_overflow_depth: usize = 0,
+
+    fn active(self: ImageDiscoveryHtmlState) bool {
+        return self.opaque_html.active() or self.code_depth > 0 or self.code_overflow_depth > 0;
+    }
+};
+
+fn isDetailsHtmlTagName(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "details") or std.ascii.eqlIgnoreCase(name, "summary");
+}
+
+fn startsStandaloneInertHtmlBlock(trimmed: []const u8) bool {
+    if (std.mem.startsWith(u8, trimmed, "<!--")) return true;
+    const tag = parseHtmlTagAt(trimmed, 0) orelse return false;
+    return !tag.closing and tag.kind == .preformatted;
+}
+
+/// Return the prefix of one physical line that is eligible for image-source
+/// discovery, while advancing multiline comment/unsupported/code state. Once
+/// an inert region begins, the rest of that line is conservatively excluded;
+/// a leading image before a trailing comment remains eligible.
+fn imageDiscoveryVisiblePrefix(line: []const u8, state: *ImageDiscoveryHtmlState) []const u8 {
+    const started_inert = state.active();
+    var first_inert: ?usize = if (started_inert) 0 else null;
+    var cursor: usize = 0;
+
+    while (cursor < line.len) {
+        if (state.opaque_html.comment) {
+            if (first_inert == null) first_inert = cursor;
+            const close = std.mem.indexOfPos(u8, line, cursor, "-->") orelse return line[0 .. first_inert orelse 0];
+            state.opaque_html.comment = false;
+            cursor = close + 3;
+            continue;
+        }
+
+        const start = std.mem.indexOfScalarPos(u8, line, cursor, '<') orelse break;
+        if (std.mem.startsWith(u8, line[start..], "<!--")) {
+            if (first_inert == null) first_inert = start;
+            const close = std.mem.indexOfPos(u8, line, start + 4, "-->") orelse {
+                state.opaque_html.comment = true;
+                break;
+            };
+            cursor = close + 3;
+            continue;
+        }
+
+        const syntax = parseHtmlTagSyntaxAt(line, start) orelse {
+            cursor = start + 1;
+            continue;
+        };
+        cursor = start + syntax.consumed;
+
+        if (state.opaque_html.elementActive()) {
+            if (first_inert == null) first_inert = start;
+            if (!std.ascii.eqlIgnoreCase(syntax.name, state.opaque_html.name)) continue;
+            if (syntax.closing) {
+                state.opaque_html.depth -= 1;
+                if (!state.opaque_html.elementActive()) state.opaque_html.name = "";
+            } else if (!syntax.self_closing) {
+                state.opaque_html.depth += 1;
+            }
+            continue;
+        }
+
+        const classified = classifyHtmlTag(syntax.name);
+        if (classified == null and !isDetailsHtmlTagName(syntax.name)) {
+            if (first_inert == null) first_inert = start;
+            if (!syntax.closing and !syntax.self_closing and !isHtmlVoidTagName(syntax.name)) {
+                state.opaque_html = .{ .name = syntax.name, .depth = 1 };
+            }
+            continue;
+        }
+
+        const code_like = if (classified) |tag|
+            tag.kind == .monospace or tag.kind == .preformatted
+        else
+            false;
+        if (!code_like) continue;
+        if (first_inert == null) first_inert = start;
+        if (syntax.self_closing) continue;
+        if (syntax.closing) {
+            if (state.code_overflow_depth > 0) {
+                state.code_overflow_depth -= 1;
+            } else if (state.code_depth > 0 and
+                std.ascii.eqlIgnoreCase(state.code_stack[state.code_depth - 1], syntax.name))
+            {
+                state.code_depth -= 1;
+            }
+        } else if (state.code_depth < state.code_stack.len) {
+            state.code_stack[state.code_depth] = syntax.name;
+            state.code_depth += 1;
+        } else {
+            state.code_overflow_depth += 1;
+        }
+    }
+    return line[0 .. first_inert orelse line.len];
+}
+
+fn collectTableImageSources(
+    lines: *LineIterator,
+    header_line: []const u8,
+    output: []CollectedImageSource,
+    len: *usize,
+    html_state: *ImageDiscoveryHtmlState,
+) bool {
+    const header = splitTableRow(header_line) orelse return false;
+    const delimiter_line = lines.peek() orelse return false;
+    const alignments = tableDelimiterAlignments(delimiter_line) orelse return false;
+    if (alignments.len != header.len) return false;
+
+    for (header.cells) |cell| appendLeadingImageSource(output, len, cell);
+    _ = lines.next(); // delimiter
+    while (lines.peek()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (trimmed.len == 0 or std.mem.indexOfScalar(u8, trimmed, '|') == null) break;
+        _ = lines.next();
+        const visible = imageDiscoveryVisiblePrefix(line, html_state);
+        if (splitTableRow(visible)) |row| {
+            for (row.cells) |cell| appendLeadingImageSource(output, len, cell);
+        }
+        if (len.* >= output.len) break;
+    }
+    return true;
+}
+
+/// Consume the block-shaped syntax that can expose a new leading-inline
+/// position on the same line. Multiline bodies are handled by the caller's
+/// paragraph state on subsequent lines.
+fn collectHtmlBlockImageSource(
+    trimmed: []const u8,
+    output: []CollectedImageSource,
+    len: *usize,
+    paragraph_open: *bool,
+) bool {
+    if (std.ascii.startsWithIgnoreCase(trimmed, "<summary>")) {
+        var content = trimmed["<summary>".len..];
+        if (std.ascii.indexOfIgnoreCase(content, "</summary>")) |close| content = content[0..close];
+        appendLeadingImageSource(output, len, std.mem.trim(u8, content, " \t"));
+        paragraph_open.* = false;
+        return true;
+    }
+    if (parseHtmlTagSyntaxAt(trimmed, 0)) |syntax| {
+        if (isDetailsHtmlTagName(syntax.name)) {
+            paragraph_open.* = false;
+            return true;
+        }
+    }
+
+    const opening = parseHtmlTagAt(trimmed, 0) orelse return false;
+    if (!isHtmlBlockTag(opening)) return false;
+    if (opening.kind == .horizontal_rule or opening.self_closing) {
+        paragraph_open.* = false;
+        return true;
+    }
+    if (opening.closing) {
+        const suffix = std.mem.trimStart(u8, trimmed[opening.consumed..], " \t");
+        if (suffix.len > 0) appendLeadingImageSource(output, len, suffix);
+        paragraph_open.* = suffix.len > 0;
+        return true;
+    }
+    if (singleLineHtmlElement(trimmed, opening)) |element| {
+        appendLeadingImageSource(output, len, std.mem.trim(u8, element.content, " \t"));
+        paragraph_open.* = false;
+        return true;
+    }
+
+    const suffix = std.mem.trimStart(u8, trimmed[opening.consumed..], " \t");
+    if (suffix.len > 0) appendLeadingImageSource(output, len, suffix);
+    paragraph_open.* = suffix.len > 0;
+    return true;
+}
 
 /// Return the next allowlisted tag while treating unsupported elements as
 /// opaque regions, carrying multiline-comment state across block scans, and

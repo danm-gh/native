@@ -20,7 +20,7 @@ Pinned goldens (pixel signatures, schema fingerprints, command counts) are updat
 
 ## Changelog
 
-Do not edit `CHANGELOG.md` directly. Each user-visible change ships a fragment in `changelog.d/` — see `changelog.d/README.md` for the format and voice. Internal-only polish needs no fragment.
+Do not edit `CHANGELOG.md` as part of regular feature or fix work. The release agent reviews the git history since the previous release and writes the complete changelog entry during release preparation; see [RELEASING.md](./RELEASING.md).
 
 ## Where things live
 

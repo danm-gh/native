@@ -310,6 +310,24 @@ test "hostile: bare-url paren tails trim in linear time" {
     _ = try buildHostile(source);
 }
 
+test "hostile: unterminated HTML comment-prefix walls parse in linear time" {
+    const allocator = testing.allocator;
+    const bomb_len = 256 * 1024;
+    const source = try allocator.alloc(u8, bomb_len);
+    defer allocator.free(source);
+
+    // Every four-byte prefix looks like a comment opener, but none has a
+    // closer. A fresh suffix scan at every '<' is quadratic; the HTML scan
+    // must remember the first unterminated comment through the remaining
+    // source and through the paragraph's measuring/copy passes.
+    var index: usize = 0;
+    while (index + 4 <= source.len) : (index += 4) @memcpy(source[index..][0..4], "<!--");
+    if (index < source.len) @memset(source[index..], '<');
+
+    const result = try buildHostile(source);
+    try testing.expect(result.text_bytes <= markdown.max_markdown_paragraph_bytes * 2);
+}
+
 test "hostile: unterminated fences, HTML soup, and stray closers stay valid" {
     _ = try buildHostile(
         \\```zig

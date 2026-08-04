@@ -118,6 +118,13 @@ fn findKindLabel(widget: canvas.Widget, kind: canvas.WidgetKind, label: []const 
     return null;
 }
 
+fn countKindLabel(widget: canvas.Widget, kind: canvas.WidgetKind, label: []const u8) usize {
+    var count: usize = if (widget.kind == kind and
+        (std.mem.eql(u8, widget.semantics.label, label) or std.mem.eql(u8, widget.text, label))) 1 else 0;
+    for (widget.children) |child| count += countKindLabel(child, kind, label);
+    return count;
+}
+
 fn findRowWithDirectParagraph(widget: canvas.Widget, fragment: []const u8) ?canvas.Widget {
     if (widget.kind == .row) {
         for (widget.children) |child| {
@@ -457,6 +464,98 @@ test "multiline HTML comments stay hidden across blank lines" {
     try testing.expectEqual(@as(usize, 2), tree.root.children.len);
     try testing.expectEqualStrings("Before", tree.root.children[0].text);
     try testing.expectEqualStrings("After", tree.root.children[1].text);
+}
+
+test "unclosed safe HTML blocks and inline tags remain literal" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<h2>Unclosed heading
+        \\
+        \\- following item
+        \\
+        \\Malformed <strong title="**">never closes and stray </em>.
+        \\
+        \\</h3>
+    , .{});
+
+    const heading = findParagraphContaining(tree.root, "Unclosed heading").?;
+    try testing.expectEqualStrings("<h2>Unclosed heading", heading.text);
+    try testing.expectEqual(canvas.TextSpanWeight.regular, heading.spans[0].weight);
+    try testing.expectEqual(@as(f32, 0), heading.spans[0].scale);
+    try testing.expect(findRowWithDirectParagraph(tree.root, "following item") != null);
+
+    const malformed = findParagraphContaining(tree.root, "Malformed").?;
+    try testing.expectEqualStrings(
+        "Malformed <strong title=\"**\">never closes and stray </em>.",
+        malformed.text,
+    );
+    for (malformed.spans) |span| try testing.expectEqual(canvas.TextSpanWeight.regular, span.weight);
+    try testing.expectEqualStrings("</h3>", findParagraphContaining(tree.root, "</h3>").?.text);
+}
+
+test "HTML wrapper closers inside Markdown code spans stay literal" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<div align="center">
+        \\Use `</div>` literally.
+        \\
+        \\Still centered.
+        \\</div>
+        \\Outside.
+    , .{});
+
+    const code_line = findParagraphContaining(tree.root, "Use </div> literally.").?;
+    const centered = findParagraphContaining(tree.root, "Still centered.").?;
+    const outside = findParagraphContaining(tree.root, "Outside.").?;
+    try testing.expect(findSpan(code_line, "</div>").?.monospace);
+    try testing.expectEqual(canvas.TextAlign.center, code_line.text_alignment);
+    try testing.expectEqual(canvas.TextAlign.center, centered.text_alignment);
+    try testing.expectEqual(canvas.TextAlign.start, outside.text_alignment);
+}
+
+test "multiline comments stay opaque while collecting HTML blocks" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<blockquote>
+        \\Before.
+        \\<!-- hidden
+        \\</blockquote>
+        \\still hidden -->
+        \\After.
+        \\</blockquote>
+        \\Outside.
+    , .{});
+
+    try testing.expectEqual(@as(usize, 2), tree.root.children.len);
+    try testing.expect(findParagraphContaining(tree.root.children[0], "Before.") != null);
+    try testing.expect(findParagraphContaining(tree.root.children[0], "After.") != null);
+    try testing.expect(findParagraphContaining(tree.root.children[0], "hidden") == null);
+    try testing.expectEqualStrings("Outside.", tree.root.children[1].text);
+}
+
+test "HTML ordered and definition lists retain their native semantics" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<ol>
+        \\<li>First</li>
+        \\<li>Second</li>
+        \\</ol>
+        \\<ol><li>Compact one</li><li>Compact two</li></ol>
+        \\<dl>
+        \\<dt>Term</dt>
+        \\<dd>Definition</dd>
+        \\</dl>
+    , .{});
+
+    try testing.expectEqual(@as(usize, 2), countKindLabel(tree.root, .text, "1."));
+    try testing.expectEqual(@as(usize, 2), countKindLabel(tree.root, .text, "2."));
+    try testing.expectEqual(@as(usize, 0), countKindLabel(tree.root, .text, "•"));
+    try testing.expectEqual(canvas.TextSpanWeight.bold, findSpan(tree.root, "Term").?.weight);
+    try testing.expect(findParagraphContaining(tree.root, "Definition") != null);
 }
 
 test "markdown maps lists, task lists, code fences, quotes, and rules" {

@@ -1041,6 +1041,7 @@ fn layoutTextSpanLinkChildren(
         content.x += gutter;
         content.width -= gutter;
     }
+    content = widget_metrics.widgetTextSpanAlignedContentFrame(widget, content, tokens);
 
     var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
     const layout = text_spans_model.layoutTextSpans(

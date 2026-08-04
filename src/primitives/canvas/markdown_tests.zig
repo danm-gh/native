@@ -953,6 +953,38 @@ test "resolved leading table images render as native image leaves with alt fallb
     try testing.expect(findCellContaining(fallback.root, "Ready") != null);
 }
 
+test "table text cells vertically center beside resolved images" {
+    const source = "https://example.com/tall.png";
+    const images = [_]markdown.ResolvedImage{
+        .{ .source = source, .image = 76, .width = 40, .height = 40 },
+    };
+
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\| Project | Action |
+        \\| --- | --- |
+        \\| ![Logo](https://example.com/tall.png) Native | [Preview](https://example.com) |
+    , .{ .on_link = Ui.linkMsg(.open_url), .images = &images });
+
+    const image = findImageId(tree.root, 76).?;
+    const preview = findRoleLabel(tree.root, .link, "Preview").?;
+    var nodes: [64]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTreeWithTokens(
+        tree.root,
+        geometry.RectF.init(0, 0, 360, 160),
+        .{},
+        &nodes,
+    );
+    const image_frame = layout.findById(image.id).?.frame;
+    const preview_frame = layout.findById(preview.id).?.frame;
+    try testing.expectApproxEqAbs(
+        image_frame.y + image_frame.height * 0.5,
+        preview_frame.y + preview_frame.height * 0.5,
+        0.01,
+    );
+}
+
 test "resolved leading paragraph images compose with trailing inline text" {
     const source = "https://example.com/diagram.png";
     const images = [_]markdown.ResolvedImage{
@@ -1142,11 +1174,12 @@ test "the README-shaped fixture renders through the mapper and the reference ren
 // scales, wrapped bullets and em-dash spacing at the face's real
 // advances, real sans and mono outlines (fixed-pitch runs sit in their
 // 0.6 em cells), GFM tables as borderless cells on hairline row
-// separators, bare fenced code with preserved source indentation and
-// language-token colors, and near-black underlined links.
+// separators with vertically centered cell content, bare fenced code
+// with preserved source indentation and language-token colors, and
+// near-black underlined links.
 // Update deliberately when markdown rendering changes, reviewing the
 // rendered pixels first (see reference_tests.zig conventions).
-const markdown_document_reference_signature: u64 = 5787917808851547223;
+const markdown_document_reference_signature: u64 = 17200107192111546862;
 
 fn markdownGoldenDumpRequested() bool {
     if (comptime !@import("builtin").link_libc) return false;

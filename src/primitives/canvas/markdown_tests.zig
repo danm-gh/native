@@ -64,6 +64,14 @@ fn findImageId(widget: canvas.Widget, image_id: canvas.ImageId) ?canvas.Widget {
     return null;
 }
 
+fn findCellContainingImage(widget: canvas.Widget, image_id: canvas.ImageId) ?canvas.Widget {
+    if (widget.kind == .data_cell and findImageId(widget, image_id) != null) return widget;
+    for (widget.children) |child| {
+        if (findCellContainingImage(child, image_id)) |found| return found;
+    }
+    return null;
+}
+
 fn appendParagraphText(widget: canvas.Widget, out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
     if (widget.kind == .text and widget.spans.len > 0) {
         try out.appendSlice(allocator, widget.text);
@@ -953,6 +961,27 @@ test "resolved leading table images render as native image leaves with alt fallb
     try testing.expect(findCellContaining(fallback.root, "Ready") != null);
 }
 
+test "entity-normalized discovered image sources match resolved HTML images" {
+    const source =
+        \\<img src="https://example.com/avatar?a=1&amp;b=2" alt="Avatar" />
+    ;
+    var collected_storage: [1]markdown.CollectedImageSource = undefined;
+    const collected = markdown.collectImageSources(source, &collected_storage);
+    try testing.expectEqual(@as(usize, 1), collected.len);
+    try testing.expectEqualStrings("https://example.com/avatar?a=1&b=2", collected[0].value());
+
+    const images = [_]markdown.ResolvedImage{.{
+        .source = collected[0].value(),
+        .image = 75,
+        .width = 32,
+        .height = 32,
+    }};
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(source, .{ .images = &images });
+    try testing.expect(findImageId(tree.root, 75) != null);
+}
+
 test "table text cells vertically center beside resolved images" {
     const source = "https://example.com/tall.png";
     const images = [_]markdown.ResolvedImage{
@@ -985,6 +1014,71 @@ test "table text cells vertically center beside resolved images" {
     );
 }
 
+test "resolved image composites honor center and end alignment" {
+    const source = "https://example.com/centered.png";
+    const images = [_]markdown.ResolvedImage{
+        .{ .source = source, .image = 78, .width = 40, .height = 20 },
+        .{ .source = source, .image = 79, .width = 40, .height = 20 },
+        .{ .source = source, .image = 81, .width = 40, .height = 20 },
+    };
+
+    var paragraph_doc = TestDoc.init();
+    defer paragraph_doc.deinit();
+    const paragraph_tree = try paragraph_doc.build(
+        \\<p align="center"><img src="https://example.com/centered.png" alt="Centered" /></p>
+    , .{ .images = images[0..1] });
+    const paragraph_image = findImageId(paragraph_tree.root, 78).?;
+    var paragraph_nodes: [32]canvas.WidgetLayoutNode = undefined;
+    const paragraph_layout = try canvas.layoutWidgetTreeWithTokens(
+        paragraph_tree.root,
+        geometry.RectF.init(0, 0, 400, 100),
+        .{},
+        &paragraph_nodes,
+    );
+    const paragraph_frame = paragraph_layout.findById(paragraph_image.id).?.frame;
+    try testing.expectApproxEqAbs(@as(f32, 200), paragraph_frame.x + paragraph_frame.width * 0.5, 0.01);
+
+    var table_doc = TestDoc.init();
+    defer table_doc.deinit();
+    const table_tree = try table_doc.build(
+        \\| Centered |
+        \\| :---: |
+        \\| ![Centered](https://example.com/centered.png) |
+    , .{ .images = images[1..2] });
+    const table_image = findImageId(table_tree.root, 79).?;
+    const table_cell = findCellContainingImage(table_tree.root, 79).?;
+    var table_nodes: [32]canvas.WidgetLayoutNode = undefined;
+    const table_layout = try canvas.layoutWidgetTreeWithTokens(
+        table_tree.root,
+        geometry.RectF.init(0, 0, 400, 120),
+        .{},
+        &table_nodes,
+    );
+    const image_frame = table_layout.findById(table_image.id).?.frame;
+    const cell_frame = table_layout.findById(table_cell.id).?.frame;
+    try testing.expectApproxEqAbs(
+        cell_frame.x + cell_frame.width * 0.5,
+        image_frame.x + image_frame.width * 0.5,
+        0.01,
+    );
+
+    var end_doc = TestDoc.init();
+    defer end_doc.deinit();
+    const end_tree = try end_doc.build(
+        \\<p align="right"><img src="https://example.com/centered.png" alt="End" /></p>
+    , .{ .images = images[2..3] });
+    const end_image = findImageId(end_tree.root, 81).?;
+    var end_nodes: [32]canvas.WidgetLayoutNode = undefined;
+    const end_layout = try canvas.layoutWidgetTreeWithTokens(
+        end_tree.root,
+        geometry.RectF.init(0, 0, 400, 100),
+        .{},
+        &end_nodes,
+    );
+    const end_frame = end_layout.findById(end_image.id).?.frame;
+    try testing.expectApproxEqAbs(@as(f32, 400), end_frame.x + end_frame.width, 0.01);
+}
+
 test "resolved leading paragraph images compose with trailing inline text" {
     const source = "https://example.com/diagram.png";
     const images = [_]markdown.ResolvedImage{
@@ -1004,15 +1098,31 @@ test "resolved leading paragraph images compose with trailing inline text" {
     try testing.expect(findParagraphContaining(tree.root, "Text before inline stays an alt fallback.") != null);
 }
 
+test "resolved image bounds preserve aspect ratio" {
+    const source = "https://example.com/wide.png";
+    const images = [_]markdown.ResolvedImage{
+        .{ .source = source, .image = 80, .width = 1024, .height = 256 },
+    };
+
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\![Wide](https://example.com/wide.png)
+    , .{ .images = &images });
+    const image = findImageId(tree.root, 80).?;
+    try testing.expectEqual(@as(f32, 512), image.layout.min_size.width);
+    try testing.expectEqual(@as(f32, 128), image.layout.min_size.height);
+}
+
 test "image source collection is bounded, distinct, and keeps code inert" {
-    var storage: [4][]const u8 = undefined;
+    var storage: [4]markdown.CollectedImageSource = undefined;
     const sources = markdown.collectImageSources(
         \\![first](https://example.com/first.png)
         \\Text before ![inline](https://example.com/inline.png)
         \\`![code](https://example.com/code.png)`
         \\| Image | Copy |
         \\| --- | --- |
-        \\| <a href="https://example.com"><sup><img src="https://example.com/second.svg" alt="second" /></sup></a> label | <!-- <img src="https://example.com/comment.png" /> --> |
+        \\| <a href="https://example.com"><sup><img src="https://example.com/second.svg?a=1&amp;b=2" alt="second" /></sup></a> label | <!-- <img src="https://example.com/comment.png" /> --> |
         \\![again](https://example.com/first.png)
         \\```
         \\![fenced](https://example.com/fenced.png)
@@ -1020,8 +1130,46 @@ test "image source collection is bounded, distinct, and keeps code inert" {
     , &storage);
 
     try testing.expectEqual(@as(usize, 2), sources.len);
-    try testing.expectEqualStrings("https://example.com/first.png", sources[0]);
-    try testing.expectEqualStrings("https://example.com/second.svg", sources[1]);
+    try testing.expectEqualStrings("https://example.com/first.png", sources[0].value());
+    try testing.expectEqualStrings("https://example.com/second.svg?a=1&b=2", sources[1].value());
+}
+
+test "image source collection mirrors visible block starts and keeps opaque HTML inert" {
+    var storage: [10]markdown.CollectedImageSource = undefined;
+    const sources = markdown.collectImageSources(
+        \\Opening prose
+        \\![joined fallback](https://example.com/joined.png)
+        \\
+        \\# ![heading](https://example.com/heading.png)
+        \\- ![list](https://example.com/list.png)
+        \\> ![quote](https://example.com/quote.png)
+        \\<p><img src="https://example.com/html.png" alt="html" /></p>
+        \\<!--
+        \\<img src="https://tracker.example/comment.png" />
+        \\-->
+        \\![after comment](https://example.com/after-comment.png)
+        \\
+        \\<script>
+        \\<img src="https://tracker.example/script.png" />
+        \\</script>
+        \\
+        \\<pre>
+        \\<img src="https://tracker.example/pre.png" />
+        \\</pre>
+        \\![after pre](https://example.com/after-pre.png)
+        \\
+        \\<code>
+        \\<img src="https://tracker.example/code.png" />
+        \\</code>
+    , &storage);
+
+    try testing.expectEqual(@as(usize, 6), sources.len);
+    try testing.expectEqualStrings("https://example.com/heading.png", sources[0].value());
+    try testing.expectEqualStrings("https://example.com/list.png", sources[1].value());
+    try testing.expectEqualStrings("https://example.com/quote.png", sources[2].value());
+    try testing.expectEqualStrings("https://example.com/html.png", sources[3].value());
+    try testing.expectEqualStrings("https://example.com/after-comment.png", sources[4].value());
+    try testing.expectEqualStrings("https://example.com/after-pre.png", sources[5].value());
 }
 
 test "table rows pad short rows, drop extra cells, and stop at blank or pipeless lines" {

@@ -62,7 +62,7 @@ pub const max_preview_images = @min(native_sdk.max_registered_canvas_images, nat
 /// `fx.loadImage` accepts URLs through 2 KiB. Keeping the same bound makes a
 /// too-long source stay on the Markdown alt-text fallback without staging an
 /// effect that can only reject.
-const max_image_source_bytes = 2048;
+const max_image_source_bytes = canvas.markdown.max_markdown_image_source_bytes;
 const max_note_bytes = 192;
 
 // Effect keys: caller-chosen identities, one per concurrent operation.
@@ -482,12 +482,13 @@ fn sourceIsWanted(sources: []const []const u8, source: []const u8) bool {
 /// Removed sources cancel and unregister; new sources issue one load. Existing
 /// successes survive every keystroke and rebuild without refetching.
 fn refreshPreviewImages(model: *Model, fx: *Effects) void {
-    var source_storage: [max_preview_images][]const u8 = undefined;
+    var source_storage: [max_preview_images]canvas.markdown.CollectedImageSource = undefined;
     const discovered = canvas.markdown.collectImageSources(model.editor.text(), &source_storage);
 
     var wanted_storage: [max_preview_images][]const u8 = undefined;
     var wanted_len: usize = 0;
-    for (discovered) |source| {
+    for (discovered) |*collected| {
+        const source = collected.value();
         if (!previewImageSourceAllowed(source)) continue;
         wanted_storage[wanted_len] = source;
         wanted_len += 1;

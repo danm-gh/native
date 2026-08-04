@@ -995,7 +995,7 @@ A leaf element that renders a markdown string (the GFM subset below) as ordinary
 ```
 
 - `source` (required): one `{binding}` producing the markdown text — a `[]const u8` field, zero-arg fn, or arena-taking fn (compose the document into the build arena at view time).
-- `images` (optional): one `{binding}` producing `[]const canvas.markdown.ResolvedImage`. Discover bounded sources with `canvas.markdown.collectImageSources`, load them through `fx.loadImage`, retain successful ids and decoded dimensions in the model, and return mappings from a model or arena-taking fn. The view never performs I/O; missing mappings keep the safe alt-text fallback.
+- `images` (optional): one `{binding}` producing `[]const canvas.markdown.ResolvedImage`. Give `canvas.markdown.collectImageSources` caller-owned `[]canvas.markdown.CollectedImageSource` storage, consume each canonical source through `value()` while that storage is alive, load it through `fx.loadImage`, and retain the source, successful id, and decoded dimensions in the model. Return mappings from a model or arena-taking fn. The view never performs I/O; missing mappings keep the safe alt-text fallback.
 - `on-link` (optional): a BARE Msg tag — no `:{payload}` — whose payload is the pressed link URL; declare `open_url: []const u8` in `Msg`.
 - `on-details` (optional): a bare Msg tag whose payload is the `<details>` block's document-order index; declare `toggle_details: usize`.
 - `details-expanded` (optional): one `{binding}` naming a `[]const bool` iterable (a model field, pub decl, or fn — the same sources `for each` accepts); flags are read in details-block document order. Keep a bounded `details_expanded: [8]bool` in the model and toggle it in `update`.

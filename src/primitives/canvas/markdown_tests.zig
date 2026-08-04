@@ -197,6 +197,22 @@ test "safe GitHub-style inline HTML maps onto native spans" {
     try testing.expectEqualStrings("https://example.com/a/b", msg.open_url);
 }
 
+test "safe HTML decodes entities in link and image attributes" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<a href="https://example.com/search?a=1&amp;b=2">query</a> <img alt="A &amp; B">.
+    , .{ .on_link = Ui.linkMsg(.open_url) });
+
+    const paragraph = findParagraphContaining(tree.root, "query").?;
+    try testing.expectEqualStrings("query A & B.", paragraph.text);
+    const link = findSpan(paragraph, "query").?;
+    try testing.expectEqualStrings("https://example.com/search?a=1&b=2", link.link);
+    const link_widget = findRoleLabel(tree.root, .link, "query").?;
+    const msg = tree.msgForPointer(link_widget.id, .up).?;
+    try testing.expectEqualStrings("https://example.com/search?a=1&b=2", msg.open_url);
+}
+
 test "GitHub-style HTML blocks lower onto native document structure" {
     var doc = TestDoc.init();
     defer doc.deinit();
@@ -249,6 +265,50 @@ test "GitHub-style HTML blocks lower onto native document structure" {
     try testing.expect(findRowWithDirectParagraph(tree.root, "Second bold") != null);
     const preformatted = findParagraphContaining(tree.root, "const answer = 42;").?;
     try testing.expect(allSpansMonospace(preformatted));
+}
+
+test "HTML block closers may follow content without absorbing later blocks" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<div align="center">
+        \\Centered</div>
+        \\
+        \\Outside
+        \\<blockquote>
+        \\Quoted</blockquote>After quote
+        \\<pre>
+        \\<code>&lt;tag&gt; &amp; &#x2713;</code></pre>After pre
+    , .{});
+
+    try testing.expectEqual(@as(usize, 6), tree.root.children.len);
+    try testing.expectEqual(canvas.TextAlign.center, tree.root.children[0].text_alignment);
+    try testing.expectEqualStrings("Outside", tree.root.children[1].text);
+    try testing.expectEqual(canvas.TextAlign.start, tree.root.children[1].text_alignment);
+    try testing.expect(findParagraphContaining(tree.root.children[2], "Quoted") != null);
+    try testing.expectEqualStrings("After quote", tree.root.children[3].text);
+    try testing.expect(findParagraphContaining(tree.root.children[4], "<tag> & ✓") != null);
+    try testing.expectEqualStrings("After pre", tree.root.children[5].text);
+}
+
+test "self-closing HTML wrappers do not leak block presentation" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<div align="center" />
+        \\Plain
+        \\<h1 />
+        \\Still plain
+    , .{});
+
+    const plain = findParagraphContaining(tree.root, "Plain").?;
+    const still_plain = findParagraphContaining(tree.root, "Still plain").?;
+    try testing.expectEqual(canvas.TextAlign.start, plain.text_alignment);
+    try testing.expectEqual(canvas.TextAlign.start, still_plain.text_alignment);
+    try testing.expectEqual(canvas.TextSpanWeight.regular, plain.spans[0].weight);
+    try testing.expectEqual(canvas.TextSpanWeight.regular, still_plain.spans[0].weight);
+    try testing.expectEqual(@as(f32, 0), plain.spans[0].scale);
+    try testing.expectEqual(@as(f32, 0), still_plain.spans[0].scale);
 }
 
 test "HTML comments hide content while unsupported and malformed tags stay literal" {

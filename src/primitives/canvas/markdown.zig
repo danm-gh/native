@@ -162,11 +162,17 @@ pub fn Markdown(comptime Msg: type) type {
             /// README blocks, so remember that presentation until its
             /// closing wrapper rather than requiring a browser layout tree.
             html_alignment: ?canvas.TextAlign = null,
-            html_alignment_stack: [16]?canvas.TextAlign = .{null} ** 16,
-            html_alignment_depth: usize = 0,
-            html_alignment_overflow_depth: usize = 0,
             html_heading_level: ?usize = null,
+            html_block_scope_stack: [16]HtmlBlockScope = undefined,
+            html_block_scope_depth: usize = 0,
+            html_block_scope_overflow_depth: usize = 0,
             html_block_depth: usize = 0,
+
+            const HtmlBlockScope = struct {
+                name: []const u8,
+                previous_alignment: ?canvas.TextAlign,
+                previous_heading_level: ?usize,
+            };
 
             fn allocNodes(self: *Builder) []Node {
                 return self.ui.arena.alloc(Node, max_markdown_blocks_per_container) catch {
@@ -186,8 +192,26 @@ pub fn Markdown(comptime Msg: type) type {
                         _ = lines.next();
                         break;
                     }
-                    if (scope == .html_blockquote and isStandaloneClosingHtmlTag(trimmed, "blockquote")) {
+
+                    const blockquote_close = if (scope == .html_blockquote)
+                        findUnbalancedHtmlClosingTag(line, "blockquote")
+                    else
+                        null;
+                    const scope_close = if (self.activeHtmlBlockScopeName()) |name|
+                        findUnbalancedHtmlClosingTag(line, name)
+                    else if (self.html_block_scope_overflow_depth > 0)
+                        findUnbalancedHtmlPersistentClosingTag(line)
+                    else
+                        null;
+                    if (earlierHtmlTagMatch(blockquote_close, scope_close)) |match| {
                         _ = lines.next();
+                        self.appendHtmlLineFragment(nodes, &len, line[0..match.start]);
+                        const suffix = line[match.end..];
+                        if (suffix.len > 0) lines.prepend(suffix);
+                        if (scope_close != null and match.start == scope_close.?.start) {
+                            _ = self.closeHtmlBlockScope(match.tag);
+                            continue;
+                        }
                         break;
                     }
                     if (trimmed.len == 0) {
@@ -200,6 +224,20 @@ pub fn Markdown(comptime Msg: type) type {
                     len += 1;
                 }
                 return nodes[0..len];
+            }
+
+            fn appendHtmlLineFragment(self: *Builder, nodes: []Node, len: *usize, fragment: []const u8) void {
+                var fragment_lines = LineIterator{ .source = fragment };
+                while (fragment_lines.peek()) |line| {
+                    if (std.mem.trim(u8, line, " \t").len == 0) {
+                        _ = fragment_lines.next();
+                        continue;
+                    }
+                    const node = self.parseBlock(&fragment_lines) orelse continue;
+                    if (len.* >= nodes.len) return;
+                    nodes[len.*] = node;
+                    len.* += 1;
+                }
             }
 
             fn parseBlock(self: *Builder, lines: *LineIterator) ?Node {
@@ -432,8 +470,8 @@ pub fn Markdown(comptime Msg: type) type {
                 const opening = parseHtmlTagAt(trimmed, 0) orelse return .not_html;
                 if (opening.closing or !isHtmlBlockTag(opening)) {
                     if (opening.consumed == trimmed.len and opening.closing and isHtmlStructuralTag(opening)) {
+                        if (!self.closeHtmlBlockScope(opening)) return .not_html;
                         _ = lines.next();
-                        self.closeHtmlBlockScope(opening);
                         return .skipped;
                     }
                     return .not_html;
@@ -446,6 +484,7 @@ pub fn Markdown(comptime Msg: type) type {
 
                 if (opening.kind == .blockquote and opening.consumed == trimmed.len) {
                     _ = lines.next();
+                    if (opening.self_closing) return .skipped;
                     if (self.html_block_depth >= max_markdown_html_block_depth) {
                         skipHtmlElement(lines, opening.name);
                         return .skipped;
@@ -461,7 +500,8 @@ pub fn Markdown(comptime Msg: type) type {
 
                 if (opening.kind == .preformatted and opening.consumed == trimmed.len) {
                     _ = lines.next();
-                    return .{ .node = self.ui.code(.{}, collectHtmlPreformatted(lines)) };
+                    if (opening.self_closing) return .skipped;
+                    return .{ .node = self.ui.code(.{}, self.collectHtmlPreformatted(lines)) };
                 }
 
                 if (singleLineHtmlElement(trimmed, opening)) |element| {
@@ -487,7 +527,8 @@ pub fn Markdown(comptime Msg: type) type {
                         },
                         .preformatted => blk: {
                             _ = lines.next();
-                            break :blk .{ .node = self.ui.code(.{}, unwrapHtmlCode(element.content)) };
+                            const code = self.decodeHtmlEntities(unwrapHtmlCode(element.content));
+                            break :blk .{ .node = self.ui.code(.{}, code) };
                         },
                         .list_item => blk: {
                             _ = lines.next();
@@ -502,6 +543,7 @@ pub fn Markdown(comptime Msg: type) type {
                 // between the opener and closer, then emit no empty widget.
                 if (opening.consumed == trimmed.len and isHtmlStructuralTag(opening)) {
                     _ = lines.next();
+                    if (opening.self_closing) return .skipped;
                     self.openHtmlBlockScope(opening);
                     return .skipped;
                 }
@@ -509,30 +551,83 @@ pub fn Markdown(comptime Msg: type) type {
             }
 
             fn openHtmlBlockScope(self: *Builder, tag: HtmlTag) void {
+                if (!isPersistentHtmlBlockTag(tag) or tag.self_closing) return;
+                if (self.html_block_scope_depth < self.html_block_scope_stack.len) {
+                    self.html_block_scope_stack[self.html_block_scope_depth] = .{
+                        .name = tag.name,
+                        .previous_alignment = self.html_alignment,
+                        .previous_heading_level = self.html_heading_level,
+                    };
+                    self.html_block_scope_depth += 1;
+                } else {
+                    self.html_block_scope_overflow_depth += 1;
+                    return;
+                }
                 if (isHtmlAlignmentContainer(tag)) {
-                    if (self.html_alignment_depth < self.html_alignment_stack.len) {
-                        self.html_alignment_stack[self.html_alignment_depth] = self.html_alignment;
-                        self.html_alignment_depth += 1;
-                    } else {
-                        self.html_alignment_overflow_depth += 1;
-                    }
                     if (htmlTagAlignment(tag)) |alignment| self.html_alignment = alignment;
                 }
                 if (tag.kind == .heading) self.html_heading_level = tag.heading_level;
             }
 
-            fn closeHtmlBlockScope(self: *Builder, tag: HtmlTag) void {
-                if (isHtmlAlignmentContainer(tag)) {
-                    if (self.html_alignment_overflow_depth > 0) {
-                        self.html_alignment_overflow_depth -= 1;
-                    } else if (self.html_alignment_depth > 0) {
-                        self.html_alignment_depth -= 1;
-                        self.html_alignment = self.html_alignment_stack[self.html_alignment_depth];
-                    } else {
-                        self.html_alignment = null;
-                    }
+            fn activeHtmlBlockScopeName(self: *Builder) ?[]const u8 {
+                if (self.html_block_scope_overflow_depth > 0 or self.html_block_scope_depth == 0) return null;
+                return self.html_block_scope_stack[self.html_block_scope_depth - 1].name;
+            }
+
+            fn closeHtmlBlockScope(self: *Builder, tag: HtmlTag) bool {
+                if (!isPersistentHtmlBlockTag(tag)) return true;
+                if (self.html_block_scope_overflow_depth > 0) {
+                    self.html_block_scope_overflow_depth -= 1;
+                    return true;
                 }
-                if (tag.kind == .heading) self.html_heading_level = null;
+                if (self.html_block_scope_depth == 0) return false;
+                const scope = self.html_block_scope_stack[self.html_block_scope_depth - 1];
+                if (!std.ascii.eqlIgnoreCase(scope.name, tag.name)) return false;
+                self.html_block_scope_depth -= 1;
+                self.html_alignment = scope.previous_alignment;
+                self.html_heading_level = scope.previous_heading_level;
+                return true;
+            }
+
+            fn collectHtmlPreformatted(self: *Builder, lines: *LineIterator) []const u8 {
+                var probe = lines.*;
+                var probe_depth: usize = 1;
+                var total: usize = 0;
+                while (probe.next()) |line| {
+                    const scan = scanHtmlElementLine(line, "pre", &probe_depth);
+                    total += scan.content_end;
+                    if (scan.closing_end) |closing_end| {
+                        const suffix = line[closing_end..];
+                        if (suffix.len > 0) probe.prepend(suffix);
+                        break;
+                    }
+                    total += 1;
+                }
+
+                const out = self.ui.arena.alloc(u8, total) catch {
+                    self.ui.failed = true;
+                    lines.* = probe;
+                    return &.{};
+                };
+                var depth: usize = 1;
+                var len: usize = 0;
+                while (lines.next()) |line| {
+                    const scan = scanHtmlElementLine(line, "pre", &depth);
+                    if (scan.content_end > 0) {
+                        @memcpy(out[len..][0..scan.content_end], line[0..scan.content_end]);
+                        len += scan.content_end;
+                    }
+                    if (scan.closing_end) |closing_end| {
+                        const suffix = line[closing_end..];
+                        if (suffix.len > 0) lines.prepend(suffix);
+                        break;
+                    }
+                    out[len] = '\n';
+                    len += 1;
+                }
+                const raw = std.mem.trim(u8, out[0..len], "\r\n");
+                const code = std.mem.trim(u8, unwrapHtmlCode(raw), "\r\n");
+                return self.decodeHtmlEntities(code);
             }
 
             fn htmlHeading(self: *Builder, level: usize, content: []const u8, alignment: canvas.TextAlign) Node {
@@ -788,7 +883,7 @@ pub fn Markdown(comptime Msg: type) type {
                         } else if (parseHtmlTagAt(text, index)) |tag| {
                             flushLiteral(spans, &len, text[literal_start..index], base, style);
                             consumed_html = true;
-                            applyHtmlTag(spans, &len, base, &style, tag);
+                            self.applyHtmlTag(spans, &len, base, &style, tag);
                             index += tag.consumed;
                             literal_start = index;
                             continue;
@@ -852,6 +947,7 @@ pub fn Markdown(comptime Msg: type) type {
             };
 
             fn applyHtmlTag(
+                self: *Builder,
                 spans: *[text_spans.max_text_spans_per_paragraph]TextSpan,
                 len: *usize,
                 base: TextSpan,
@@ -872,13 +968,16 @@ pub fn Markdown(comptime Msg: type) type {
                         if (tag.closing or tag.self_closing) {
                             style.html_link = "";
                         } else {
-                            style.html_link = htmlAttribute(tag, "href") orelse "";
+                            const href = htmlAttribute(tag, "href") orelse "";
+                            style.html_link = self.decodeHtmlEntities(href);
                         }
                     },
                     .line_break => if (!tag.closing) appendStyledSpan(spans, len, base, style.*, .{ .text = "\n" }),
                     .word_break => if (!tag.closing) appendStyledSpan(spans, len, base, style.*, .{ .text = "\u{200b}" }),
                     .image => if (!tag.closing) {
-                        if (htmlAttribute(tag, "alt")) |alt| appendStyledSpan(spans, len, base, style.*, .{ .text = alt });
+                        if (htmlAttribute(tag, "alt")) |alt| {
+                            appendStyledSpan(spans, len, base, style.*, .{ .text = self.decodeHtmlEntities(alt) });
+                        }
                     },
                     .quote => appendStyledSpan(spans, len, base, style.*, .{ .text = if (tag.closing) "”" else "“" }),
                     .list_item => appendStyledSpan(spans, len, base, style.*, .{ .text = if (tag.closing) "\n" else "• " }),
@@ -887,6 +986,30 @@ pub fn Markdown(comptime Msg: type) type {
                     .horizontal_rule => if (!tag.closing) appendStyledSpan(spans, len, base, style.*, .{ .text = "\n" }),
                     .paragraph, .blockquote, .list, .table, .table_section, .container => {},
                 }
+            }
+
+            fn decodeHtmlEntities(self: *Builder, text: []const u8) []const u8 {
+                if (std.mem.indexOfScalar(u8, text, '&') == null) return text;
+                const out = self.ui.arena.alloc(u8, text.len) catch {
+                    self.ui.failed = true;
+                    return text;
+                };
+                var source_index: usize = 0;
+                var out_len: usize = 0;
+                while (source_index < text.len) {
+                    if (text[source_index] == '&') {
+                        if (self.decodeHtmlEntity(text[source_index..])) |entity| {
+                            @memcpy(out[out_len..][0..entity.text.len], entity.text);
+                            out_len += entity.text.len;
+                            source_index += entity.consumed;
+                            continue;
+                        }
+                    }
+                    out[out_len] = text[source_index];
+                    out_len += 1;
+                    source_index += 1;
+                }
+                return out[0..out_len];
             }
 
             fn decodeHtmlEntity(self: *Builder, rest: []const u8) ?DecodedHtmlEntity {
@@ -1009,6 +1132,86 @@ const HtmlTag = struct {
     heading_level: usize = 0,
     consumed: usize,
 };
+
+const HtmlTagMatch = struct {
+    start: usize,
+    end: usize,
+    tag: HtmlTag,
+};
+
+fn earlierHtmlTagMatch(a: ?HtmlTagMatch, b: ?HtmlTagMatch) ?HtmlTagMatch {
+    if (a) |first| {
+        if (b) |second| return if (first.start <= second.start) first else second;
+        return first;
+    }
+    return b;
+}
+
+fn nextHtmlTagMatch(source: []const u8, cursor: *usize) ?HtmlTagMatch {
+    while (std.mem.indexOfScalarPos(u8, source, cursor.*, '<')) |start| {
+        if (parseHtmlCommentAt(source, start, null)) |comment| {
+            cursor.* = start + comment.consumed;
+            continue;
+        }
+        if (parseHtmlTagAt(source, start)) |tag| {
+            cursor.* = start + tag.consumed;
+            return .{ .start = start, .end = cursor.*, .tag = tag };
+        }
+        cursor.* = start + 1;
+    }
+    return null;
+}
+
+/// Find a closer for an already-open block scope, ignoring matching tags
+/// opened and closed wholly within this line.
+fn findUnbalancedHtmlClosingTag(source: []const u8, name: []const u8) ?HtmlTagMatch {
+    var cursor: usize = 0;
+    var nested: usize = 0;
+    while (nextHtmlTagMatch(source, &cursor)) |match| {
+        if (!std.ascii.eqlIgnoreCase(match.tag.name, name)) continue;
+        if (!match.tag.closing) {
+            if (!match.tag.self_closing) nested += 1;
+            continue;
+        }
+        if (nested == 0) return match;
+        nested -= 1;
+    }
+    return null;
+}
+
+fn findUnbalancedHtmlPersistentClosingTag(source: []const u8) ?HtmlTagMatch {
+    var cursor: usize = 0;
+    var nested: usize = 0;
+    while (nextHtmlTagMatch(source, &cursor)) |match| {
+        if (!isPersistentHtmlBlockTag(match.tag)) continue;
+        if (!match.tag.closing) {
+            if (!match.tag.self_closing) nested += 1;
+            continue;
+        }
+        if (nested == 0) return match;
+        nested -= 1;
+    }
+    return null;
+}
+
+const HtmlElementLineScan = struct {
+    content_end: usize,
+    closing_end: ?usize = null,
+};
+
+fn scanHtmlElementLine(line: []const u8, name: []const u8, depth: *usize) HtmlElementLineScan {
+    var cursor: usize = 0;
+    while (nextHtmlTagMatch(line, &cursor)) |match| {
+        if (!std.ascii.eqlIgnoreCase(match.tag.name, name)) continue;
+        if (!match.tag.closing) {
+            if (!match.tag.self_closing) depth.* += 1;
+            continue;
+        }
+        if (depth.* > 0) depth.* -= 1;
+        if (depth.* == 0) return .{ .content_end = match.start, .closing_end = match.end };
+    }
+    return .{ .content_end = line.len };
+}
 
 const HtmlComment = struct { consumed: usize };
 const DecodedHtmlEntity = struct { text: []const u8, consumed: usize };
@@ -1137,48 +1340,16 @@ fn unwrapHtmlCode(content: []const u8) []const u8 {
     return element.content;
 }
 
-fn isStandaloneClosingHtmlTag(line: []const u8, name: []const u8) bool {
-    const tag = parseHtmlTagAt(line, 0) orelse return false;
-    return tag.closing and tag.consumed == line.len and std.ascii.eqlIgnoreCase(tag.name, name);
-}
-
 fn skipHtmlElement(lines: *LineIterator, name: []const u8) void {
     var depth: usize = 1;
     while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t");
-        const tag = parseHtmlTagAt(trimmed, 0) orelse continue;
-        if (tag.consumed != trimmed.len or !std.ascii.eqlIgnoreCase(tag.name, name)) continue;
-        if (!tag.closing and !tag.self_closing) depth += 1;
-        if (tag.closing) {
-            depth -= 1;
-            if (depth == 0) return;
+        const scan = scanHtmlElementLine(line, name, &depth);
+        if (scan.closing_end) |closing_end| {
+            const suffix = line[closing_end..];
+            if (suffix.len > 0) lines.prepend(suffix);
+            return;
         }
     }
-}
-
-fn collectHtmlPreformatted(lines: *LineIterator) []const u8 {
-    const start = lines.index;
-    var end = start;
-    var depth: usize = 1;
-    while (lines.peek()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t");
-        if (parseHtmlTagAt(trimmed, 0)) |tag| {
-            if (tag.consumed == trimmed.len and std.ascii.eqlIgnoreCase(tag.name, "pre")) {
-                if (!tag.closing and !tag.self_closing) depth += 1;
-                if (tag.closing) {
-                    depth -= 1;
-                    if (depth == 0) {
-                        _ = lines.next();
-                        break;
-                    }
-                }
-            }
-        }
-        _ = lines.next();
-        end = lines.index;
-    }
-    const raw = std.mem.trimEnd(u8, lines.source[start..@min(end, lines.source.len)], "\r\n");
-    return std.mem.trim(u8, unwrapHtmlCode(raw), "\r\n");
 }
 
 fn isHtmlBlockTag(tag: HtmlTag) bool {
@@ -1213,6 +1384,10 @@ fn isHtmlAlignmentContainer(tag: HtmlTag) bool {
         std.ascii.eqlIgnoreCase(tag.name, "header") or std.ascii.eqlIgnoreCase(tag.name, "footer") or
         std.ascii.eqlIgnoreCase(tag.name, "main") or std.ascii.eqlIgnoreCase(tag.name, "figure") or
         std.ascii.eqlIgnoreCase(tag.name, "figcaption");
+}
+
+fn isPersistentHtmlBlockTag(tag: HtmlTag) bool {
+    return isHtmlAlignmentContainer(tag) or tag.kind == .heading;
 }
 
 fn htmlTagAlignment(tag: HtmlTag) ?canvas.TextAlign {
@@ -1278,13 +1453,23 @@ fn updateHtmlDepth(depth: *usize, closing: bool, active: bool) void {
 const LineIterator = struct {
     source: []const u8,
     index: usize = 0,
+    pending: ?[]const u8 = null,
 
     fn next(self: *LineIterator) ?[]const u8 {
+        if (self.pending) |line| {
+            self.pending = null;
+            return line;
+        }
         if (self.index >= self.source.len) return null;
         const start = self.index;
         const end = std.mem.indexOfScalarPos(u8, self.source, start, '\n') orelse self.source.len;
         self.index = @min(end + 1, self.source.len);
         return std.mem.trimEnd(u8, self.source[start..end], "\r");
+    }
+
+    fn prepend(self: *LineIterator, line: []const u8) void {
+        std.debug.assert(self.pending == null);
+        self.pending = line;
     }
 
     fn peek(self: *LineIterator) ?[]const u8 {

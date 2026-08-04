@@ -174,6 +174,11 @@ test "hostile: 100-deep quotes, lists, and details nesting stay bounded" {
     for (0..100) |_| try stream.writeAll("<blockquote>\n");
     try stream.writeAll("html quote body\n");
     for (0..100) |_| try stream.writeAll("</blockquote>\n");
+    // Persistent block presentation has a bounded scope stack too; excess
+    // wrappers are ignored until their matching close drains the overflow.
+    for (0..100) |_| try stream.writeAll("<div align=\"center\">\n");
+    try stream.writeAll("centered body\n");
+    for (0..100) |_| try stream.writeAll("</div>\n");
 
     const result = try buildHostile(stream.buffered());
     try testing.expect(result.widgets > 0);

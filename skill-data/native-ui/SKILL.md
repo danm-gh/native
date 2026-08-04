@@ -991,15 +991,16 @@ Bare source-bound highlighted content shared with Markdown fences:
 A leaf element that renders a markdown string (the GFM subset below) as ordinary widgets, wiring `native_sdk.markdown` for you — both engines implement it identically:
 
 ```html
-<markdown source="{issue_body}" on-link="open_url" on-details="toggle_details" details-expanded="{details_expanded}" />
+<markdown source="{issue_body}" images="{markdownImages}" on-link="open_url" on-details="toggle_details" details-expanded="{details_expanded}" />
 ```
 
 - `source` (required): one `{binding}` producing the markdown text — a `[]const u8` field, zero-arg fn, or arena-taking fn (compose the document into the build arena at view time).
+- `images` (optional): one `{binding}` producing `[]const canvas.markdown.ResolvedImage`. Discover bounded sources with `canvas.markdown.collectImageSources`, load them through `fx.loadImage`, retain successful ids and decoded dimensions in the model, and return mappings from a model or arena-taking fn. The view never performs I/O; missing mappings keep the safe alt-text fallback.
 - `on-link` (optional): a BARE Msg tag — no `:{payload}` — whose payload is the pressed link URL; declare `open_url: []const u8` in `Msg`.
 - `on-details` (optional): a bare Msg tag whose payload is the `<details>` block's document-order index; declare `toggle_details: usize`.
 - `details-expanded` (optional): one `{binding}` naming a `[]const bool` iterable (a model field, pub decl, or fn — the same sources `for each` accepts); flags are read in details-block document order. Keep a bounded `details_expanded: [8]bool` in the model and toggle it in `update`.
 - `issue-link-base` (optional): a literal URL prefix or one `{binding}` producing it; `#123` references at word boundaries become links to base ++ number (`issue-link-base="ghissue://"` links `#123` to `ghissue://123` — an app scheme your `on-link` handler intercepts, or a web base like `https://github.com/owner/repo/issues/`). Off by default: resolving a ref needs repo context.
-- No children, no text content, no other attributes (teaching errors point at misuse). Without the details wiring, `<details>` blocks render collapsed and inert; without `on-link`, links render styled but inert.
+- No children and no text content (teaching errors point at misuse). Without the details wiring, `<details>` blocks render collapsed and inert; without `on-link`, links render styled but inert.
 
 ## Pipeline composites: stepper, timeline, nav
 

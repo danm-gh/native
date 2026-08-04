@@ -23,18 +23,24 @@
 //! autolinks, bare `http(s)://` URLs at word boundaries (GFM-style
 //! autolink extension, trailing punctuation trimmed), `#123` issue
 //! references (opt-in via `Options.issue_link_base`, since resolving a
-//! ref needs repo context), and `![alt](url)` images (rendered as their
-//! alt text). GitHub-style HTML covers the matching native presentation:
+//! ref needs repo context), and `![alt](url)` images. Leading images whose
+//! source appears in `Options.images` render from the caller's registered
+//! `ImageId`; unresolved and mid-paragraph images retain their alt-text
+//! fallback. GitHub-style HTML covers the matching native presentation:
 //! emphasis/strong/strike/underline/code spans, anchors, line breaks,
-//! headings, paragraphs, blockquotes, horizontal rules, image alt text,
+//! headings, paragraphs, blockquotes, horizontal rules, registered images
+//! (or image alt text),
 //! harmless structural wrappers, comments, and common HTML entities.
-//! Attributes other than `href`, `alt`, and block `align` are ignored;
-//! there is no DOM, CSS, script execution, or remote image loading.
+//! Attributes other than `href`, `src`, `alt`, image `width`/`height`, and
+//! block `align` are ignored; there is no DOM, CSS, script execution, or
+//! implicit remote image loading. Fetch/decode remains an application effect
+//! (`fx.loadImage`); Markdown only resolves the bounded model-owned mapping.
 //!
 //! Deliberately unsupported in v1 (rendered as plain paragraph text, never
 //! a build failure): setext headings, indented code blocks, backslash
 //! escapes (except `\|` inside table rows, which GFM needs to put a pipe
-//! in a cell), reference-style links, HTML with no native presentation
+//! in a cell), reference-style links (their definitions are recognized and
+//! hidden, but references stay literal), HTML with no native presentation
 //! (scripts, styles, embeds, and forms), and footnotes. Malformed input degrades to literal
 //! text — a pipe block whose delimiter row is missing or does not match
 //! the header's column count renders as plain paragraphs, and tables
@@ -83,6 +89,10 @@ pub const max_markdown_html_block_depth: usize = 8;
 pub const max_markdown_table_columns: usize = 8;
 /// Rows per table including the header; trailing rows drop deterministically.
 pub const max_markdown_table_rows: usize = 64;
+/// Registered source-to-image mappings a document will inspect. This mirrors
+/// the runtime's registered-image slot bound and keeps hostile model slices
+/// from turning every inline image into an unbounded lookup.
+pub const max_markdown_images: usize = 16;
 /// Joined bytes per paragraph or blockquote (consecutive source lines
 /// collapse into one text widget). Sized generously past real GitHub
 /// prose — paragraphs beyond a couple of KiB are pathological input —
@@ -96,6 +106,58 @@ pub const max_markdown_paragraph_bytes: usize = 8192;
 /// ladder), applied through the span `scale` channel so heading pixel
 /// sizes stay derived from live tokens.
 pub const heading_scales = [_]f32{ 2.0, 1.5, 1.25 };
+
+/// One image the application has already decoded and registered with the
+/// canvas runtime. Markdown deliberately does not perform I/O from a view:
+/// apps load `source` through `fx.loadImage`, retain the successful id and
+/// dimensions in their model, then pass that model-owned mapping here.
+pub const ResolvedImage = struct {
+    source: []const u8,
+    image: canvas.ImageId,
+    width: f32,
+    height: f32,
+};
+
+/// Collect distinct leading image sources the renderer can replace with native
+/// image leaves, into caller-owned bounded storage. Fenced blocks, inline code,
+/// comments, mid-paragraph images, and unsupported HTML tags stay inert,
+/// matching the renderer's security posture and avoiding effects for sources
+/// that can only use the alt-text fallback. Returned slices alias `source`; an
+/// app can use this during `update` to issue `fx.loadImage` effects, then pass
+/// successful mappings back through `Options.images` on the next view.
+pub fn collectImageSources(source: []const u8, output: [][]const u8) []const []const u8 {
+    var lines = LineIterator{ .source = source };
+    var len: usize = 0;
+    var in_fence = false;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (std.mem.startsWith(u8, trimmed, "```")) {
+            in_fence = !in_fence;
+            continue;
+        }
+        if (in_fence) continue;
+        appendLeadingImageSource(output, &len, line);
+        if (splitTableRow(line)) |row| {
+            for (row.cells) |cell| appendLeadingImageSource(output, &len, cell);
+        }
+        if (len >= output.len) break;
+    }
+    return output[0..len];
+}
+
+fn appendLeadingImageSource(output: [][]const u8, len: *usize, text: []const u8) void {
+    const image = parseLeadingInlineImage(text) orelse return;
+    appendDistinctImageSource(output, len, image.source);
+}
+
+fn appendDistinctImageSource(output: [][]const u8, len: *usize, source: []const u8) void {
+    if (source.len == 0 or len.* >= output.len) return;
+    for (output[0..len.*]) |existing| {
+        if (std.mem.eql(u8, existing, source)) return;
+    }
+    output[len.*] = source;
+    len.* += 1;
+}
 
 pub fn Markdown(comptime Msg: type) type {
     return struct {
@@ -123,6 +185,12 @@ pub fn Markdown(comptime Msg: type) type {
             /// keeps refs as plain text (they need repo context to
             /// resolve, so there is no default).
             issue_link_base: ?[]const u8 = null,
+            /// Source-to-registered-ImageId mappings owned by the caller's
+            /// model. A matching leading Markdown image or HTML `<img src>`
+            /// renders only when the id and dimensions are valid; otherwise
+            /// its alt text remains visible. At most `max_markdown_images`
+            /// entries are inspected.
+            images: []const ResolvedImage = &.{},
         };
 
         /// Comptime message constructor for `on_details`:
@@ -242,6 +310,14 @@ pub fn Markdown(comptime Msg: type) type {
                 const line = lines.peek() orelse return null;
                 const trimmed = std.mem.trim(u8, line, " \t");
 
+                // Definitions are block syntax even when no reference uses
+                // them. GitHub bots use that property for hidden metadata
+                // (`[vc]: #...`): consume the definition without needing to
+                // implement reference-link resolution.
+                if (isLinkReferenceDefinition(line)) {
+                    _ = lines.next();
+                    return null;
+                }
                 if (std.mem.startsWith(u8, trimmed, "```")) return self.parseCodeFence(lines);
                 if (headingLevel(trimmed)) |level| {
                     _ = lines.next();
@@ -267,12 +343,10 @@ pub fn Markdown(comptime Msg: type) type {
 
             fn heading(self: *Builder, level: usize, content: []const u8) Node {
                 const scale = heading_scales[@min(level, heading_scales.len) - 1];
-                var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
-                const parsed = self.parseInline(content, .{ .weight = .bold, .scale = scale }, &spans);
-                return self.ui.paragraph(.{
+                return self.inlineParagraphNode(content, .{ .weight = .bold, .scale = scale }, .{
                     .on_link = self.options.on_link,
                     .text_alignment = self.html_alignment orelse .start,
-                }, parsed);
+                });
             }
 
             fn parseParagraph(self: *Builder, lines: *LineIterator) ?Node {
@@ -377,12 +451,10 @@ pub fn Markdown(comptime Msg: type) type {
             }
 
             fn paragraphNode(self: *Builder, text: []const u8, base: TextSpan) Node {
-                var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
-                const parsed = self.parseInline(text, base, &spans);
-                return self.ui.paragraph(.{
+                return self.inlineParagraphNode(text, base, .{
                     .on_link = self.options.on_link,
                     .text_alignment = self.html_alignment orelse .start,
-                }, parsed);
+                });
             }
 
             fn parseCodeFence(self: *Builder, lines: *LineIterator) ?Node {
@@ -411,8 +483,40 @@ pub fn Markdown(comptime Msg: type) type {
                 var options = options_in;
                 options.on_link = self.options.on_link;
                 if (self.html_alignment) |alignment| options.text_alignment = alignment;
+                return self.inlineParagraphNode(text, .{}, options);
+            }
+
+            fn inlineParagraphNode(self: *Builder, text: []const u8, base: TextSpan, options: Ui.ElementOptions) Node {
+                if (self.resolvedLeadingImage(text)) |resolved| {
+                    var children: [2]Node = undefined;
+                    var child_len: usize = 0;
+                    children[child_len] = self.resolvedImageNode(resolved);
+                    child_len += 1;
+
+                    const suffix = std.mem.trimStart(u8, text[resolved.consumed..], " \t");
+                    if (suffix.len > 0) {
+                        var suffix_spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
+                        const parsed_suffix = self.parseInline(suffix, base, &suffix_spans);
+                        children[child_len] = self.ui.paragraph(.{
+                            .grow = 1,
+                            .on_link = options.on_link,
+                            .text_alignment = options.text_alignment,
+                            .style = options.style,
+                            .style_tokens = options.style_tokens,
+                        }, parsed_suffix);
+                        child_len += 1;
+                    }
+
+                    return self.ui.row(.{
+                        .grow = options.grow,
+                        .padding = options.padding,
+                        .gap = 6,
+                        .cross = .center,
+                    }, .{children[0..child_len]});
+                }
+
                 var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
-                const parsed = self.parseInline(text, .{}, &spans);
+                const parsed = self.parseInline(text, base, &spans);
                 return self.ui.paragraph(options, parsed);
             }
 
@@ -731,9 +835,10 @@ pub fn Markdown(comptime Msg: type) type {
 
             fn htmlHeading(self: *Builder, level: usize, content: []const u8, alignment: canvas.TextAlign) Node {
                 const scale = heading_scales[@min(level, heading_scales.len) - 1];
-                var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
-                const parsed = self.parseInline(content, .{ .weight = .bold, .scale = scale }, &spans);
-                return self.ui.paragraph(.{ .on_link = self.options.on_link, .text_alignment = alignment }, parsed);
+                return self.inlineParagraphNode(content, .{ .weight = .bold, .scale = scale }, .{
+                    .on_link = self.options.on_link,
+                    .text_alignment = alignment,
+                });
             }
 
             fn htmlParagraph(self: *Builder, content: []const u8, alignment: canvas.TextAlign) Node {
@@ -759,9 +864,7 @@ pub fn Markdown(comptime Msg: type) type {
                 var options = options_in;
                 options.on_link = self.options.on_link;
                 options.text_alignment = alignment;
-                var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
-                const parsed = self.parseInline(content, base, &spans);
-                return self.ui.paragraph(options, parsed);
+                return self.inlineParagraphNode(content, base, options);
             }
 
             fn htmlListItem(self: *Builder, tag: HtmlTag, content: []const u8) Node {
@@ -876,12 +979,42 @@ pub fn Markdown(comptime Msg: type) type {
                 return self.ui.el(.data_row, .{}, .{cells});
             }
 
-            /// One cell: a `data_cell` widget carrying inline spans (the
-            /// full inline grammar, links included), per-column text
-            /// alignment from the delimiter row, and bold header styling.
+            /// One cell: ordinarily a `data_cell` widget carrying inline
+            /// spans (the full inline grammar, links included). A resolved
+            /// leading image becomes a real image leaf beside the remaining
+            /// span paragraph, while the cell retains its gridcell semantics,
+            /// padding, alignment, and chrome.
             fn tableCellNode(self: *Builder, content: []const u8, alignment: canvas.TextAlign, is_header: bool) Node {
                 const text = self.unescapeTablePipes(content);
                 const base: TextSpan = if (is_header) .{ .weight = .bold } else .{};
+                if (self.resolvedLeadingImage(text)) |resolved| {
+                    var children: [2]Node = undefined;
+                    var child_len: usize = 0;
+                    children[child_len] = self.resolvedImageNode(resolved);
+                    child_len += 1;
+
+                    const suffix = std.mem.trimStart(u8, text[resolved.consumed..], " \t");
+                    if (suffix.len > 0) {
+                        var suffix_spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
+                        const parsed_suffix = self.parseInline(suffix, base, &suffix_spans);
+                        children[child_len] = self.ui.paragraph(.{
+                            .grow = 1,
+                            .on_link = self.options.on_link,
+                            .text_alignment = alignment,
+                        }, parsed_suffix);
+                        child_len += 1;
+                    }
+
+                    var cell = self.ui.el(.data_cell, .{
+                        .grow = 1,
+                        .padding = 8,
+                        .gap = 6,
+                        .cross = .center,
+                    }, .{children[0..child_len]});
+                    cell.widget.text_alignment = alignment;
+                    return cell;
+                }
+
                 var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
                 const parsed = self.parseInline(text, base, &spans);
                 var cell = self.ui.paragraph(.{
@@ -892,6 +1025,57 @@ pub fn Markdown(comptime Msg: type) type {
                 cell.widget.kind = .data_cell;
                 cell.widget.text_alignment = alignment;
                 return cell;
+            }
+
+            const ResolvedLeadingImage = struct {
+                mapping: ResolvedImage,
+                consumed: usize,
+                alt: []const u8,
+                link: []const u8,
+                width: f32,
+                height: f32,
+            };
+
+            fn resolvedLeadingImage(self: *Builder, text: []const u8) ?ResolvedLeadingImage {
+                const parsed = parseLeadingInlineImage(text) orelse return null;
+                const source = self.decodeHtmlEntities(parsed.source);
+                const mapping = self.findResolvedImage(source) orelse return null;
+                const alt = self.decodeHtmlEntities(parsed.alt);
+                const link = self.decodeHtmlEntities(parsed.link);
+                const dimensions = resolvedInlineImageDimensions(mapping, parsed.width, parsed.height);
+                return .{
+                    .mapping = mapping,
+                    .consumed = parsed.consumed,
+                    .alt = alt,
+                    .link = link,
+                    .width = dimensions.width,
+                    .height = dimensions.height,
+                };
+            }
+
+            fn resolvedImageNode(self: *Builder, resolved: ResolvedLeadingImage) Node {
+                return self.ui.image(.{
+                    .image = resolved.mapping.image,
+                    .width = resolved.width,
+                    .height = resolved.height,
+                    .semantics = .{
+                        .role = if (resolved.link.len > 0) .link else .image,
+                        .label = resolved.alt,
+                        .focusable = resolved.link.len > 0,
+                    },
+                    .on_press = if (resolved.link.len > 0 and self.options.on_link != null)
+                        self.options.on_link.?(resolved.link)
+                    else
+                        null,
+                });
+            }
+
+            fn findResolvedImage(self: *const Builder, source: []const u8) ?ResolvedImage {
+                for (self.options.images[0..@min(self.options.images.len, max_markdown_images)]) |image| {
+                    if (image.image == 0 or !validImageDimension(image.width) or !validImageDimension(image.height)) continue;
+                    if (std.mem.eql(u8, image.source, source)) return image;
+                }
+                return null;
             }
 
             /// `\|` is the one backslash escape tables need (a literal
@@ -1232,6 +1416,10 @@ pub fn Markdown(comptime Msg: type) type {
                 overrides: TextSpan,
             ) void {
                 var span = spanWith(base, overrides);
+                // An empty-alt image inside an HTML anchor has no native
+                // presentation. Do not turn that zero-byte placeholder into
+                // an empty focusable link in the accessibility tree.
+                if (span.text.len == 0) return;
                 if (style.markdown_bold or style.html_bold > 0 or style.html_heading_level != null) span.weight = .bold;
                 if (style.markdown_italic or style.html_italic > 0) span.italic = true;
                 if (style.markdown_strike or style.html_strike > 0) span.strikethrough = true;
@@ -1261,6 +1449,99 @@ pub fn Markdown(comptime Msg: type) type {
             }
         };
     };
+}
+
+const LeadingInlineImage = struct {
+    source: []const u8,
+    alt: []const u8,
+    link: []const u8 = "",
+    width: ?f32 = null,
+    height: ?f32 = null,
+    consumed: usize,
+};
+
+const InlineImageDimensions = struct { width: f32, height: f32 };
+
+/// Recognize the presentation shape GitHub emits for a leading image: a
+/// Markdown image directly, an HTML `<img>`, or an image wrapped in harmless
+/// inline presentation tags such as `<a><sup>…</sup></a>`. Consuming the
+/// matching wrappers as one unit prevents their now-empty tags from leaking
+/// into the text paragraph beside the native image leaf.
+fn parseLeadingInlineImage(text: []const u8) ?LeadingInlineImage {
+    var cursor: usize = 0;
+    while (cursor < text.len and isInlineSpace(text[cursor])) cursor += 1;
+
+    if (cursor + 1 < text.len and text[cursor] == '!' and text[cursor + 1] == '[') {
+        var cache = ScanCache{};
+        const parsed = parseLinkAt(text, cursor + 1, &cache) orelse return null;
+        return .{
+            .source = parsed.target,
+            .alt = parsed.text,
+            .consumed = cursor + parsed.consumed + 1,
+        };
+    }
+
+    var wrappers: [8][]const u8 = undefined;
+    var wrapper_len: usize = 0;
+    var link: []const u8 = "";
+    while (cursor < text.len) {
+        const tag = parseHtmlTagAt(text, cursor) orelse return null;
+        if (tag.closing) return null;
+        if (tag.kind == .image) {
+            const source = htmlAttribute(tag, "src") orelse return null;
+            const alt = htmlAttribute(tag, "alt") orelse "";
+            cursor += tag.consumed;
+            while (wrapper_len > 0) {
+                while (cursor < text.len and isInlineSpace(text[cursor])) cursor += 1;
+                const closing = parseHtmlTagAt(text, cursor) orelse return null;
+                if (!closing.closing or !std.ascii.eqlIgnoreCase(closing.name, wrappers[wrapper_len - 1])) return null;
+                cursor += closing.consumed;
+                wrapper_len -= 1;
+            }
+            return .{
+                .source = source,
+                .alt = alt,
+                .link = link,
+                .width = htmlImageDimension(tag, "width"),
+                .height = htmlImageDimension(tag, "height"),
+                .consumed = cursor,
+            };
+        }
+        const wrapper_allowed = switch (tag.kind) {
+            .link, .small, .bold, .italic, .strike, .underline, .mark, .container => true,
+            else => false,
+        };
+        if (!wrapper_allowed or tag.self_closing or wrapper_len >= wrappers.len) return null;
+        if (tag.kind == .link) link = htmlAttribute(tag, "href") orelse "";
+        wrappers[wrapper_len] = tag.name;
+        wrapper_len += 1;
+        cursor += tag.consumed;
+        while (cursor < text.len and isInlineSpace(text[cursor])) cursor += 1;
+    }
+    return null;
+}
+
+fn htmlImageDimension(tag: HtmlTag, name: []const u8) ?f32 {
+    const raw = htmlAttribute(tag, name) orelse return null;
+    const value = std.fmt.parseFloat(f32, std.mem.trim(u8, raw, " \t")) catch return null;
+    return if (validImageDimension(value)) value else null;
+}
+
+fn validImageDimension(value: f32) bool {
+    return std.math.isFinite(value) and value > 0;
+}
+
+fn resolvedInlineImageDimensions(mapping: ResolvedImage, requested_width: ?f32, requested_height: ?f32) InlineImageDimensions {
+    var width = requested_width orelse mapping.width;
+    var height = requested_height orelse mapping.height;
+    if (requested_width != null and requested_height == null) {
+        height = width * mapping.height / mapping.width;
+    } else if (requested_width == null and requested_height != null) {
+        width = height * mapping.width / mapping.height;
+    }
+    // Inline source dimensions are presentation hints, not permission for an
+    // untrusted document to manufacture unbounded layout extents.
+    return .{ .width = @min(width, 512), .height = @min(height, 512) };
 }
 
 // ------------------------------------------------------------- safe HTML
@@ -2022,6 +2303,120 @@ fn listMarker(line: []const u8) ?ListMarker {
         };
     }
     return null;
+}
+
+/// Recognize the common single-line form of a CommonMark link reference
+/// definition. Definitions are block metadata and never render by themselves,
+/// even when no reference uses their label. Reference-link resolution remains
+/// outside this widget's subset; recognizing the definition is still necessary
+/// to avoid exposing bot metadata such as Vercel's `[vc]: #hash:payload` line.
+fn isLinkReferenceDefinition(line: []const u8) bool {
+    var cursor: usize = 0;
+    while (cursor < line.len and line[cursor] == ' ') cursor += 1;
+    if (cursor > 3 or cursor >= line.len or line[cursor] != '[') return false;
+
+    cursor += 1;
+    var label_has_content = false;
+    var closed_label = false;
+    while (cursor < line.len) {
+        const byte = line[cursor];
+        if (byte == '\\' and cursor + 1 < line.len and isAsciiPunctuation(line[cursor + 1])) {
+            label_has_content = label_has_content or !isInlineSpace(line[cursor + 1]);
+            cursor += 2;
+            continue;
+        }
+        if (byte == '[') return false;
+        if (byte == ']') {
+            closed_label = true;
+            cursor += 1;
+            break;
+        }
+        label_has_content = label_has_content or !isInlineSpace(byte);
+        cursor += 1;
+    }
+    if (!closed_label or !label_has_content or cursor >= line.len or line[cursor] != ':') return false;
+
+    cursor += 1;
+    cursor = skipInlineSpaces(line, cursor);
+    cursor = parseLinkReferenceDestination(line, cursor) orelse return false;
+    const destination_end = cursor;
+    cursor = skipInlineSpaces(line, cursor);
+    if (cursor == line.len) return true;
+    if (cursor == destination_end) return false;
+
+    cursor = parseLinkReferenceTitle(line, cursor) orelse return false;
+    return skipInlineSpaces(line, cursor) == line.len;
+}
+
+fn parseLinkReferenceDestination(line: []const u8, start: usize) ?usize {
+    if (start >= line.len) return null;
+    var cursor = start;
+    if (line[cursor] == '<') {
+        cursor += 1;
+        while (cursor < line.len) {
+            const byte = line[cursor];
+            if (byte == '\\' and cursor + 1 < line.len and isAsciiPunctuation(line[cursor + 1])) {
+                cursor += 2;
+                continue;
+            }
+            if (byte == '<' or byte == '\n' or byte == '\r') return null;
+            if (byte == '>') return cursor + 1;
+            cursor += 1;
+        }
+        return null;
+    }
+
+    var paren_depth: usize = 0;
+    while (cursor < line.len and !isInlineSpace(line[cursor])) {
+        const byte = line[cursor];
+        if (byte < 0x20 or byte == 0x7f or byte == '<') return null;
+        if (byte == '\\' and cursor + 1 < line.len and isAsciiPunctuation(line[cursor + 1])) {
+            cursor += 2;
+            continue;
+        }
+        if (byte == '(') {
+            paren_depth += 1;
+        } else if (byte == ')') {
+            if (paren_depth == 0) return null;
+            paren_depth -= 1;
+        }
+        cursor += 1;
+    }
+    if (cursor == start or paren_depth != 0) return null;
+    return cursor;
+}
+
+fn parseLinkReferenceTitle(line: []const u8, start: usize) ?usize {
+    if (start >= line.len) return null;
+    const close: u8 = switch (line[start]) {
+        '"' => '"',
+        '\'' => '\'',
+        '(' => ')',
+        else => return null,
+    };
+    var cursor = start + 1;
+    while (cursor < line.len) {
+        if (line[cursor] == '\\' and cursor + 1 < line.len and isAsciiPunctuation(line[cursor + 1])) {
+            cursor += 2;
+            continue;
+        }
+        if (line[cursor] == close) return cursor + 1;
+        cursor += 1;
+    }
+    return null;
+}
+
+fn skipInlineSpaces(text: []const u8, start: usize) usize {
+    var cursor = start;
+    while (cursor < text.len and isInlineSpace(text[cursor])) cursor += 1;
+    return cursor;
+}
+
+fn isAsciiPunctuation(byte: u8) bool {
+    return (byte >= 0x21 and byte <= 0x2f) or
+        (byte >= 0x3a and byte <= 0x40) or
+        (byte >= 0x5b and byte <= 0x60) or
+        (byte >= 0x7b and byte <= 0x7e);
 }
 
 fn startsNewBlock(line: []const u8) bool {

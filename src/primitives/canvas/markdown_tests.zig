@@ -56,6 +56,14 @@ fn findKind(widget: canvas.Widget, kind: canvas.WidgetKind) ?canvas.Widget {
     return null;
 }
 
+fn findImageId(widget: canvas.Widget, image_id: canvas.ImageId) ?canvas.Widget {
+    if (widget.kind == .image and widget.image_id == image_id) return widget;
+    for (widget.children) |child| {
+        if (findImageId(child, image_id)) |found| return found;
+    }
+    return null;
+}
+
 fn appendParagraphText(widget: canvas.Widget, out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
     if (widget.kind == .text and widget.spans.len > 0) {
         try out.appendSlice(allocator, widget.text);
@@ -122,6 +130,12 @@ fn countKindLabel(widget: canvas.Widget, kind: canvas.WidgetKind, label: []const
     var count: usize = if (widget.kind == kind and
         (std.mem.eql(u8, widget.semantics.label, label) or std.mem.eql(u8, widget.text, label))) 1 else 0;
     for (widget.children) |child| count += countKindLabel(child, kind, label);
+    return count;
+}
+
+fn countRole(widget: canvas.Widget, role: canvas.WidgetRole) usize {
+    var count: usize = if (widget.semantics.role == role) 1 else 0;
+    for (widget.children) |child| count += countRole(child, role);
     return count;
 }
 
@@ -218,6 +232,79 @@ test "safe HTML decodes entities in link and image attributes" {
     const link_widget = findRoleLabel(tree.root, .link, "query").?;
     const msg = tree.msgForPointer(link_widget.id, .up).?;
     try testing.expectEqualStrings("https://example.com/search?a=1&b=2", msg.open_url);
+}
+
+test "empty HTML anchors do not create accessibility links" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\Before<a href="https://empty.example"><sup><img alt="" /></sup></a>After.
+        \\<a href="https://diagram.example"><img alt="diagram" /></a>
+    , .{ .on_link = Ui.linkMsg(.open_url) });
+
+    try testing.expectEqual(@as(usize, 1), countRole(tree.root, .link));
+    try testing.expect(findRoleLabel(tree.root, .link, "") == null);
+    const diagram = findRoleLabel(tree.root, .link, "diagram").?;
+    try testing.expectEqualStrings("https://diagram.example", tree.msgForPointer(diagram.id, .up).?.open_url);
+}
+
+test "link reference definitions stay hidden without resolving references" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\[vc]: #hash:payload
+        \\   [docs]: <https://example.com/a b> "A title"
+        \\The update leaves [vc] and [docs][] literal.
+        \\
+        \\Paragraph text
+        \\[not-interrupting]: /url
+        \\
+        \\[broken]:
+        \\[junk]: /url trailing words
+        \\[joined-title]: <https://example.com>"title"
+        \\    [too-indented]: /url
+    , .{});
+
+    try testing.expect(findParagraphContaining(tree.root, "#hash:payload") == null);
+    try testing.expect(findParagraphContaining(tree.root, "A title") == null);
+    try testing.expectEqualStrings(
+        "The update leaves [vc] and [docs][] literal.",
+        findParagraphContaining(tree.root, "The update").?.text,
+    );
+    try testing.expectEqualStrings(
+        "Paragraph text [not-interrupting]: /url",
+        findParagraphContaining(tree.root, "Paragraph text").?.text,
+    );
+    try testing.expect(findParagraphContaining(tree.root, "[broken]:") != null);
+    try testing.expect(findParagraphContaining(tree.root, "[junk]: /url trailing words") != null);
+    try testing.expect(findParagraphContaining(tree.root, "[joined-title]") != null);
+    try testing.expect(findParagraphContaining(tree.root, "[too-indented]: /url") != null);
+}
+
+test "Vercel deployment comments hide metadata and retain table links" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\[vc]: #H4enDGKDtR2Lb2lsv4EbfoqtEIHUz0WJNjyO4zsNHm8=:eyJpc01vbm9yZXBvIjp0cnVlLCJ0eXBlIjoiZ2l0aHViIn0=
+        \\The latest updates on your projects. Learn more about [Vercel for GitHub](https://vercel.link/github-learn-more).
+        \\
+        \\| Project | Deployment | Actions | Updated (UTC) |
+        \\| :--- | :----- | :------ | :------ |
+        \\| <a href="https://vercel.com/vercel-labs/native-sdk"><sup><img src="avatar" width="16" height="16" alt="" /></sup></a> [native-sdk](https://vercel.com/vercel-labs/native-sdk) | ![Ready](ready.svg) [Ready](https://vercel.com/deployment) | [Preview](https://preview.example) | Aug 4, 2026 8:14pm |
+    , .{ .on_link = Ui.linkMsg(.open_url) });
+
+    try testing.expect(findParagraphContaining(tree.root, "[vc]") == null);
+    try testing.expectEqualStrings(
+        "The latest updates on your projects. Learn more about Vercel for GitHub.",
+        findParagraphContaining(tree.root, "The latest updates").?.text,
+    );
+    try testing.expectEqual(@as(usize, 1), countKind(tree.root, .table));
+    try testing.expectEqual(@as(usize, 4), countRole(tree.root, .link));
+    try testing.expect(findRoleLabel(tree.root, .link, "") == null);
+    try testing.expect(findRoleLabel(tree.root, .link, "Vercel for GitHub") != null);
+    try testing.expect(findRoleLabel(tree.root, .link, "native-sdk") != null);
+    try testing.expect(findRoleLabel(tree.root, .link, "Ready") != null);
+    try testing.expect(findRoleLabel(tree.root, .link, "Preview") != null);
 }
 
 test "GitHub-style HTML blocks lower onto native document structure" {
@@ -822,6 +909,87 @@ test "pipe tables map onto table/data_row/data_cell with alignment and header st
     try testing.expectEqual(canvas.WidgetRole.link, hotspot.semantics.role);
     const msg = tree.msgForPointer(hotspot.id, .up).?;
     try testing.expectEqualStrings("https://example.com/logs", msg.open_url);
+}
+
+test "resolved leading table images render as native image leaves with alt fallback" {
+    const avatar_url = "https://vercel.com/api/www/avatar?projectId=project&teamId=team&s=32";
+    const ready_url = "https://vercel.com/static/status/ready.svg";
+    const images = [_]markdown.ResolvedImage{
+        .{ .source = avatar_url, .image = 41, .width = 32, .height = 32 },
+        .{ .source = ready_url, .image = 42, .width = 10, .height = 10 },
+    };
+
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\| Project | Deployment |
+        \\| :--- | :--- |
+        \\| <a href="https://vercel.com/vercel-labs/native-sdk"><sup><img src="https://vercel.com/api/www/avatar?projectId=project&teamId=team&s=32" width="16" height="16" align="middle" alt="" /></sup></a> [native-sdk](https://vercel.com/vercel-labs/native-sdk) | ![Ready](https://vercel.com/static/status/ready.svg) [Ready](https://vercel.com/deploy) |
+    , .{ .on_link = Ui.linkMsg(.open_url), .images = &images });
+
+    try testing.expectEqual(@as(usize, 2), countKind(tree.root, .image));
+    const avatar = findImageId(tree.root, 41).?;
+    try testing.expectEqual(@as(f32, 16), avatar.layout.min_size.width);
+    try testing.expectEqual(@as(f32, 16), avatar.layout.min_size.height);
+    try testing.expectEqual(canvas.WidgetRole.link, avatar.semantics.role);
+    try testing.expectEqualStrings("https://vercel.com/vercel-labs/native-sdk", tree.msgForPointer(avatar.id, .up).?.open_url);
+
+    const ready = findImageId(tree.root, 42).?;
+    try testing.expectEqual(@as(f32, 10), ready.layout.min_size.width);
+    try testing.expectEqual(@as(f32, 10), ready.layout.min_size.height);
+    try testing.expectEqual(canvas.WidgetRole.image, ready.semantics.role);
+    try testing.expectEqualStrings("Ready", ready.semantics.label);
+    try testing.expect(findParagraphContaining(tree.root, "native-sdk") != null);
+    try testing.expect(findParagraphContaining(tree.root, "Ready") != null);
+
+    var fallback_doc = TestDoc.init();
+    defer fallback_doc.deinit();
+    const fallback = try fallback_doc.build(
+        \\| Deployment |
+        \\| --- |
+        \\| ![Ready](https://vercel.com/static/status/ready.svg) |
+    , .{});
+    try testing.expectEqual(@as(usize, 0), countKind(fallback.root, .image));
+    try testing.expect(findCellContaining(fallback.root, "Ready") != null);
+}
+
+test "resolved leading paragraph images compose with trailing inline text" {
+    const source = "https://example.com/diagram.png";
+    const images = [_]markdown.ResolvedImage{
+        .{ .source = source, .image = 77, .width = 80, .height = 40 },
+    };
+
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\![Architecture](https://example.com/diagram.png) **Current** design
+        \\Text before ![inline](https://example.com/inline.png) stays an alt fallback.
+    , .{ .images = &images });
+
+    const image = findImageId(tree.root, 77).?;
+    try testing.expectEqualStrings("Architecture", image.semantics.label);
+    try testing.expect(findParagraphContaining(tree.root, "Current design") != null);
+    try testing.expect(findParagraphContaining(tree.root, "Text before inline stays an alt fallback.") != null);
+}
+
+test "image source collection is bounded, distinct, and keeps code inert" {
+    var storage: [4][]const u8 = undefined;
+    const sources = markdown.collectImageSources(
+        \\![first](https://example.com/first.png)
+        \\Text before ![inline](https://example.com/inline.png)
+        \\`![code](https://example.com/code.png)`
+        \\| Image | Copy |
+        \\| --- | --- |
+        \\| <a href="https://example.com"><sup><img src="https://example.com/second.svg" alt="second" /></sup></a> label | <!-- <img src="https://example.com/comment.png" /> --> |
+        \\![again](https://example.com/first.png)
+        \\```
+        \\![fenced](https://example.com/fenced.png)
+        \\```
+    , &storage);
+
+    try testing.expectEqual(@as(usize, 2), sources.len);
+    try testing.expectEqualStrings("https://example.com/first.png", sources[0]);
+    try testing.expectEqualStrings("https://example.com/second.svg", sources[1]);
 }
 
 test "table rows pad short rows, drop extra cells, and stop at blank or pipeless lines" {

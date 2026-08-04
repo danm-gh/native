@@ -287,7 +287,13 @@ pub fn Markdown(comptime Msg: type) type {
             /// paragraph break rules only apply once the block has
             /// content). Tables interrupt paragraphs (GFM): a header
             /// line followed by a matching delimiter row starts a table.
-            fn joinPiece(self: *Builder, lines: *LineIterator, kind: JoinKind, joined_len: usize) ?[]const u8 {
+            fn joinPiece(
+                self: *Builder,
+                lines: *LineIterator,
+                kind: JoinKind,
+                joined_len: usize,
+                opaque_html: *HtmlOpaqueState,
+            ) ?[]const u8 {
                 const line = lines.peek() orelse return null;
                 const trimmed = std.mem.trim(u8, line, " \t");
                 switch (kind) {
@@ -298,8 +304,15 @@ pub fn Markdown(comptime Msg: type) type {
                         return std.mem.trim(u8, inner, " \t");
                     },
                     .paragraph => {
-                        if (trimmed.len == 0) return null;
-                        if (joined_len > 0) {
+                        // Unsupported elements are literal opaque regions,
+                        // even when they contain blank lines or block-shaped
+                        // allowlisted tags. Keep collecting until the outer
+                        // unsupported element closes so `parseInline` sees and
+                        // preserves the region as one unit.
+                        if (!opaque_html.active()) {
+                            if (trimmed.len == 0) return null;
+                        }
+                        if (joined_len > 0 and !opaque_html.active()) {
                             const closes_scope = if (self.activeHtmlBlockScopeName()) |name|
                                 findUnbalancedHtmlClosingTag(line, name) != null
                             else if (self.html_block_scope_overflow_depth > 0)
@@ -308,6 +321,7 @@ pub fn Markdown(comptime Msg: type) type {
                                 false;
                             if (closes_scope or startsNewBlock(line) or isTableStart(lines)) return null;
                         }
+                        updateHtmlOpaqueState(line, opaque_html);
                         return trimmed;
                     },
                 }
@@ -324,7 +338,8 @@ pub fn Markdown(comptime Msg: type) type {
                 // Pass 1: measure the block's extent and joined size.
                 var probe = lines.*;
                 var total: usize = 0;
-                while (self.joinPiece(&probe, kind, total)) |piece| {
+                var probe_opaque = HtmlOpaqueState{};
+                while (self.joinPiece(&probe, kind, total, &probe_opaque)) |piece| {
                     _ = probe.next();
                     if (total > 0) total += 1;
                     total += piece.len;
@@ -343,7 +358,8 @@ pub fn Markdown(comptime Msg: type) type {
                 // Pass 2: identical walk, copying until the cap.
                 var len: usize = 0;
                 var joined: usize = 0;
-                while (self.joinPiece(lines, kind, joined)) |piece| {
+                var opaque_html = HtmlOpaqueState{};
+                while (self.joinPiece(lines, kind, joined, &opaque_html)) |piece| {
                     _ = lines.next();
                     if (joined > 0 and len < out.len) {
                         out[len] = ' ';
@@ -600,16 +616,17 @@ pub fn Markdown(comptime Msg: type) type {
             fn collectHtmlElementLines(self: *Builder, lines: *LineIterator, name: []const u8) []const u8 {
                 var probe = lines.*;
                 var probe_depth: usize = 1;
+                var probe_opaque = HtmlOpaqueState{};
                 var total: usize = 0;
                 while (probe.next()) |line| {
-                    const scan = scanHtmlElementLine(line, name, &probe_depth);
-                    total += scan.content_end;
+                    const scan = scanHtmlElementLine(line, name, &probe_depth, &probe_opaque);
+                    total = @min(max_markdown_paragraph_bytes, total +| scan.content_end);
                     if (scan.closing_end) |closing_end| {
                         const suffix = line[closing_end..];
                         if (suffix.len > 0) probe.prepend(suffix);
                         break;
                     }
-                    total += 1;
+                    total = @min(max_markdown_paragraph_bytes, total +| 1);
                 }
 
                 const out = self.ui.arena.alloc(u8, total) catch {
@@ -618,20 +635,24 @@ pub fn Markdown(comptime Msg: type) type {
                     return &.{};
                 };
                 var depth: usize = 1;
+                var opaque_html = HtmlOpaqueState{};
                 var len: usize = 0;
                 while (lines.next()) |line| {
-                    const scan = scanHtmlElementLine(line, name, &depth);
-                    if (scan.content_end > 0) {
-                        @memcpy(out[len..][0..scan.content_end], line[0..scan.content_end]);
-                        len += scan.content_end;
+                    const scan = scanHtmlElementLine(line, name, &depth, &opaque_html);
+                    if (scan.content_end > 0 and len < out.len) {
+                        const take = @min(scan.content_end, out.len - len);
+                        @memcpy(out[len..][0..take], line[0..take]);
+                        len += take;
                     }
                     if (scan.closing_end) |closing_end| {
                         const suffix = line[closing_end..];
                         if (suffix.len > 0) lines.prepend(suffix);
                         break;
                     }
-                    out[len] = '\n';
-                    len += 1;
+                    if (len < out.len) {
+                        out[len] = '\n';
+                        len += 1;
+                    }
                 }
                 return out[0..len];
             }
@@ -715,10 +736,18 @@ pub fn Markdown(comptime Msg: type) type {
                     }
                 }
 
-                var header = self.ui.listItem(.{
+                const indicator = if (expanded) "▾" else "▸";
+                const summary_node = self.paragraphWithOptions(summary, .{ .grow = 1 });
+                const header_label = self.ui.fmt("{s} {s}", .{ indicator, summary_node.widget.text });
+                var header = self.ui.el(.list_item, .{
                     .key = .{ .int = @intCast(ordinal) },
                     .on_press = if (self.options.on_details) |make| make(ordinal) else null,
-                }, self.ui.fmt("{s} {s}", .{ if (expanded) "▾" else "▸", summary }));
+                    .gap = 6,
+                    .semantics = .{ .label = header_label },
+                }, .{
+                    self.ui.text(.{}, indicator),
+                    summary_node,
+                });
                 header.widget.state.expanded = expanded;
 
                 if (!expanded) {
@@ -1190,19 +1219,66 @@ const HtmlTagMatch = struct {
     tag: HtmlTag,
 };
 
-fn nextHtmlTagMatch(source: []const u8, cursor: *usize) ?HtmlTagMatch {
+/// State for an unsupported element whose contents must remain opaque. The
+/// name aliases the Markdown source, which outlives the streaming parse.
+const HtmlOpaqueState = struct {
+    name: []const u8 = "",
+    depth: usize = 0,
+
+    fn active(self: HtmlOpaqueState) bool {
+        return self.depth > 0;
+    }
+};
+
+/// Return the next allowlisted tag while treating unsupported elements as
+/// opaque regions. `opaque_html` may persist across source lines for block
+/// scans.
+fn nextHtmlTagMatch(source: []const u8, cursor: *usize, opaque_html: *HtmlOpaqueState) ?HtmlTagMatch {
     while (std.mem.indexOfScalarPos(u8, source, cursor.*, '<')) |start| {
         if (parseHtmlCommentAt(source, start, null)) |comment| {
             cursor.* = start + comment.consumed;
             continue;
         }
-        if (parseHtmlTagAt(source, start)) |tag| {
-            cursor.* = start + tag.consumed;
+        const syntax = parseHtmlTagSyntaxAt(source, start) orelse {
+            cursor.* = start + 1;
+            continue;
+        };
+        cursor.* = start + syntax.consumed;
+
+        if (opaque_html.active()) {
+            if (!std.ascii.eqlIgnoreCase(syntax.name, opaque_html.name)) continue;
+            if (syntax.closing) {
+                opaque_html.depth -= 1;
+                if (!opaque_html.active()) opaque_html.name = "";
+            } else if (!syntax.self_closing) {
+                opaque_html.depth += 1;
+            }
+            continue;
+        }
+
+        if (classifyHtmlTag(syntax.name)) |classified| {
+            const tag = HtmlTag{
+                .kind = classified.kind,
+                .name = syntax.name,
+                .attributes = syntax.attributes,
+                .closing = syntax.closing,
+                .self_closing = syntax.self_closing,
+                .heading_level = classified.heading_level,
+                .consumed = syntax.consumed,
+            };
             return .{ .start = start, .end = cursor.*, .tag = tag };
         }
-        cursor.* = start + 1;
+
+        if (!syntax.closing and !syntax.self_closing and !isHtmlVoidTagName(syntax.name)) {
+            opaque_html.* = .{ .name = syntax.name, .depth = 1 };
+        }
     }
     return null;
+}
+
+fn updateHtmlOpaqueState(source: []const u8, opaque_html: *HtmlOpaqueState) void {
+    var cursor: usize = 0;
+    while (nextHtmlTagMatch(source, &cursor, opaque_html)) |_| {}
 }
 
 /// Find a closer for an already-open block scope, ignoring matching tags
@@ -1210,7 +1286,8 @@ fn nextHtmlTagMatch(source: []const u8, cursor: *usize) ?HtmlTagMatch {
 fn findUnbalancedHtmlClosingTag(source: []const u8, name: []const u8) ?HtmlTagMatch {
     var cursor: usize = 0;
     var nested: usize = 0;
-    while (nextHtmlTagMatch(source, &cursor)) |match| {
+    var opaque_html = HtmlOpaqueState{};
+    while (nextHtmlTagMatch(source, &cursor, &opaque_html)) |match| {
         if (!std.ascii.eqlIgnoreCase(match.tag.name, name)) continue;
         if (!match.tag.closing) {
             if (!match.tag.self_closing) nested += 1;
@@ -1225,7 +1302,8 @@ fn findUnbalancedHtmlClosingTag(source: []const u8, name: []const u8) ?HtmlTagMa
 fn findUnbalancedHtmlPersistentClosingTag(source: []const u8) ?HtmlTagMatch {
     var cursor: usize = 0;
     var nested: usize = 0;
-    while (nextHtmlTagMatch(source, &cursor)) |match| {
+    var opaque_html = HtmlOpaqueState{};
+    while (nextHtmlTagMatch(source, &cursor, &opaque_html)) |match| {
         if (!isPersistentHtmlBlockTag(match.tag)) continue;
         if (!match.tag.closing) {
             if (!match.tag.self_closing) nested += 1;
@@ -1242,9 +1320,14 @@ const HtmlElementLineScan = struct {
     closing_end: ?usize = null,
 };
 
-fn scanHtmlElementLine(line: []const u8, name: []const u8, depth: *usize) HtmlElementLineScan {
+fn scanHtmlElementLine(
+    line: []const u8,
+    name: []const u8,
+    depth: *usize,
+    opaque_html: *HtmlOpaqueState,
+) HtmlElementLineScan {
     var cursor: usize = 0;
-    while (nextHtmlTagMatch(line, &cursor)) |match| {
+    while (nextHtmlTagMatch(line, &cursor, opaque_html)) |match| {
         if (!std.ascii.eqlIgnoreCase(match.tag.name, name)) continue;
         if (!match.tag.closing) {
             if (!match.tag.self_closing) depth.* += 1;
@@ -1463,8 +1546,9 @@ fn consumeHtmlCommentBlock(lines: *LineIterator) bool {
 
 fn skipHtmlElement(lines: *LineIterator, name: []const u8) void {
     var depth: usize = 1;
+    var opaque_html = HtmlOpaqueState{};
     while (lines.next()) |line| {
-        const scan = scanHtmlElementLine(line, name, &depth);
+        const scan = scanHtmlElementLine(line, name, &depth, &opaque_html);
         if (scan.closing_end) |closing_end| {
             const suffix = line[closing_end..];
             if (suffix.len > 0) lines.prepend(suffix);

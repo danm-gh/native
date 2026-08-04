@@ -400,6 +400,49 @@ test "HTML comments hide content while unsupported and malformed tags stay liter
     try testing.expect(std.mem.indexOf(u8, malformed.text, "<strong never closes.") != null);
 }
 
+test "multiline unsupported HTML stays opaque across block boundaries" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<div align="center">
+        \\<script>
+        \\raw script text
+        \\
+        \\<strong>alert</strong> &amp;
+        \\</div>
+        \\</script>
+        \\Still centered
+        \\</div>
+        \\Outside
+    , .{});
+
+    const script = findParagraphContaining(tree.root, "<script>").?;
+    try testing.expect(std.mem.indexOf(u8, script.text, "<strong>alert</strong> &amp;") != null);
+    try testing.expect(std.mem.startsWith(u8, script.spans[0].text, "<script>"));
+    try testing.expect(std.mem.indexOf(u8, script.spans[0].text, "<strong>alert</strong> &amp;") != null);
+    try testing.expectEqual(canvas.TextSpanWeight.regular, script.spans[0].weight);
+
+    const centered = findParagraphContaining(tree.root, "Still centered").?;
+    const outside = findParagraphContaining(tree.root, "Outside").?;
+    try testing.expectEqual(canvas.TextAlign.center, centered.text_alignment);
+    try testing.expectEqual(canvas.TextAlign.start, outside.text_alignment);
+}
+
+test "HTML element bodies truncate at the markdown paragraph budget" {
+    var source_buffer: [markdown.max_markdown_paragraph_bytes + 256]u8 = undefined;
+    var stream = std.Io.Writer.fixed(&source_buffer);
+    try stream.writeAll("<p>");
+    for (0..markdown.max_markdown_paragraph_bytes + 128) |_| try stream.writeAll("x");
+    try stream.writeAll("</p>After");
+
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(stream.buffered(), .{});
+    try testing.expectEqual(@as(usize, 2), tree.root.children.len);
+    try testing.expectEqual(markdown.max_markdown_paragraph_bytes, tree.root.children[0].text.len);
+    try testing.expectEqualStrings("After", tree.root.children[1].text);
+}
+
 test "multiline HTML comments stay hidden across blank lines" {
     var doc = TestDoc.init();
     defer doc.deinit();
@@ -582,6 +625,30 @@ test "details blocks are caller-controlled collapsibles" {
     try testing.expect(findParagraphContaining(expanded_tree.root, "Hidden paragraph") != null);
     const open_header = findKindLabel(expanded_tree.root, .list_item, "▾ More info").?;
     try testing.expectEqual(@as(?bool, true), open_header.state.expanded);
+}
+
+test "details summaries lower safe inline HTML" {
+    const source =
+        \\<details>
+        \\<summary><strong>More</strong> &amp; <a href="https://example.com">docs</a></summary>
+        \\Body.
+        \\</details>
+    ;
+
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(source, .{
+        .on_link = Ui.linkMsg(.open_url),
+        .on_details = Md.detailsMsg(.toggle_details),
+    });
+
+    const summary = findParagraphContaining(tree.root, "More & docs").?;
+    try testing.expectEqual(canvas.TextSpanWeight.bold, findSpan(summary, "More").?.weight);
+    try testing.expectEqualStrings("https://example.com", findSpan(summary, "docs").?.link);
+
+    const header = findKindLabel(tree.root, .list_item, "▸ More & docs").?;
+    const toggle = tree.msgForPointer(header.id, .up).?;
+    try testing.expectEqual(@as(usize, 0), toggle.toggle_details);
 }
 
 test "malformed markdown degrades to literal text and never fails" {

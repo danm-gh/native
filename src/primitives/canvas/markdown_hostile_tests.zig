@@ -224,6 +224,18 @@ test "hostile: kilochar single words and megabyte paragraphs join in linear memo
         while (index < source.len) : (index += 41) source[index] = '\n';
         _ = try buildHostile(source);
     }
+
+    // Safe HTML block collection must consume the full element without
+    // retaining a source-sized copy in the view tree.
+    {
+        const source = try allocator.alloc(u8, 1024 * 1024);
+        defer allocator.free(source);
+        @memset(source, 'h');
+        @memcpy(source[0..3], "<p>");
+        @memcpy(source[source.len - 4 ..], "</p>");
+        const result = try buildHostile(source);
+        try testing.expect(result.text_bytes <= markdown.max_markdown_paragraph_bytes * 2);
+    }
 }
 
 test "hostile: bracket, autolink, and reference-link bombs parse in linear time" {

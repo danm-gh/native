@@ -589,6 +589,7 @@ Markdown builds on the same model. `native_sdk.markdown` maps a GitHub-flavored 
 ```zig
 const Md = native_sdk.markdown.Markdown(Msg);
 Md.view(ui, issue.body, .{
+    .images = model.markdown_images, // successful fx.loadImage mappings
     .on_link = Ui.linkMsg(.open_url),
     .on_details = Md.detailsMsg(.toggle_details),
     .details_expanded = &model.details_expanded, // caller-owned flags, elm-style
@@ -605,10 +606,10 @@ GFM pipe tables map onto the real `table`/`table-row`/`table-cell` widgets: the 
 In markup, the `<markdown>` element wires all of this declaratively:
 
 ```html
-<markdown source="{issue_body}" on-link="open_url" on-details="toggle_details" details-expanded="{details_expanded}" issue-link-base="ghissue://" />
+<markdown source="{issue_body}" images="{markdownImages}" on-link="open_url" on-details="toggle_details" details-expanded="{details_expanded}" issue-link-base="ghissue://" />
 ```
 
-`source` (required) is one `{binding}` producing the markdown text — a string field, zero-arg method, or arena-taking method. `on-link` and `on-details` are bare `Msg` tags (the runtime supplies their payloads: the URL as `[]const u8`, the details index as `usize`), `details-expanded` names a `[]const bool` iterable through the same sources `for each` accepts, and `issue-link-base` (a literal prefix or one `{binding}`) turns `#123` references into links to base ++ number. Everything but `source` is optional — without the details wiring, `<details>` blocks render collapsed and inert. Both the interpreter and the comptime compiler implement the element identically.
+`source` (required) is one `{binding}` producing the markdown text — a string field, zero-arg method, or arena-taking method. `images` optionally binds `[]const canvas.markdown.ResolvedImage`: discover sources with `canvas.markdown.collectImageSources`, load them through `fx.loadImage`, retain successful ids and dimensions in the model, and return those mappings from a model or arena-taking method; the view performs no I/O. `on-link` and `on-details` are bare `Msg` tags (the runtime supplies their payloads: the URL as `[]const u8`, the details index as `usize`), `details-expanded` names a `[]const bool` iterable through the same sources `for each` accepts, and `issue-link-base` (a literal prefix or one `{binding}`) turns `#123` references into links to base ++ number. Everything but `source` is optional — without the details wiring, `<details>` blocks render collapsed and inert. Both the interpreter and the comptime compiler implement the element identically.
 
 ## Pipeline components: stepper, timeline, and nav
 

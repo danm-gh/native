@@ -218,7 +218,7 @@
     },
     {
       "name": "markdown",
-      "doc": "Renders a markdown string (GFM subset, pipe tables included) as widgets; source is one {binding}, links dispatch on-link (bare URLs autolink), <details> blocks toggle via on-details + details-expanded, #123 refs linkify via issue-link-base."
+      "doc": "Renders a markdown string (GFM subset, pipe tables and safe presentational HTML included) as widgets; source is one {binding}, links dispatch on-link (bare URLs autolink), <details> blocks toggle via on-details + details-expanded, #123 refs linkify via issue-link-base."
     },
     {
       "name": "stepper",

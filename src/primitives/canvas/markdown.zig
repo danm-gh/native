@@ -16,20 +16,26 @@
 //! delimiter row + body rows onto `table`/`data_row`/`data_cell` widgets;
 //! `:---`/`:--:`/`---:` delimiter cells set per-column start/center/end
 //! text alignment, header cells render bold, and every cell runs the full
-//! inline span grammar including links), and `<details>`/`<summary>`.
+//! inline span grammar including links), a safe presentational HTML subset,
+//! and `<details>`/`<summary>`.
 //! Supported inlines: `**bold**`/`__bold__`, `*italic*`/`_italic_`,
 //! `` `code` ``, `~~strikethrough~~`, `[text](url)` links, `<url>`
 //! autolinks, bare `http(s)://` URLs at word boundaries (GFM-style
 //! autolink extension, trailing punctuation trimmed), `#123` issue
 //! references (opt-in via `Options.issue_link_base`, since resolving a
 //! ref needs repo context), and `![alt](url)` images (rendered as their
-//! alt text).
+//! alt text). GitHub-style HTML covers the matching native presentation:
+//! emphasis/strong/strike/underline/code spans, anchors, line breaks,
+//! headings, paragraphs, blockquotes, horizontal rules, image alt text,
+//! harmless structural wrappers, comments, and common HTML entities.
+//! Attributes other than `href`, `alt`, and block `align` are ignored;
+//! there is no DOM, CSS, script execution, or remote image loading.
 //!
 //! Deliberately unsupported in v1 (rendered as plain paragraph text, never
 //! a build failure): setext headings, indented code blocks, backslash
 //! escapes (except `\|` inside table rows, which GFM needs to put a pipe
-//! in a cell), reference-style links, raw HTML other than
-//! details/summary, and footnotes. Malformed input degrades to literal
+//! in a cell), reference-style links, HTML with no native presentation
+//! (scripts, styles, embeds, and forms), and footnotes. Malformed input degrades to literal
 //! text — a pipe block whose delimiter row is missing or does not match
 //! the header's column count renders as plain paragraphs, and tables
 //! wider than `max_markdown_table_columns` degrade the same way rather
@@ -73,6 +79,7 @@ pub const max_markdown_blocks_per_container: usize = 64;
 pub const max_markdown_list_items_per_list: usize = 64;
 pub const max_markdown_list_depth: usize = 4;
 pub const max_markdown_details_per_document: usize = 16;
+pub const max_markdown_html_block_depth: usize = 8;
 pub const max_markdown_table_columns: usize = 8;
 /// Rows per table including the header; trailing rows drop deterministically.
 pub const max_markdown_table_rows: usize = 64;
@@ -143,12 +150,23 @@ pub fn Markdown(comptime Msg: type) type {
         const BlockScope = enum {
             document,
             details,
+            html_blockquote,
         };
 
         const Builder = struct {
             ui: *Ui,
             options: Options,
             details_count: usize = 0,
+            /// GitHub permits `align` on a few safe block wrappers. A
+            /// standalone `<div align="center">` commonly wraps several
+            /// README blocks, so remember that presentation until its
+            /// closing wrapper rather than requiring a browser layout tree.
+            html_alignment: ?canvas.TextAlign = null,
+            html_alignment_stack: [16]?canvas.TextAlign = .{null} ** 16,
+            html_alignment_depth: usize = 0,
+            html_alignment_overflow_depth: usize = 0,
+            html_heading_level: ?usize = null,
+            html_block_depth: usize = 0,
 
             fn allocNodes(self: *Builder) []Node {
                 return self.ui.arena.alloc(Node, max_markdown_blocks_per_container) catch {
@@ -165,6 +183,10 @@ pub fn Markdown(comptime Msg: type) type {
                 while (lines.peek()) |line| {
                     const trimmed = std.mem.trim(u8, line, " \t");
                     if (scope == .details and std.ascii.startsWithIgnoreCase(trimmed, "</details>")) {
+                        _ = lines.next();
+                        break;
+                    }
+                    if (scope == .html_blockquote and isStandaloneClosingHtmlTag(trimmed, "blockquote")) {
                         _ = lines.next();
                         break;
                     }
@@ -196,6 +218,11 @@ pub fn Markdown(comptime Msg: type) type {
                 if (std.mem.startsWith(u8, trimmed, ">")) return self.parseBlockquote(lines);
                 if (listMarker(line)) |_| return self.parseList(lines, 0, 0);
                 if (std.ascii.startsWithIgnoreCase(trimmed, "<details")) return self.parseDetails(lines);
+                switch (self.parseHtmlBlock(lines, trimmed)) {
+                    .not_html => {},
+                    .skipped => return null,
+                    .node => |node| return node,
+                }
                 if (isTableStart(lines)) return self.parseTable(lines);
                 return self.parseParagraph(lines);
             }
@@ -203,10 +230,14 @@ pub fn Markdown(comptime Msg: type) type {
             // ------------------------------------------------------ blocks
 
             fn heading(self: *Builder, level: usize, content: []const u8) Node {
-                const scale = heading_scales[@min(level, heading_scales.len) - 1];
+                const effective_level = self.html_heading_level orelse level;
+                const scale = heading_scales[@min(effective_level, heading_scales.len) - 1];
                 var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
                 const parsed = self.parseInline(content, .{ .weight = .bold, .scale = scale }, &spans);
-                return self.ui.paragraph(.{ .on_link = self.options.on_link }, parsed);
+                return self.ui.paragraph(.{
+                    .on_link = self.options.on_link,
+                    .text_alignment = self.html_alignment orelse .start,
+                }, parsed);
             }
 
             fn parseParagraph(self: *Builder, lines: *LineIterator) ?Node {
@@ -287,9 +318,17 @@ pub fn Markdown(comptime Msg: type) type {
             }
 
             fn paragraphNode(self: *Builder, text: []const u8, base: TextSpan) Node {
+                var effective_base = base;
+                if (self.html_heading_level) |level| {
+                    effective_base.weight = .bold;
+                    effective_base.scale = heading_scales[@min(level, heading_scales.len) - 1];
+                }
                 var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
-                const parsed = self.parseInline(text, base, &spans);
-                return self.ui.paragraph(.{ .on_link = self.options.on_link }, parsed);
+                const parsed = self.parseInline(text, effective_base, &spans);
+                return self.ui.paragraph(.{
+                    .on_link = self.options.on_link,
+                    .text_alignment = self.html_alignment orelse .start,
+                }, parsed);
             }
 
             fn parseCodeFence(self: *Builder, lines: *LineIterator) ?Node {
@@ -317,6 +356,7 @@ pub fn Markdown(comptime Msg: type) type {
             fn paragraphWithOptions(self: *Builder, text: []const u8, options_in: Ui.ElementOptions) Node {
                 var options = options_in;
                 options.on_link = self.options.on_link;
+                if (self.html_alignment) |alignment| options.text_alignment = alignment;
                 var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
                 const parsed = self.parseInline(text, .{}, &spans);
                 return self.ui.paragraph(options, parsed);
@@ -370,6 +410,159 @@ pub fn Markdown(comptime Msg: type) type {
                 if (depth == 0) return self.ui.row(.{ .gap = 8 }, .{ lead_top, content });
                 const indent = self.ui.el(.stack, .{ .width = @as(f32, @floatFromInt(depth)) * 16 }, .{});
                 return self.ui.row(.{ .gap = 8 }, .{ indent, lead_top, content });
+            }
+
+            const HtmlBlockResult = union(enum) {
+                not_html,
+                skipped,
+                node: Node,
+            };
+
+            /// Lower the small block-shaped portion of GitHub's safe HTML
+            /// vocabulary onto native widgets. Inline-shaped tags are left
+            /// to `parseInline`; unsupported tags fall through literally.
+            fn parseHtmlBlock(self: *Builder, lines: *LineIterator, trimmed: []const u8) HtmlBlockResult {
+                if (parseHtmlCommentAt(trimmed, 0, null)) |comment| {
+                    if (comment.consumed == trimmed.len) {
+                        _ = lines.next();
+                        return .skipped;
+                    }
+                }
+
+                const opening = parseHtmlTagAt(trimmed, 0) orelse return .not_html;
+                if (opening.closing or !isHtmlBlockTag(opening)) {
+                    if (opening.consumed == trimmed.len and opening.closing and isHtmlStructuralTag(opening)) {
+                        _ = lines.next();
+                        self.closeHtmlBlockScope(opening);
+                        return .skipped;
+                    }
+                    return .not_html;
+                }
+
+                if (opening.kind == .horizontal_rule and opening.consumed == trimmed.len) {
+                    _ = lines.next();
+                    return .{ .node = self.ui.separator(.{}) };
+                }
+
+                if (opening.kind == .blockquote and opening.consumed == trimmed.len) {
+                    _ = lines.next();
+                    if (self.html_block_depth >= max_markdown_html_block_depth) {
+                        skipHtmlElement(lines, opening.name);
+                        return .skipped;
+                    }
+                    self.html_block_depth += 1;
+                    const blocks = self.parseBlocks(lines, .html_blockquote);
+                    self.html_block_depth -= 1;
+                    return .{ .node = self.ui.row(.{ .gap = 10 }, .{
+                        self.ui.el(.separator, .{ .frame = geometry.RectF.init(0, 0, 3, 0) }, .{}),
+                        self.ui.column(.{ .gap = 12, .grow = 1 }, blocks),
+                    }) };
+                }
+
+                if (opening.kind == .preformatted and opening.consumed == trimmed.len) {
+                    _ = lines.next();
+                    return .{ .node = self.ui.code(.{}, collectHtmlPreformatted(lines)) };
+                }
+
+                if (singleLineHtmlElement(trimmed, opening)) |element| {
+                    const alignment = htmlTagAlignment(opening) orelse self.html_alignment orelse .start;
+                    return switch (opening.kind) {
+                        .heading => blk: {
+                            _ = lines.next();
+                            break :blk .{ .node = self.htmlHeading(opening.heading_level, element.content, alignment) };
+                        },
+                        .paragraph, .container, .list, .table, .table_section, .table_row, .table_cell => blk: {
+                            _ = lines.next();
+                            break :blk .{ .node = self.htmlParagraph(element.content, alignment) };
+                        },
+                        .blockquote => blk: {
+                            _ = lines.next();
+                            break :blk .{ .node = self.ui.row(.{ .gap = 10 }, .{
+                                self.ui.el(.separator, .{ .frame = geometry.RectF.init(0, 0, 3, 0) }, .{}),
+                                self.htmlParagraphWithOptions(element.content, alignment, .{
+                                    .grow = 1,
+                                    .style_tokens = .{ .foreground = .text_muted },
+                                }),
+                            }) };
+                        },
+                        .preformatted => blk: {
+                            _ = lines.next();
+                            break :blk .{ .node = self.ui.code(.{}, unwrapHtmlCode(element.content)) };
+                        },
+                        .list_item => blk: {
+                            _ = lines.next();
+                            break :blk .{ .node = self.htmlListItem(element.content) };
+                        },
+                        else => .not_html,
+                    };
+                }
+
+                // A structural tag on its own line is presentation-only.
+                // Keep its alignment/heading scope for the Markdown blocks
+                // between the opener and closer, then emit no empty widget.
+                if (opening.consumed == trimmed.len and isHtmlStructuralTag(opening)) {
+                    _ = lines.next();
+                    self.openHtmlBlockScope(opening);
+                    return .skipped;
+                }
+                return .not_html;
+            }
+
+            fn openHtmlBlockScope(self: *Builder, tag: HtmlTag) void {
+                if (isHtmlAlignmentContainer(tag)) {
+                    if (self.html_alignment_depth < self.html_alignment_stack.len) {
+                        self.html_alignment_stack[self.html_alignment_depth] = self.html_alignment;
+                        self.html_alignment_depth += 1;
+                    } else {
+                        self.html_alignment_overflow_depth += 1;
+                    }
+                    if (htmlTagAlignment(tag)) |alignment| self.html_alignment = alignment;
+                }
+                if (tag.kind == .heading) self.html_heading_level = tag.heading_level;
+            }
+
+            fn closeHtmlBlockScope(self: *Builder, tag: HtmlTag) void {
+                if (isHtmlAlignmentContainer(tag)) {
+                    if (self.html_alignment_overflow_depth > 0) {
+                        self.html_alignment_overflow_depth -= 1;
+                    } else if (self.html_alignment_depth > 0) {
+                        self.html_alignment_depth -= 1;
+                        self.html_alignment = self.html_alignment_stack[self.html_alignment_depth];
+                    } else {
+                        self.html_alignment = null;
+                    }
+                }
+                if (tag.kind == .heading) self.html_heading_level = null;
+            }
+
+            fn htmlHeading(self: *Builder, level: usize, content: []const u8, alignment: canvas.TextAlign) Node {
+                const scale = heading_scales[@min(level, heading_scales.len) - 1];
+                var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
+                const parsed = self.parseInline(content, .{ .weight = .bold, .scale = scale }, &spans);
+                return self.ui.paragraph(.{ .on_link = self.options.on_link, .text_alignment = alignment }, parsed);
+            }
+
+            fn htmlParagraph(self: *Builder, content: []const u8, alignment: canvas.TextAlign) Node {
+                return self.htmlParagraphWithOptions(content, alignment, .{});
+            }
+
+            fn htmlParagraphWithOptions(
+                self: *Builder,
+                content: []const u8,
+                alignment: canvas.TextAlign,
+                options_in: Ui.ElementOptions,
+            ) Node {
+                var options = options_in;
+                options.on_link = self.options.on_link;
+                options.text_alignment = alignment;
+                var spans: [text_spans.max_text_spans_per_paragraph]TextSpan = undefined;
+                const parsed = self.parseInline(content, .{}, &spans);
+                return self.ui.paragraph(options, parsed);
+            }
+
+            fn htmlListItem(self: *Builder, content: []const u8) Node {
+                const marker = ListMarker{ .kind = .bullet, .indent = 0, .label = "", .content = content };
+                return self.listItemNode(marker, 0);
             }
 
             fn parseDetails(self: *Builder, lines: *LineIterator) ?Node {
@@ -513,12 +706,11 @@ pub fn Markdown(comptime Msg: type) type {
             /// the text as one unstyled span.
             fn parseInline(self: *Builder, text: []const u8, base: TextSpan, spans: *[text_spans.max_text_spans_per_paragraph]TextSpan) []const TextSpan {
                 var len: usize = 0;
-                var bold = false;
-                var italic = false;
-                var strike = false;
+                var style = InlineStyleState{};
                 var literal_start: usize = 0;
                 var index: usize = 0;
                 var scan_cache = ScanCache{};
+                var consumed_html = false;
 
                 while (index < text.len) {
                     if (len + 2 >= spans.len) break;
@@ -526,25 +718,25 @@ pub fn Markdown(comptime Msg: type) type {
 
                     if (rest[0] == '`') {
                         if (std.mem.indexOfScalar(u8, rest[1..], '`')) |close| {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                            appendSpan(spans, &len, spanWith(base, .{ .text = rest[1 .. 1 + close], .monospace = true }));
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            appendStyledSpan(spans, &len, base, style, .{ .text = rest[1 .. 1 + close], .monospace = true });
                             index += close + 2;
                             literal_start = index;
                             continue;
                         }
                     } else if (std.mem.startsWith(u8, rest, "**") or std.mem.startsWith(u8, rest, "__")) {
                         const delim = rest[0..2];
-                        if (bold or hasCloser(rest[2..], delim)) {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                            bold = !bold;
+                        if (style.markdown_bold or hasCloser(rest[2..], delim)) {
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            style.markdown_bold = !style.markdown_bold;
                             index += 2;
                             literal_start = index;
                             continue;
                         }
                     } else if (std.mem.startsWith(u8, rest, "~~")) {
-                        if (strike or hasCloser(rest[2..], "~~")) {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                            strike = !strike;
+                        if (style.markdown_strike or hasCloser(rest[2..], "~~")) {
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            style.markdown_strike = !style.markdown_strike;
                             index += 2;
                             literal_start = index;
                             continue;
@@ -552,21 +744,21 @@ pub fn Markdown(comptime Msg: type) type {
                     } else if (rest[0] == '*' or rest[0] == '_') {
                         const delim = rest[0..1];
                         const boundary_ok = rest[0] == '*' or index == 0 or !isWordByte(text[index - 1]);
-                        const emphasis_ok = if (italic)
+                        const emphasis_ok = if (style.markdown_italic)
                             true
                         else
                             rest.len > 1 and !isInlineSpace(rest[1]) and hasCloser(rest[1..], delim);
                         if (boundary_ok and emphasis_ok) {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                            italic = !italic;
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            style.markdown_italic = !style.markdown_italic;
                             index += 1;
                             literal_start = index;
                             continue;
                         }
                     } else if (rest[0] == '[') {
                         if (parseLinkAt(text, index, &scan_cache)) |link| {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                            appendSpan(spans, &len, spanWith(base, .{ .text = link.text, .link = link.target }));
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            appendStyledSpan(spans, &len, base, style, .{ .text = link.text, .link = link.target });
                             index += link.consumed;
                             literal_start = index;
                             continue;
@@ -574,24 +766,46 @@ pub fn Markdown(comptime Msg: type) type {
                     } else if (rest[0] == '!' and rest.len > 1 and rest[1] == '[') {
                         if (parseLinkAt(text, index + 1, &scan_cache)) |image| {
                             // Images render as their alt text in v1.
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                            appendSpan(spans, &len, spanWith(base, .{ .text = image.text }));
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            appendStyledSpan(spans, &len, base, style, .{ .text = image.text });
                             index += image.consumed + 1;
                             literal_start = index;
                             continue;
                         }
                     } else if (rest[0] == '<') {
-                        if (parseAutolinkAt(text, index, &scan_cache)) |link| {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                            appendSpan(spans, &len, spanWith(base, .{ .text = link.text, .link = link.target }));
+                        if (parseHtmlCommentAt(text, index, &scan_cache)) |comment| {
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            consumed_html = true;
+                            index += comment.consumed;
+                            literal_start = index;
+                            continue;
+                        } else if (parseAutolinkAt(text, index, &scan_cache)) |link| {
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            appendStyledSpan(spans, &len, base, style, .{ .text = link.text, .link = link.target });
                             index += link.consumed;
+                            literal_start = index;
+                            continue;
+                        } else if (parseHtmlTagAt(text, index)) |tag| {
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            consumed_html = true;
+                            applyHtmlTag(spans, &len, base, &style, tag);
+                            index += tag.consumed;
+                            literal_start = index;
+                            continue;
+                        }
+                    } else if (rest[0] == '&') {
+                        if (self.decodeHtmlEntity(rest)) |entity| {
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            appendStyledSpan(spans, &len, base, style, .{ .text = entity.text });
+                            consumed_html = true;
+                            index += entity.consumed;
                             literal_start = index;
                             continue;
                         }
                     } else if (rest[0] == 'h' and atAutolinkBoundary(text, index)) {
                         if (parseBareUrlAt(rest)) |link| {
-                            flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                            appendSpan(spans, &len, spanWith(base, .{ .text = link.text, .link = link.target }));
+                            flushLiteral(spans, &len, text[literal_start..index], base, style);
+                            appendStyledSpan(spans, &len, base, style, .{ .text = link.text, .link = link.target });
                             index += link.consumed;
                             literal_start = index;
                             continue;
@@ -599,11 +813,11 @@ pub fn Markdown(comptime Msg: type) type {
                     } else if (rest[0] == '#' and atAutolinkBoundary(text, index)) {
                         if (self.options.issue_link_base) |issue_base| {
                             if (parseIssueRefAt(rest)) |ref| {
-                                flushLiteral(spans, &len, text[literal_start..index], base, bold, italic, strike);
-                                appendSpan(spans, &len, spanWith(base, .{
+                                flushLiteral(spans, &len, text[literal_start..index], base, style);
+                                appendStyledSpan(spans, &len, base, style, .{
                                     .text = rest[0..ref.consumed],
                                     .link = self.ui.fmt("{s}{s}", .{ issue_base, ref.digits }),
-                                }));
+                                });
                                 index += ref.consumed;
                                 literal_start = index;
                                 continue;
@@ -614,12 +828,93 @@ pub fn Markdown(comptime Msg: type) type {
                 }
                 // Tail (including everything after a span-capacity stop),
                 // styled with the state at the stop point.
-                flushLiteral(spans, &len, text[literal_start..], base, bold, italic, strike);
-                if (len == 0) {
+                flushLiteral(spans, &len, text[literal_start..], base, style);
+                if (len == 0 and !consumed_html) {
                     spans[0] = spanWith(base, .{ .text = text });
                     len = 1;
                 }
                 return spans[0..len];
+            }
+
+            const InlineStyleState = struct {
+                markdown_bold: bool = false,
+                markdown_italic: bool = false,
+                markdown_strike: bool = false,
+                html_bold: usize = 0,
+                html_italic: usize = 0,
+                html_strike: usize = 0,
+                html_underline: usize = 0,
+                html_monospace: usize = 0,
+                html_mark: usize = 0,
+                html_small: usize = 0,
+                html_heading_level: ?usize = null,
+                html_link: []const u8 = "",
+            };
+
+            fn applyHtmlTag(
+                spans: *[text_spans.max_text_spans_per_paragraph]TextSpan,
+                len: *usize,
+                base: TextSpan,
+                style: *InlineStyleState,
+                tag: HtmlTag,
+            ) void {
+                const active = !tag.self_closing;
+                switch (tag.kind) {
+                    .bold => updateHtmlDepth(&style.html_bold, tag.closing, active),
+                    .italic => updateHtmlDepth(&style.html_italic, tag.closing, active),
+                    .strike => updateHtmlDepth(&style.html_strike, tag.closing, active),
+                    .underline => updateHtmlDepth(&style.html_underline, tag.closing, active),
+                    .monospace, .preformatted => updateHtmlDepth(&style.html_monospace, tag.closing, active),
+                    .mark => updateHtmlDepth(&style.html_mark, tag.closing, active),
+                    .small => updateHtmlDepth(&style.html_small, tag.closing, active),
+                    .heading => style.html_heading_level = if (tag.closing or tag.self_closing) null else tag.heading_level,
+                    .link => {
+                        if (tag.closing or tag.self_closing) {
+                            style.html_link = "";
+                        } else {
+                            style.html_link = htmlAttribute(tag, "href") orelse "";
+                        }
+                    },
+                    .line_break => if (!tag.closing) appendStyledSpan(spans, len, base, style.*, .{ .text = "\n" }),
+                    .word_break => if (!tag.closing) appendStyledSpan(spans, len, base, style.*, .{ .text = "\u{200b}" }),
+                    .image => if (!tag.closing) {
+                        if (htmlAttribute(tag, "alt")) |alt| appendStyledSpan(spans, len, base, style.*, .{ .text = alt });
+                    },
+                    .quote => appendStyledSpan(spans, len, base, style.*, .{ .text = if (tag.closing) "”" else "“" }),
+                    .list_item => appendStyledSpan(spans, len, base, style.*, .{ .text = if (tag.closing) "\n" else "• " }),
+                    .table_cell => if (tag.closing) appendStyledSpan(spans, len, base, style.*, .{ .text = "\t" }),
+                    .table_row => if (tag.closing) appendStyledSpan(spans, len, base, style.*, .{ .text = "\n" }),
+                    .horizontal_rule => if (!tag.closing) appendStyledSpan(spans, len, base, style.*, .{ .text = "\n" }),
+                    .paragraph, .blockquote, .list, .table, .table_section, .container => {},
+                }
+            }
+
+            fn decodeHtmlEntity(self: *Builder, rest: []const u8) ?DecodedHtmlEntity {
+                if (std.mem.startsWith(u8, rest, "&amp;")) return .{ .text = "&", .consumed = 5 };
+                if (std.mem.startsWith(u8, rest, "&lt;")) return .{ .text = "<", .consumed = 4 };
+                if (std.mem.startsWith(u8, rest, "&gt;")) return .{ .text = ">", .consumed = 4 };
+                if (std.mem.startsWith(u8, rest, "&quot;")) return .{ .text = "\"", .consumed = 6 };
+                if (std.mem.startsWith(u8, rest, "&apos;")) return .{ .text = "'", .consumed = 6 };
+                if (std.mem.startsWith(u8, rest, "&nbsp;")) return .{ .text = "\u{a0}", .consumed = 6 };
+                if (!std.mem.startsWith(u8, rest, "&#")) return null;
+
+                const semi = std.mem.indexOfScalar(u8, rest[2..@min(rest.len, 14)], ';') orelse return null;
+                const body_end = semi + 2;
+                var digits = rest[2..body_end];
+                var radix: u8 = 10;
+                if (digits.len > 1 and (digits[0] == 'x' or digits[0] == 'X')) {
+                    radix = 16;
+                    digits = digits[1..];
+                }
+                if (digits.len == 0) return null;
+                const codepoint = std.fmt.parseUnsigned(u21, digits, radix) catch return null;
+                if (codepoint == 0 or codepoint > 0x10ffff or (codepoint >= 0xd800 and codepoint <= 0xdfff)) return null;
+                const bytes = self.ui.arena.alloc(u8, 4) catch {
+                    self.ui.failed = true;
+                    return null;
+                };
+                const encoded = std.unicode.utf8Encode(codepoint, bytes) catch return null;
+                return .{ .text = bytes[0..encoded], .consumed = body_end + 1 };
             }
 
             fn flushLiteral(
@@ -627,15 +922,29 @@ pub fn Markdown(comptime Msg: type) type {
                 len: *usize,
                 slice: []const u8,
                 base: TextSpan,
-                bold: bool,
-                italic: bool,
-                strike: bool,
+                style: InlineStyleState,
             ) void {
                 if (slice.len == 0) return;
-                var span = spanWith(base, .{ .text = slice });
-                if (bold) span.weight = .bold;
-                if (italic) span.italic = true;
-                if (strike) span.strikethrough = true;
+                appendStyledSpan(spans, len, base, style, .{ .text = slice });
+            }
+
+            fn appendStyledSpan(
+                spans: *[text_spans.max_text_spans_per_paragraph]TextSpan,
+                len: *usize,
+                base: TextSpan,
+                style: InlineStyleState,
+                overrides: TextSpan,
+            ) void {
+                var span = spanWith(base, overrides);
+                if (style.markdown_bold or style.html_bold > 0 or style.html_heading_level != null) span.weight = .bold;
+                if (style.markdown_italic or style.html_italic > 0) span.italic = true;
+                if (style.markdown_strike or style.html_strike > 0) span.strikethrough = true;
+                if (style.html_underline > 0) span.underline = true;
+                if (style.html_monospace > 0) span.monospace = true;
+                if (style.html_mark > 0) span.background = .surface_pressed;
+                if (style.html_small > 0) span.scale = if (span.scale > 0) span.scale * 0.875 else 0.875;
+                if (style.html_heading_level) |level| span.scale = heading_scales[@min(level, heading_scales.len) - 1];
+                if (span.link.len == 0 and style.html_link.len > 0) span.link = style.html_link;
                 appendSpan(spans, len, span);
             }
 
@@ -656,6 +965,312 @@ pub fn Markdown(comptime Msg: type) type {
             }
         };
     };
+}
+
+// ------------------------------------------------------------- safe HTML
+
+/// The HTML vocabulary is deliberately presentational. Every accepted tag
+/// has a native text/widget lowering; everything else stays visible as
+/// literal source, so accepting Markdown never creates a DOM or an execution
+/// surface.
+const HtmlTagKind = enum {
+    bold,
+    italic,
+    strike,
+    underline,
+    monospace,
+    mark,
+    small,
+    link,
+    image,
+    line_break,
+    word_break,
+    quote,
+    heading,
+    horizontal_rule,
+    paragraph,
+    blockquote,
+    preformatted,
+    list,
+    list_item,
+    table,
+    table_section,
+    table_row,
+    table_cell,
+    container,
+};
+
+const HtmlTag = struct {
+    kind: HtmlTagKind,
+    name: []const u8,
+    attributes: []const u8,
+    closing: bool = false,
+    self_closing: bool = false,
+    heading_level: usize = 0,
+    consumed: usize,
+};
+
+const HtmlComment = struct { consumed: usize };
+const DecodedHtmlEntity = struct { text: []const u8, consumed: usize };
+
+const SingleLineHtmlElement = struct { content: []const u8 };
+
+/// Parse one allowlisted tag at `source[index]`. The scan rejects another
+/// `<` outside a quoted attribute and caps a tag at 1 KiB, keeping a hostile
+/// wall of plausible openers linear and capacity-bounded.
+fn parseHtmlTagAt(source: []const u8, index: usize) ?HtmlTag {
+    if (index >= source.len or source[index] != '<') return null;
+    var cursor = index + 1;
+    var closing = false;
+    if (cursor < source.len and source[cursor] == '/') {
+        closing = true;
+        cursor += 1;
+    }
+    if (cursor >= source.len or !std.ascii.isAlphabetic(source[cursor])) return null;
+
+    const name_start = cursor;
+    while (cursor < source.len and (std.ascii.isAlphanumeric(source[cursor]) or source[cursor] == '-')) cursor += 1;
+    const name = source[name_start..cursor];
+    const classified = classifyHtmlTag(name) orelse return null;
+    if (cursor < source.len and source[cursor] != '>' and source[cursor] != '/' and !std.ascii.isWhitespace(source[cursor])) return null;
+
+    const attributes_start = cursor;
+    const limit = @min(source.len, index + 1024);
+    var quote: ?u8 = null;
+    while (cursor < limit) : (cursor += 1) {
+        const byte = source[cursor];
+        if (quote) |delimiter| {
+            if (byte == delimiter) quote = null;
+            continue;
+        }
+        if (byte == '"' or byte == '\'') {
+            quote = byte;
+            continue;
+        }
+        if (byte == '<') return null;
+        if (byte != '>') continue;
+
+        const attributes = source[attributes_start..cursor];
+        const trimmed_attributes = std.mem.trim(u8, attributes, " \t\r\n");
+        return .{
+            .kind = classified.kind,
+            .name = name,
+            .attributes = attributes,
+            .closing = closing,
+            .self_closing = !closing and trimmed_attributes.len > 0 and trimmed_attributes[trimmed_attributes.len - 1] == '/',
+            .heading_level = classified.heading_level,
+            .consumed = cursor + 1 - index,
+        };
+    }
+    return null;
+}
+
+const ClassifiedHtmlTag = struct {
+    kind: HtmlTagKind,
+    heading_level: usize = 0,
+};
+
+fn classifyHtmlTag(name: []const u8) ?ClassifiedHtmlTag {
+    if (std.ascii.eqlIgnoreCase(name, "b") or std.ascii.eqlIgnoreCase(name, "strong")) return .{ .kind = .bold };
+    if (std.ascii.eqlIgnoreCase(name, "i") or std.ascii.eqlIgnoreCase(name, "em") or
+        std.ascii.eqlIgnoreCase(name, "var") or std.ascii.eqlIgnoreCase(name, "cite")) return .{ .kind = .italic };
+    if (std.ascii.eqlIgnoreCase(name, "s") or std.ascii.eqlIgnoreCase(name, "strike") or std.ascii.eqlIgnoreCase(name, "del")) return .{ .kind = .strike };
+    if (std.ascii.eqlIgnoreCase(name, "u") or std.ascii.eqlIgnoreCase(name, "ins")) return .{ .kind = .underline };
+    if (std.ascii.eqlIgnoreCase(name, "code") or std.ascii.eqlIgnoreCase(name, "kbd") or
+        std.ascii.eqlIgnoreCase(name, "samp") or std.ascii.eqlIgnoreCase(name, "tt")) return .{ .kind = .monospace };
+    if (std.ascii.eqlIgnoreCase(name, "mark")) return .{ .kind = .mark };
+    if (std.ascii.eqlIgnoreCase(name, "small") or std.ascii.eqlIgnoreCase(name, "sub") or std.ascii.eqlIgnoreCase(name, "sup")) return .{ .kind = .small };
+    if (std.ascii.eqlIgnoreCase(name, "a")) return .{ .kind = .link };
+    if (std.ascii.eqlIgnoreCase(name, "img")) return .{ .kind = .image };
+    if (std.ascii.eqlIgnoreCase(name, "br")) return .{ .kind = .line_break };
+    if (std.ascii.eqlIgnoreCase(name, "wbr")) return .{ .kind = .word_break };
+    if (std.ascii.eqlIgnoreCase(name, "q")) return .{ .kind = .quote };
+    if (name.len == 2 and (name[0] == 'h' or name[0] == 'H') and name[1] >= '1' and name[1] <= '6') {
+        return .{ .kind = .heading, .heading_level = name[1] - '0' };
+    }
+    if (std.ascii.eqlIgnoreCase(name, "hr")) return .{ .kind = .horizontal_rule };
+    if (std.ascii.eqlIgnoreCase(name, "p")) return .{ .kind = .paragraph };
+    if (std.ascii.eqlIgnoreCase(name, "blockquote")) return .{ .kind = .blockquote };
+    if (std.ascii.eqlIgnoreCase(name, "pre")) return .{ .kind = .preformatted };
+    if (std.ascii.eqlIgnoreCase(name, "ol") or std.ascii.eqlIgnoreCase(name, "ul") or std.ascii.eqlIgnoreCase(name, "dl")) return .{ .kind = .list };
+    if (std.ascii.eqlIgnoreCase(name, "li") or std.ascii.eqlIgnoreCase(name, "dt") or std.ascii.eqlIgnoreCase(name, "dd")) return .{ .kind = .list_item };
+    if (std.ascii.eqlIgnoreCase(name, "table")) return .{ .kind = .table };
+    if (std.ascii.eqlIgnoreCase(name, "thead") or std.ascii.eqlIgnoreCase(name, "tbody") or std.ascii.eqlIgnoreCase(name, "tfoot")) return .{ .kind = .table_section };
+    if (std.ascii.eqlIgnoreCase(name, "tr")) return .{ .kind = .table_row };
+    if (std.ascii.eqlIgnoreCase(name, "td") or std.ascii.eqlIgnoreCase(name, "th")) return .{ .kind = .table_cell };
+    if (std.ascii.eqlIgnoreCase(name, "abbr") or std.ascii.eqlIgnoreCase(name, "bdo") or
+        std.ascii.eqlIgnoreCase(name, "caption") or std.ascii.eqlIgnoreCase(name, "center") or
+        std.ascii.eqlIgnoreCase(name, "div") or std.ascii.eqlIgnoreCase(name, "span") or
+        std.ascii.eqlIgnoreCase(name, "section") or std.ascii.eqlIgnoreCase(name, "article") or
+        std.ascii.eqlIgnoreCase(name, "header") or std.ascii.eqlIgnoreCase(name, "footer") or
+        std.ascii.eqlIgnoreCase(name, "main") or std.ascii.eqlIgnoreCase(name, "figure") or
+        std.ascii.eqlIgnoreCase(name, "figcaption") or std.ascii.eqlIgnoreCase(name, "time") or
+        std.ascii.eqlIgnoreCase(name, "ruby") or std.ascii.eqlIgnoreCase(name, "rt") or
+        std.ascii.eqlIgnoreCase(name, "rp")) return .{ .kind = .container };
+    return null;
+}
+
+fn parseHtmlCommentAt(source: []const u8, index: usize, cache: ?*ScanCache) ?HtmlComment {
+    if (index > source.len or !std.mem.startsWith(u8, source[index..], "<!--")) return null;
+    const close = if (cache) |scan|
+        ScanCache.nextPattern(&scan.html_comment_close, source, index + 4, "-->")
+    else
+        std.mem.indexOfPos(u8, source, index + 4, "-->");
+    const close_index = close orelse return null;
+    return .{ .consumed = close_index + 3 - index };
+}
+
+fn singleLineHtmlElement(line: []const u8, opening: HtmlTag) ?SingleLineHtmlElement {
+    if (opening.closing or opening.self_closing) return null;
+    const close_start = std.mem.lastIndexOfScalar(u8, line, '<') orelse return null;
+    if (close_start < opening.consumed) return null;
+    const closing = parseHtmlTagAt(line, close_start) orelse return null;
+    if (!closing.closing or closing.consumed != line.len - close_start or
+        !std.ascii.eqlIgnoreCase(opening.name, closing.name)) return null;
+    return .{ .content = line[opening.consumed..close_start] };
+}
+
+fn unwrapHtmlCode(content: []const u8) []const u8 {
+    const opening = parseHtmlTagAt(content, 0) orelse return content;
+    if (opening.kind != .monospace or opening.closing) return content;
+    const element = singleLineHtmlElement(content, opening) orelse return content;
+    return element.content;
+}
+
+fn isStandaloneClosingHtmlTag(line: []const u8, name: []const u8) bool {
+    const tag = parseHtmlTagAt(line, 0) orelse return false;
+    return tag.closing and tag.consumed == line.len and std.ascii.eqlIgnoreCase(tag.name, name);
+}
+
+fn skipHtmlElement(lines: *LineIterator, name: []const u8) void {
+    var depth: usize = 1;
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        const tag = parseHtmlTagAt(trimmed, 0) orelse continue;
+        if (tag.consumed != trimmed.len or !std.ascii.eqlIgnoreCase(tag.name, name)) continue;
+        if (!tag.closing and !tag.self_closing) depth += 1;
+        if (tag.closing) {
+            depth -= 1;
+            if (depth == 0) return;
+        }
+    }
+}
+
+fn collectHtmlPreformatted(lines: *LineIterator) []const u8 {
+    const start = lines.index;
+    var end = start;
+    var depth: usize = 1;
+    while (lines.peek()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (parseHtmlTagAt(trimmed, 0)) |tag| {
+            if (tag.consumed == trimmed.len and std.ascii.eqlIgnoreCase(tag.name, "pre")) {
+                if (!tag.closing and !tag.self_closing) depth += 1;
+                if (tag.closing) {
+                    depth -= 1;
+                    if (depth == 0) {
+                        _ = lines.next();
+                        break;
+                    }
+                }
+            }
+        }
+        _ = lines.next();
+        end = lines.index;
+    }
+    const raw = std.mem.trimEnd(u8, lines.source[start..@min(end, lines.source.len)], "\r\n");
+    return std.mem.trim(u8, unwrapHtmlCode(raw), "\r\n");
+}
+
+fn isHtmlBlockTag(tag: HtmlTag) bool {
+    return switch (tag.kind) {
+        .heading, .horizontal_rule, .paragraph, .blockquote, .preformatted, .list, .list_item, .table, .table_section, .table_row, .table_cell => true,
+        .container => isHtmlStructuralTag(tag),
+        else => false,
+    };
+}
+
+fn isHtmlStructuralTag(tag: HtmlTag) bool {
+    if (tag.kind != .container) return isHtmlBlockTagWithoutContainer(tag.kind);
+    return std.ascii.eqlIgnoreCase(tag.name, "center") or std.ascii.eqlIgnoreCase(tag.name, "div") or
+        std.ascii.eqlIgnoreCase(tag.name, "section") or std.ascii.eqlIgnoreCase(tag.name, "article") or
+        std.ascii.eqlIgnoreCase(tag.name, "header") or std.ascii.eqlIgnoreCase(tag.name, "footer") or
+        std.ascii.eqlIgnoreCase(tag.name, "main") or std.ascii.eqlIgnoreCase(tag.name, "figure") or
+        std.ascii.eqlIgnoreCase(tag.name, "figcaption") or std.ascii.eqlIgnoreCase(tag.name, "caption");
+}
+
+fn isHtmlBlockTagWithoutContainer(kind: HtmlTagKind) bool {
+    return switch (kind) {
+        .heading, .horizontal_rule, .paragraph, .blockquote, .preformatted, .list, .list_item, .table, .table_section, .table_row, .table_cell => true,
+        else => false,
+    };
+}
+
+fn isHtmlAlignmentContainer(tag: HtmlTag) bool {
+    if (tag.kind == .paragraph) return true;
+    if (tag.kind != .container) return false;
+    return std.ascii.eqlIgnoreCase(tag.name, "center") or std.ascii.eqlIgnoreCase(tag.name, "div") or
+        std.ascii.eqlIgnoreCase(tag.name, "section") or std.ascii.eqlIgnoreCase(tag.name, "article") or
+        std.ascii.eqlIgnoreCase(tag.name, "header") or std.ascii.eqlIgnoreCase(tag.name, "footer") or
+        std.ascii.eqlIgnoreCase(tag.name, "main") or std.ascii.eqlIgnoreCase(tag.name, "figure") or
+        std.ascii.eqlIgnoreCase(tag.name, "figcaption");
+}
+
+fn htmlTagAlignment(tag: HtmlTag) ?canvas.TextAlign {
+    if (std.ascii.eqlIgnoreCase(tag.name, "center")) return .center;
+    const value = htmlAttribute(tag, "align") orelse return null;
+    if (std.ascii.eqlIgnoreCase(value, "center")) return .center;
+    if (std.ascii.eqlIgnoreCase(value, "right") or std.ascii.eqlIgnoreCase(value, "end")) return .end;
+    if (std.ascii.eqlIgnoreCase(value, "left") or std.ascii.eqlIgnoreCase(value, "start")) return .start;
+    return null;
+}
+
+/// Return one attribute value without exposing any other attribute to the
+/// widget engine. Quoted and unquoted values are accepted case-insensitively,
+/// matching the forms commonly found in README HTML.
+fn htmlAttribute(tag: HtmlTag, wanted: []const u8) ?[]const u8 {
+    var cursor: usize = 0;
+    while (cursor < tag.attributes.len) {
+        while (cursor < tag.attributes.len and std.ascii.isWhitespace(tag.attributes[cursor])) cursor += 1;
+        if (cursor >= tag.attributes.len or tag.attributes[cursor] == '/') break;
+        const name_start = cursor;
+        while (cursor < tag.attributes.len and (std.ascii.isAlphanumeric(tag.attributes[cursor]) or
+            tag.attributes[cursor] == '-' or tag.attributes[cursor] == '_' or tag.attributes[cursor] == ':')) cursor += 1;
+        if (cursor == name_start) {
+            cursor += 1;
+            continue;
+        }
+        const name = tag.attributes[name_start..cursor];
+        while (cursor < tag.attributes.len and std.ascii.isWhitespace(tag.attributes[cursor])) cursor += 1;
+        if (cursor >= tag.attributes.len or tag.attributes[cursor] != '=') continue;
+        cursor += 1;
+        while (cursor < tag.attributes.len and std.ascii.isWhitespace(tag.attributes[cursor])) cursor += 1;
+        if (cursor >= tag.attributes.len) return null;
+
+        var value: []const u8 = undefined;
+        if (tag.attributes[cursor] == '"' or tag.attributes[cursor] == '\'') {
+            const quote = tag.attributes[cursor];
+            cursor += 1;
+            const value_start = cursor;
+            while (cursor < tag.attributes.len and tag.attributes[cursor] != quote) cursor += 1;
+            if (cursor >= tag.attributes.len) return null;
+            value = tag.attributes[value_start..cursor];
+            cursor += 1;
+        } else {
+            const value_start = cursor;
+            while (cursor < tag.attributes.len and !std.ascii.isWhitespace(tag.attributes[cursor])) cursor += 1;
+            value = tag.attributes[value_start..cursor];
+        }
+        if (std.ascii.eqlIgnoreCase(name, wanted)) return value;
+    }
+    return null;
+}
+
+fn updateHtmlDepth(depth: *usize, closing: bool, active: bool) void {
+    if (closing) {
+        if (depth.* > 0) depth.* -= 1;
+    } else if (active and depth.* < std.math.maxInt(usize)) {
+        depth.* += 1;
+    }
 }
 
 // ------------------------------------------------------------ line model
@@ -848,6 +1463,12 @@ fn startsNewBlock(line: []const u8) bool {
     if (std.mem.startsWith(u8, trimmed, ">")) return true;
     if (listMarker(line) != null) return true;
     if (std.ascii.startsWithIgnoreCase(trimmed, "<details")) return true;
+    if (parseHtmlTagAt(trimmed, 0)) |tag| {
+        if (isHtmlBlockTag(tag)) return true;
+    }
+    if (parseHtmlCommentAt(trimmed, 0, null)) |comment| {
+        if (comment.consumed == trimmed.len) return true;
+    }
     return false;
 }
 
@@ -876,6 +1497,7 @@ const ScanCache = struct {
     /// quadratic rescans on interleaved `[`/`<` walls.
     title_space: Slot = .{}, // ' '
     scheme_sep: Slot = .{}, // "://"
+    html_comment_close: Slot = .{}, // "-->"
 
     const Slot = struct {
         valid: bool = false,

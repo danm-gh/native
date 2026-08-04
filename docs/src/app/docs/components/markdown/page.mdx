@@ -3,7 +3,7 @@ import { AttrTable } from "@/components/attr-table";
 
 # Markdown
 
-Renders a markdown string (a GFM subset, pipe tables included) as native widgets through the same text pipeline as every other component — deterministic layout, selectable text. `source` is required and must be one `{binding}`; the element takes no children. Links dispatch `on-link` with the URL as payload (bare URLs autolink), `<details>` blocks toggle through `on-details` plus a model-owned `details-expanded` flag list, and `#123` references linkify through `issue-link-base`. Fenced blocks lower through the reusable [Code](/docs/components/code) component, so indentation and syntax behavior stay identical.
+Renders a markdown string (a GFM subset, including pipe tables and safe presentational HTML) as native widgets through the same text pipeline as every other component — deterministic layout, selectable text. `source` is required and must be one `{binding}`; the element takes no children. Links dispatch `on-link` with the URL as payload (bare URLs autolink), `<details>` blocks toggle through `on-details` plus a model-owned `details-expanded` flag list, and `#123` references linkify through `issue-link-base`. Fenced blocks lower through the reusable [Code](/docs/components/code) component, so indentation and syntax behavior stay identical.
 
 <ComponentPreview name="markdown" alt="A markdown document rendered by the engine" caption="headings, emphasis, inline code, lists, links, and a code block" />
 
@@ -25,6 +25,16 @@ Md.view(ui, model.release_notes, .{
     .issue_link_base = "https://github.com/native-sdk/native/issues/",
 })
 ```
+
+## HTML subset
+
+README- and comment-style HTML is lowered onto native presentation rather than passed to a browser:
+
+- Text: `<b>`, `<strong>`, `<i>`, `<em>`, `<var>`, `<s>`, `<strike>`, `<del>`, `<u>`, `<ins>`, `<code>`, `<kbd>`, `<samp>`, `<tt>`, `<mark>`, `<small>`, `<sub>`, and `<sup>`.
+- Content: `<a href>`, `<img alt>`, `<br>`, `<wbr>`, `<q>`, HTML comments, core named entities, and numeric entities. Images render their alt text; the component does not fetch remote media.
+- Blocks and wrappers: `<h1>` through `<h6>`, `<p>`, `<blockquote>`, `<pre>`, `<hr>`, list items, and the common `<div align="center">` README pattern. Harmless list, table, and container wrappers are accepted as readable native content; use Markdown pipe tables for full native table layout. `<details>` and `<summary>` retain their controlled expansion behavior.
+
+This is a sanitized native subset, not a DOM. CSS, scripts, forms, embeds, event attributes, and arbitrary HTML do not execute; unsupported or malformed tags remain literal text. Only `href`, `alt`, and block `align` affect presentation.
 
 ## Attributes
 

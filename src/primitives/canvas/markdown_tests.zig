@@ -74,6 +74,16 @@ fn hasSpan(widget: canvas.Widget, text: []const u8, color: ?canvas.TextSpanColor
     return false;
 }
 
+fn findSpan(widget: canvas.Widget, text: []const u8) ?canvas.TextSpan {
+    for (widget.spans) |span| {
+        if (std.mem.eql(u8, span.text, text)) return span;
+    }
+    for (widget.children) |child| {
+        if (findSpan(child, text)) |span| return span;
+    }
+    return null;
+}
+
 fn allSpansMonospace(widget: canvas.Widget) bool {
     for (widget.spans) |span| {
         if (!span.monospace) return false;
@@ -154,6 +164,111 @@ test "markdown maps headings, paragraphs, and inline styles onto spans" {
     try testing.expectEqual(canvas.WidgetRole.link, link_child.semantics.role);
     const msg = tree.msgForPointer(link_child.id, .up).?;
     try testing.expectEqualStrings("https://example.com", msg.open_url);
+}
+
+test "safe GitHub-style inline HTML maps onto native spans" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\Plain <strong>bold <em>and italic</em></strong>, <code>code</code>, <del>gone</del>, <ins>new</ins>, <mark>marked</mark>, and <small>small</small>.
+        \\<A HREF=https://example.com/a/b>a link</A>.<BR />Next <IMG src="ignored.png" onerror="boom()" alt='diagram'> &amp; &#x2713;.
+    , .{ .on_link = Ui.linkMsg(.open_url) });
+
+    const paragraph = findParagraphContaining(tree.root, "Plain").?;
+    try testing.expectEqualStrings(
+        "Plain bold and italic, code, gone, new, marked, and small. a link.\nNext diagram & ✓.",
+        paragraph.text,
+    );
+
+    try testing.expectEqual(canvas.TextSpanWeight.bold, findSpan(paragraph, "bold ").?.weight);
+    const nested = findSpan(paragraph, "and italic").?;
+    try testing.expectEqual(canvas.TextSpanWeight.bold, nested.weight);
+    try testing.expect(nested.italic);
+    try testing.expect(findSpan(paragraph, "code").?.monospace);
+    try testing.expect(findSpan(paragraph, "gone").?.strikethrough);
+    try testing.expect(findSpan(paragraph, "new").?.underline);
+    try testing.expectEqual(canvas.TextSpanColor.surface_pressed, findSpan(paragraph, "marked").?.background.?);
+    try testing.expectEqual(@as(f32, 0.875), findSpan(paragraph, "small").?.scale);
+
+    const link = findSpan(paragraph, "a link").?;
+    try testing.expectEqualStrings("https://example.com/a/b", link.link);
+    const link_widget = findRoleLabel(tree.root, .link, "a link").?;
+    const msg = tree.msgForPointer(link_widget.id, .up).?;
+    try testing.expectEqualStrings("https://example.com/a/b", msg.open_url);
+}
+
+test "GitHub-style HTML blocks lower onto native document structure" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\<div align="center">
+        \\<h2>Centered <em>heading</em></h2>
+        \\<p>Copy <strong>here</strong>.</p>
+        \\</div>
+        \\<h3>
+        \\Multiline heading
+        \\</h3>
+        \\
+        \\<blockquote>Quoted <code>value</code>.</blockquote>
+        \\<blockquote>
+        \\Nested <strong>quote</strong>.
+        \\</blockquote>
+        \\<hr class="ignored">
+        \\<ul>
+        \\<li>First</li>
+        \\<li>Second <b>bold</b></li>
+        \\</ul>
+        \\<pre>
+        \\<code>
+        \\const answer = 42;
+        \\</code>
+        \\</pre>
+    , .{});
+
+    const heading = findParagraphContaining(tree.root, "Centered heading").?;
+    try testing.expectEqual(canvas.TextAlign.center, heading.text_alignment);
+    try testing.expectEqual(markdown.heading_scales[1], findSpan(heading, "Centered ").?.scale);
+    const heading_emphasis = findSpan(heading, "heading").?;
+    try testing.expectEqual(canvas.TextSpanWeight.bold, heading_emphasis.weight);
+    try testing.expect(heading_emphasis.italic);
+
+    const centered_copy = findParagraphContaining(tree.root, "Copy here.").?;
+    try testing.expectEqual(canvas.TextAlign.center, centered_copy.text_alignment);
+    try testing.expectEqual(canvas.TextSpanWeight.bold, findSpan(centered_copy, "here").?.weight);
+
+    const multiline_heading = findParagraphContaining(tree.root, "Multiline heading").?;
+    try testing.expectEqual(canvas.TextSpanWeight.bold, multiline_heading.spans[0].weight);
+    try testing.expectEqual(markdown.heading_scales[2], multiline_heading.spans[0].scale);
+
+    const quote = findParagraphContaining(tree.root, "Quoted value.").?;
+    try testing.expectEqual(canvas.TextAlign.start, quote.text_alignment);
+    try testing.expect(findSpan(quote, "value").?.monospace);
+    try testing.expectEqual(canvas.TextSpanWeight.bold, findSpan(tree.root, "quote").?.weight);
+    try testing.expectEqual(@as(usize, 3), countKind(tree.root, .separator));
+    try testing.expect(findRowWithDirectParagraph(tree.root, "First") != null);
+    try testing.expect(findRowWithDirectParagraph(tree.root, "Second bold") != null);
+    const preformatted = findParagraphContaining(tree.root, "const answer = 42;").?;
+    try testing.expect(allSpansMonospace(preformatted));
+}
+
+test "HTML comments hide content while unsupported and malformed tags stay literal" {
+    var doc = TestDoc.init();
+    defer doc.deinit();
+    const tree = try doc.build(
+        \\Visible <!-- hidden **secret** --> text. <script>alert(1)</script> <span onclick="boom()">safe</span>.
+        \\
+        \\Malformed <strong never closes.
+    , .{});
+
+    const visible = findParagraphContaining(tree.root, "Visible").?;
+    try testing.expect(std.mem.indexOf(u8, visible.text, "hidden") == null);
+    try testing.expect(std.mem.indexOf(u8, visible.text, "secret") == null);
+    try testing.expect(std.mem.indexOf(u8, visible.text, "<script>alert(1)</script>") != null);
+    try testing.expect(std.mem.indexOf(u8, visible.text, "onclick") == null);
+    try testing.expect(std.mem.indexOf(u8, visible.text, "safe") != null);
+
+    const malformed = findParagraphContaining(tree.root, "Malformed").?;
+    try testing.expect(std.mem.indexOf(u8, malformed.text, "<strong never closes.") != null);
 }
 
 test "markdown maps lists, task lists, code fences, quotes, and rules" {

@@ -169,6 +169,11 @@ test "hostile: 100-deep quotes, lists, and details nesting stay bounded" {
     // Details nested past max_markdown_details_per_document, all expanded.
     for (0..40) |_| try stream.writeAll("<details>\n<summary>s</summary>\n\nbody\n\n");
     for (0..40) |_| try stream.writeAll("</details>\n");
+    // Safe HTML blockquotes recurse only to the mapper's bounded block
+    // depth, then consume the overflowing subtree without growing the tree.
+    for (0..100) |_| try stream.writeAll("<blockquote>\n");
+    try stream.writeAll("html quote body\n");
+    for (0..100) |_| try stream.writeAll("</blockquote>\n");
 
     const result = try buildHostile(stream.buffered());
     try testing.expect(result.widgets > 0);

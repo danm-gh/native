@@ -2658,6 +2658,12 @@ const FacadeEmitter = struct {
             \\      nscfWU8(sink, 0x1c);
             \\      nscfWShortText(sink, cmd.key);
             \\      return;
+            \\    case "show_notification":
+            \\      nscfWU8(sink, 0x1d);
+            \\      nscfWBytes(sink, cmd.title);
+            \\      nscfWBytes(sink, cmd.subtitle);
+            \\      nscfWBytes(sink, cmd.body);
+            \\      return;
             \\    case "batch":
             \\      for (let i = 0; i < cmd.cmds.length; i++) {
             \\        nscfEncodeCmd(sink, cmd.cmds[i]!);

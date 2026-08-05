@@ -33,7 +33,8 @@
 //   - timer/now/delay arms carry exactly one number payload field (pinned
 //     by tsc), so the harness constructs them shape-directed without
 //     needing the field's name.
-// Every other effect (files, fetch, clipboard, spawn, audio, host commands)
+// Every other effect (files, fetch, clipboard, notifications, spawn, audio,
+// host commands)
 // is printed as `cmd ...` and NOT performed — feed its result back yourself
 // as an ordinary Msg line. That is the point: results are plain messages,
 // and the loop stays deterministic.
@@ -162,6 +163,14 @@ function performCmd(cmd: Cmdish): void {
       } else {
         say(`cmd cancel ${key} (not performed here - a live request or named op drops silently; a live spawn ends loudly, err arm "cancelled")`);
       }
+      return;
+    }
+    case "show_notification": {
+      const details = Object.entries(cmd)
+        .filter(([k]) => k !== "op")
+        .map(([k, v]) => `${k}=${JSON.stringify(jsonable(v))}`)
+        .join(" ");
+      say(`cmd ${cmd.op} ${details}`.trimEnd() + " (not performed by the virtual host; no result Msg)");
       return;
     }
     default: {

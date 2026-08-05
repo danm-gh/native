@@ -156,7 +156,7 @@ A Zig-root app keeps dev-time hot reload for its embedded fragments too: build w
 
 ## Side effects
 
-`update` stays pure by routing anything asynchronous — subprocesses, HTTP, file persistence, timers, clipboard — through the effects channel, and results come back as ordinary messages. In a TypeScript core, effects are `Cmd` data returned from `update` and recurring timers are declared `Sub` data — see [TypeScript Cores: Effects](/docs/typescript#effects-are-cmd-data). In a Zig core, declare `.update_fx` instead of `.update` and spawn from message arms; boot-time work goes in `.init_fx`, which runs exactly once before the first paint. See [Native UI: Effects](/docs/native-ui#effects).
+`update` stays pure by routing anything that leaves the model — subprocesses, HTTP, file persistence, timers, clipboard, desktop notifications — through the effects channel, and routed results come back as ordinary messages. In a TypeScript core, effects are `Cmd` data returned from `update` and recurring timers are declared `Sub` data — see [TypeScript Cores: Effects](/docs/typescript#effects-are-cmd-data). In a Zig core, declare `.update_fx` instead of `.update` and spawn from message arms; boot-time work goes in `.init_fx`, which runs exactly once before the first paint. See [Native UI: Effects](/docs/native-ui#effects).
 
 ## Dropping down
 

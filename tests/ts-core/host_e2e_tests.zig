@@ -9,7 +9,8 @@
 //! session recorder. Timers fire, requests round-trip, replace/cancel
 //! keep the wire contract, `Cmd.now` stamps synchronously, a REAL
 //! subprocess streams lines into the core (and dies to a mid-stream
-//! cancel), audio and video events flow the soundboard way (the fake
+//! cancel), desktop notifications reach the platform service, audio and
+//! video events flow the soundboard way (the fake
 //! channel's scripted feed), and recorded sessions — streams included — replay
 //! to identical state without a host call or a process launch.
 //!
@@ -97,6 +98,7 @@ fn e2eCommand(name: []const u8) ?fixture.Msg {
     if (std.mem.eql(u8, name, "core.watch")) return .watch;
     if (std.mem.eql(u8, name, "core.mixreject")) return .mix_reject;
     if (std.mem.eql(u8, name, "core.mixrejectflip")) return .mix_reject_flip;
+    if (std.mem.eql(u8, name, "core.notify")) return .notify;
     return null;
 }
 
@@ -515,6 +517,25 @@ test "clipboardWrite and clipboardRead ride the platform pasteboard" {
     try h.wake();
     try std.testing.expectEqualStrings("ready", Bridge.model().status);
     try std.testing.expectEqual(@as(i64, 0), Bridge.model().failures);
+}
+
+test "showNotification reaches the desktop platform from the compiled core" {
+    HostStub.reset();
+    const h = try Harness.create();
+    defer h.destroy();
+    const fx = &h.app_state.effects;
+
+    // Prove the title can come from model bytes, not only a literal in the
+    // command factory, then pin every field after the compiled wire crosses
+    // the native host decoder.
+    try fx.feedHostResult(status_request_key, true, "Build finished");
+    try h.wake();
+    try h.menu("core.notify");
+
+    try std.testing.expectEqual(@as(usize, 1), h.harness.null_platform.notificationCount());
+    try std.testing.expectEqualStrings("Build finished", h.harness.null_platform.lastNotificationTitle());
+    try std.testing.expectEqualStrings("native-sdk", h.harness.null_platform.lastNotificationSubtitle());
+    try std.testing.expectEqualStrings("TS core notification", h.harness.null_platform.lastNotificationBody());
 }
 
 test "fetch parks on the engine and routes the { status, body } record and err reasons" {

@@ -287,6 +287,10 @@ The runtime interprets the command after the model commits and dispatches any re
       <td>System clipboard: write is fire-and-forget, read routes the text bytes back</td>
     </tr>
     <tr>
+      <td><code>Cmd.showNotification(&#123; title, subtitle?, body? &#125;)</code></td>
+      <td>Show a desktop notification, fire-and-forget; text fields are bytes and the OS remains authoritative over final delivery</td>
+    </tr>
+    <tr>
       <td><code>Cmd.spawn(argv, &#123; key?, stdin?, line?, exit, err &#125;)</code></td>
       <td>Run a subprocess, streaming stdout line by line; <code>collect: true</code> buffers whole stdout into the <code>exit</code> arm instead</td>
     </tr>

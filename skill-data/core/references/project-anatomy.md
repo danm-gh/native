@@ -4,7 +4,7 @@ Use this when creating, orienting in, or restructuring a Native SDK app.
 
 ## Generated project files
 
-A default zero-config app ships no build files at all. Its authored files are `app.zon`, `src/core.ts`, and `src/app.native` (+ `assets/`); the `native check|dev|test|build` verbs check the TypeScript core and markup, compile them to native code, and synthesize the build graph into `.native/build/` (gitignored). `build.zig`/`build.zig.zon` appear only in apps that own their build (`native eject`, the `--full` scaffold, or an expanded example). A Zig core is an explicit alternative created with `--template zig-core`, not something to infer from the SDK's implementation or older examples.
+A default zero-config app ships no build files at all. Its authored files are `app.zon`, `src/core.ts`, and `src/app.native` (+ `assets/`). `native check` validates the TypeScript core, markup, and manifest without generating a build graph; `native dev|test|build` compile the app to native code and synthesize the build graph into `.native/build/` (gitignored). `build.zig`/`build.zig.zon` appear only in apps that own their build (`native eject`, the `--full` scaffold, or an expanded example). A Zig core is an explicit alternative created with `--template zig-core`, not something to infer from the SDK's implementation or older examples.
 
 Files by path:
 

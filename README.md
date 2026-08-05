@@ -93,7 +93,7 @@ Read the full guide at [native-sdk.dev/quick-start](https://native-sdk.dev/quick
 
 ## Examples
 
-The apps pictured above live in [examples/](./examples), most as zero-config projects — `app.zon` plus `src/`, no build files — run straight from their directory with `native dev`. Start with the TypeScript examples when learning the primary authoring path. Their `-ts` suffix only distinguishes them from older Zig originals kept beside them; new apps created by `native init` use TypeScript without a suffix.
+The apps pictured above live in [examples/](./examples), most as zero-config projects — `app.zon` plus `src/`, no build files — run straight from their directory with `native dev`. Start with the TypeScript examples when learning the primary authoring path. Their `-ts` suffix is historical: `soundboard-ts` and `system-monitor-ts` are ports kept beside older Zig originals, while `ai-chat-ts` is TypeScript-only. New apps created by `native init` use TypeScript without a suffix.
 
 | Example | What it shows |
 | --- | --- |

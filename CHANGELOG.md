@@ -2,9 +2,31 @@
 
 All notable changes to the Native SDK (formerly zero-native) will be documented in this file.
 
-## 0.8.0
+## 0.8.1
 
 <!-- release:start -->
+
+### New Features
+
+- **Safe presentational HTML in Markdown**: Markdown now lowers common GitHub-style inline and block HTML into native widgets, including links, details, aligned containers, and caller-resolved images, while scripts, styles, forms, embeds, event attributes, and unsupported or malformed markup remain inert literal text (#280).
+
+### Bug Fixes
+
+- **Reliable resolved Markdown images**: image discovery now follows renderable block starts, canonicalizes entity-encoded URLs consistently between loading and lookup, preserves aspect ratios within declared bounds, honors centered and end alignment, and ignores images inside comments, unsupported markup, code, and preformatted blocks (#281).
+- **Payload-free HTTP write requests**: `Effects.fetch` now sends an explicit zero-length body for POST, PUT, and PATCH requests without a payload, preventing debug-build crashes and emitting the required `Content-Length: 0` header (#277).
+
+### Improvements
+
+- **History-driven release notes**: release preparation now builds the complete changelog entry and contributor list from the commits since the previous release, replacing the per-change fragment workflow (#278).
+
+### Contributors
+
+- @ctate
+- @Railly
+
+<!-- release:end -->
+
+## 0.8.0
 
 ### New Features
 
@@ -23,8 +45,6 @@ All notable changes to the Native SDK (formerly zero-native) will be documented 
 ### Contributors
 
 - @ctate
-
-<!-- release:end -->
 
 ## 0.7.2
 

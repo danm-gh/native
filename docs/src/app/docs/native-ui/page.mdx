@@ -432,7 +432,18 @@ Files ride the same channel: `fx.writeFile` / `fx.readFile` persist app state â€
 .saved => |result| model.noteSaved(result.outcome),
 ```
 
-Desktop notifications use the same bounded platform-services facade but are intentionally fire-and-forget: once the host accepts a request, the OS can still suppress it through Focus / Do Not Disturb or the user's notification settings, so a success Msg would over-promise. Call it from an `update_fx` arm; invalid or over-bound fields and unavailable services fail closed. The fake executor and session replay never display one.
+Desktop notifications use the same bounded platform-services facade but are intentionally fire-and-forget: once the host accepts a request, the OS can still suppress it through Focus / Do Not Disturb or the user's notification settings, so a success Msg would over-promise. Return `Cmd.showNotification` from a TypeScript core or call `fx.showNotification` from a Zig `update_fx` arm; invalid or over-bound fields and unavailable services fail closed. The fake executor and session replay never display one.
+
+<CodeToggle>
+
+```ts
+case "build_finished":
+  return [model, Cmd.showNotification({
+    title: asciiBytes("Build finished"),
+    subtitle: asciiBytes("native-sdk"),
+    body: asciiBytes("All checks passed."),
+  })];
+```
 
 ```zig
 .build_finished => fx.showNotification(.{
@@ -441,6 +452,8 @@ Desktop notifications use the same bounded platform-services facade but are inte
     .body = "All checks passed.",
 }),
 ```
+
+</CodeToggle>
 
 Failure and overflow are always visible: a spawn that cannot run delivers an exit Msg with reason `rejected`, a fetch that cannot run delivers a response Msg with outcome `rejected`, and a file effect that cannot run delivers a result Msg with outcome `rejected`; dropped or truncated lines carry counts and flags; `cancel` kills and reaps the process and always ends in exactly one `cancelled` exit Msg, with no further line Msgs after it. Tests use the fake executor (`effects.executor = .fake`) to assert on spawn, fetch, and file requests and feed synthetic lines, stderr (`feedStderr`, collect spawns), exits, responses, and file results back deterministically â€” set it before the first frame and `init_fx` boot spawns are recorded too. See `examples/effects-probe`.
 

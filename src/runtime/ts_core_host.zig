@@ -287,6 +287,9 @@
 //!                  frame event carries the state.
 //!   quit_app    -> `fx.quitApp()` — the graceful terminate through the
 //!                  same shutdown path a last-window close takes.
+//!   show_notification -> `fx.showNotification` fire-and-forget; invalid or
+//!                  unavailable requests fail closed, and replay suppresses
+//!                  the external user-visible side effect.
 //!   cancel      -> by wire key, first match wins in this order: the
 //!                  request table (`fx.cancelHostRequest`, silent), the
 //!                  named-op table (the entry is marked dropped and
@@ -1216,6 +1219,19 @@ pub fn TsCoreHost(comptime core: type) type {
                         // one "cancelled" exit routes its own event arm,
                         // retiring the entry in ptyEventMsg.
                         if (findPty(key)) |index| fx.ptyKill(pty_key_base + index);
+                    },
+                    // show_notification [op][title_len u32 LE][title]
+                    //                   [subtitle_len u32 LE][subtitle]
+                    //                   [body_len u32 LE][body]
+                    0x1D => {
+                        const title = takeLongBytes(cmd, &at);
+                        const subtitle = takeLongBytes(cmd, &at);
+                        const body = takeLongBytes(cmd, &at);
+                        fx.showNotification(.{
+                            .title = title,
+                            .subtitle = subtitle,
+                            .body = body,
+                        });
                     },
                     else => @panic("ts core host: unknown command wire record - the core and this runtime disagree on cmd_format_version"),
                 }

@@ -2032,9 +2032,18 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
                     };
                 },
                 .bool => @field(options, zig_field) = evalExpr(node, entries, raw, ui, model, scope).truthy(),
-                // Optional bools (`expanded`): the attribute's PRESENCE
-                // makes the state non-null; the value sets it.
-                .optional => @field(options, zig_field) = evalExpr(node, entries, raw, ui, model, scope).truthy(),
+                .optional => |optional| switch (@typeInfo(optional.child)) {
+                    .bool => @field(options, zig_field) = evalExpr(node, entries, raw, ui, model, scope).truthy(),
+                    .float => {
+                        comptime requireVariant(variant, &.{ .float, .integer }, node, "expected a number");
+                        @field(options, zig_field) = switch (evalExpr(node, entries, raw, ui, model, scope)) {
+                            .float => |float| float,
+                            .integer => |int| @floatFromInt(int),
+                            else => runtimeFail(optional.child, ui),
+                        };
+                    },
+                    else => runtimeFail(optional.child, ui),
+                },
                 .int => {
                     comptime requireVariant(variant, &.{.integer}, node, "expected a whole number");
                     // Range-checked against the field's own integer type

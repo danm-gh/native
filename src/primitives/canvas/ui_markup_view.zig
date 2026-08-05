@@ -1986,9 +1986,15 @@ pub fn MarkupView(comptime ModelT: type, comptime MsgT: type) type {
                     else => return self.failVoid(node, "expected a number"),
                 },
                 .bool => @field(options, field) = value.truthy(),
-                // Optional bools (`expanded`): the attribute's PRESENCE
-                // makes the state non-null; the value sets it.
-                .optional => @field(options, field) = value.truthy(),
+                .optional => |optional| switch (@typeInfo(optional.child)) {
+                    .bool => @field(options, field) = value.truthy(),
+                    .float => @field(options, field) = switch (value) {
+                        .float => |float| float,
+                        .integer => |int| @floatFromInt(int),
+                        else => return self.failVoid(node, "expected a number"),
+                    },
+                    else => return self.failVoid(node, "attribute is not settable from markup"),
+                },
                 // Range-checked against the FIELD's own integer type
                 // before the cast (the grid-lines teaching, generalized):
                 // expression values are i64, so a literal or model

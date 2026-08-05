@@ -269,10 +269,32 @@ pub fn declaredWidgetDragDropRecord(comptime T: type) bool {
     if (info.fields.len != 6) return false;
     if (!@hasField(T, "sourceId") or !@hasField(T, "phase") or !@hasField(T, "x") or !@hasField(T, "y") or
         !@hasField(T, "viewWidth") or !@hasField(T, "viewHeight")) return false;
-    inline for (info.fields) |field| {
-        if (!isNumeric(field.type)) return false;
+    if (!isNumeric(@FieldType(T, "sourceId"))) return false;
+    if (!isDragPhaseNumber(@FieldType(T, "phase"))) return false;
+    inline for (.{ "x", "y", "viewWidth", "viewHeight" }) |name| {
+        if (!isDragGeometryNumber(@FieldType(T, name))) return false;
     }
     return true;
+}
+
+/// Live geometry starts as f32 and can be negative while pointer capture
+/// carries a drag outside the view. Require a float at least as wide as the
+/// source so every accepted record is injectable without a range trap.
+fn isDragGeometryNumber(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .float => |info| info.bits >= 32,
+        else => false,
+    };
+}
+
+/// Phase injection needs to represent all three wire values (0, 1, 2).
+/// Floats do so exactly; integer records need an honest upper bound.
+fn isDragPhaseNumber(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .float => true,
+        .int => std.math.maxInt(T) >= 2,
+        else => false,
+    };
 }
 
 /// A mirror of the RETIRED one-axis scroll state — `{offset, velocity,

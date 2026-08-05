@@ -1950,14 +1950,12 @@ pub fn build(b: *std.Build) void {
         \\provenance="$("$cli" automate provenance kanban-canvas "$button_id" 2>/dev/null)"
         \\case "$provenance" in *"authored=markup"*"root=src/app.native"*) ;; *) echo "writeback smoke: button provenance was not markup-authored: $provenance" >&2; exit 1 ;; esac
         \\case "$provenance" in *"node file=src/app.native"*) ;; *) echo "writeback smoke: button provenance named the wrong file: $provenance" >&2; exit 1 ;; esac
-        \\# 2. Template + import chain: a card title reports its definition site in
-        \\# the component file plus the <use> site in the root file, with the
-        \\# for-loop iteration key.
+        \\# 2. Loop provenance: the boot view is deliberately self-contained,
+        \\# so a card title reports its node in app.native plus its iteration key.
         \\card_id="$(printf '%s\n' "$snapshot" | sed -n 's/.*widget @w1\/kanban-canvas#\([0-9][0-9]*\) role=text name="Sketch the board layout".*/\1/p' | head -n 1)"
         \\case "$card_id" in ''|*[!0-9]*) echo "writeback smoke: card text id was missing from the snapshot" >&2; exit 1 ;; esac
         \\card_provenance="$("$cli" automate provenance kanban-canvas "$card_id" 2>/dev/null)"
-        \\case "$card_provenance" in *"node file=src/components/board-column.native"*) ;; *) echo "writeback smoke: card provenance missed the component file: $card_provenance" >&2; exit 1 ;; esac
-        \\case "$card_provenance" in *"use file=src/app.native"*) ;; *) echo "writeback smoke: card provenance missed the use-site chain: $card_provenance" >&2; exit 1 ;; esac
+        \\case "$card_provenance" in *"node file=src/app.native"*) ;; *) echo "writeback smoke: card provenance named the wrong file: $card_provenance" >&2; exit 1 ;; esac
         \\case "$card_provenance" in *"keys="*) ;; *) echo "writeback smoke: card provenance missed the iteration key: $card_provenance" >&2; exit 1 ;; esac
         \\# 3. Write-back: flip the button label through the verb; the app's own
         \\# hot-reload watch picks the file change up and repaints.

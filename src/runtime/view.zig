@@ -579,6 +579,10 @@ pub const RuntimeView = struct {
     /// `pressed_id` deliberately stays the raw text hit for ordinary text
     /// selection; this separate latch lets a draggable card own that drag.
     canvas_widget_drag_source_id: canvas.ObjectId = 0,
+    /// Pointer sequence that owns the drag candidate/live drag. Hosts with
+    /// multiple contacts must not let a second finger move, finish, or
+    /// silently replace the first finger's model-visible gesture.
+    canvas_widget_drag_pointer_id: u64 = 0,
     canvas_widget_drag_start_point: geometry.PointF = .{},
     canvas_widget_drag_source_origin: geometry.PointF = .{},
     canvas_widget_drag_delta: geometry.OffsetF = .{},

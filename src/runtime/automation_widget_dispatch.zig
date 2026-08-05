@@ -686,6 +686,7 @@ pub fn RuntimeAutomationWidgetDispatch(comptime Runtime: type) type {
             // are zero on several hosts), so reconstruction from the event's
             // delta cannot recover this point.
             self.views[view_index].canvas_widget_drag_start_point = origin;
+            self.views[view_index].canvas_widget_drag_pointer_id = 0;
             if (previous_pressed_id != id) try CanvasWidgetEventMethods().invalidateForCanvasWidgetRenderStateChange(self, view_index, previous_state, self.views[view_index].canvasWidgetRenderState());
             errdefer {
                 if (view_index < self.view_count and self.views[view_index].canvas_widget_pressed_id == id) {

@@ -361,6 +361,79 @@ test "ui app keeps clicks below drag slop and suppresses press after a live drag
     try std.testing.expectEqual(@as(u32, 0), app_state.model.cancels);
     try std.testing.expect(!harness.runtime.views[0].canvas_widget_drag_layout_motion_armed);
     try std.testing.expectEqual(@as(canvas.ObjectId, 0), harness.runtime.views[0].canvas_widget_drag_landing_source_id);
+
+    // A second contact cannot steal or silently erase a live drag. Its whole
+    // sequence stays outside the drag channel; the initiating pointer keeps
+    // moving the original source and is the only pointer that may end it.
+    const owner_pointer = zero_platform.touch_pointer_id_bit | 101;
+    const interloper_pointer = zero_platform.touch_pointer_id_bit | 202;
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .pointer_id = owner_pointer,
+        .x = point.x,
+        .y = point.y,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_drag,
+        .pointer_id = owner_pointer,
+        .x = point.x + 40,
+        .y = point.y,
+    } });
+    try std.testing.expectEqual(@as(u32, 2), app_state.model.changes);
+    try std.testing.expectEqual(owner_pointer, harness.runtime.views[0].canvas_widget_drag_pointer_id);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .pointer_id = interloper_pointer,
+        .x = point.x + 180,
+        .y = point.y + 80,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_drag,
+        .pointer_id = interloper_pointer,
+        .x = point.x + 200,
+        .y = point.y + 90,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_up,
+        .pointer_id = interloper_pointer,
+        .x = point.x + 200,
+        .y = point.y + 90,
+    } });
+    try std.testing.expectEqual(@as(u32, 2), app_state.model.changes);
+    try std.testing.expectEqual(@as(u32, 1), app_state.model.ends);
+    try std.testing.expectEqual(owner_pointer, harness.runtime.views[0].canvas_widget_drag_pointer_id);
+    try std.testing.expect(harness.runtime.views[0].canvasWidgetRenderState().drag_preview_id != null);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_drag,
+        .pointer_id = owner_pointer,
+        .x = point.x + 55,
+        .y = point.y,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_up,
+        .pointer_id = owner_pointer,
+        .x = point.x + 55,
+        .y = point.y,
+    } });
+    try std.testing.expectEqual(@as(u32, 3), app_state.model.changes);
+    try std.testing.expectEqual(@as(u32, 2), app_state.model.ends);
+    try std.testing.expectEqual(@as(u64, 0), harness.runtime.views[0].canvas_widget_drag_pointer_id);
 }
 
 // -------------------------------------- context-menu fallback fixture

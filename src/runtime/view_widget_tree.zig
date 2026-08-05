@@ -352,6 +352,7 @@ pub fn RuntimeViewCanvasWidgetTree(comptime RuntimeView: type) type {
             }
             if (self.canvas_widget_drag_source_id != 0 and !canvasWidgetInteractionTargetExists(self.widgetLayoutTree(), self.canvas_widget_drag_source_id)) {
                 self.canvas_widget_drag_source_id = 0;
+                self.canvas_widget_drag_pointer_id = 0;
                 self.canvas_widget_drag_source_origin = .{};
                 self.canvas_widget_drag_delta = .{};
             }

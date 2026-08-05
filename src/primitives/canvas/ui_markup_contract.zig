@@ -59,7 +59,9 @@ pub const ValueKind = expr.ValueKind;
 /// a valid binding.
 /// Version 5: that record gained the numeric live `phase` field so apps can
 /// preview insertion/reordering on change and restore on cancellation.
-pub const format_version: u32 = 5;
+/// Version 6: live drag geometry requires floating-point fields so captured
+/// out-of-view coordinates cannot trap an integer conversion at dispatch.
+pub const format_version: u32 = 6;
 
 /// Where the app's build step writes the artifact, relative to the app
 /// directory (a build product lives under zig-out, not in durable state).

@@ -286,7 +286,13 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             const previous_render_state = self.views[index].canvasWidgetRenderState();
 
             if (input_event.kind == .pointer_down) {
+                // A live drag belongs to the pointer that crossed slop. A
+                // second contact may still run the ordinary pointer pipeline,
+                // but it cannot silently erase the first contact's preview or
+                // strand the app after its phase-0 Msg.
+                if (self.views[index].canvas_widget_drag_source_id != 0) return null;
                 self.views[index].canvas_widget_drag_source_id = 0;
+                self.views[index].canvas_widget_drag_pointer_id = input_event.pointer_id;
                 self.views[index].canvas_widget_drag_start_point = geometry.PointF.init(input_event.x, input_event.y);
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
@@ -300,13 +306,19 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 return null;
             }
             if (input_event.kind != .pointer_drag and input_event.kind != .pointer_up and input_event.kind != .pointer_cancel) return null;
+            // Pointer capture is per sequence. An unrelated touch/pen/mouse
+            // edge must not move or terminate the candidate/live drag.
+            if (input_event.pointer_id != self.views[index].canvas_widget_drag_pointer_id) return null;
 
             const active_source = self.views[index].canvas_widget_drag_source_id;
             // A release/cancel belongs to the drag channel only after motion
             // crossed the slop and installed an active source. Until then it
             // is the terminal edge of an ordinary click (or an abandoned
             // press), so it must not arm a landing from the zero origin.
-            if (active_source == 0 and input_event.kind != .pointer_drag) return null;
+            if (active_source == 0 and input_event.kind != .pointer_drag) {
+                self.views[index].canvas_widget_drag_pointer_id = 0;
+                return null;
+            }
             const candidate_source = if (active_source != 0) active_source else self.views[index].canvas_widget_pressed_id;
             if (candidate_source == 0) return null;
 
@@ -332,6 +344,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 // A source removed or disabled mid-gesture cannot leave its
                 // last preview stranded on screen.
                 self.views[index].canvas_widget_drag_source_id = 0;
+                self.views[index].canvas_widget_drag_pointer_id = 0;
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
                 self.views[index].canvas_widget_drag_landing_source_id = 0;
@@ -379,6 +392,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                     source_origin.y + drag.delta.dy,
                 );
                 self.views[index].canvas_widget_drag_source_id = 0;
+                self.views[index].canvas_widget_drag_pointer_id = 0;
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
             }
@@ -429,6 +443,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             const route = try self.views[index].widgetLayoutTree().routeDragEvent(drag, output);
             if (route.target == null) {
                 self.views[index].canvas_widget_drag_source_id = 0;
+                self.views[index].canvas_widget_drag_pointer_id = 0;
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
                 self.views[index].canvas_widget_pressed_id = 0;
@@ -450,6 +465,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 source_origin.y + delta.dy,
             );
             self.views[index].canvas_widget_drag_source_id = 0;
+            self.views[index].canvas_widget_drag_pointer_id = 0;
             self.views[index].canvas_widget_drag_source_origin = .{};
             self.views[index].canvas_widget_drag_delta = .{};
             self.views[index].canvas_widget_pressed_id = 0;

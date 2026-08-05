@@ -858,13 +858,29 @@ Rules that matter:
 - **Settings windows open the standard way**: the app-menu Settings item and its primary+comma shortcut (an app.zon `.shortcuts` entry mapped in `on_command`), never an in-window settings button. Ship them fixed-size (`.resizable = false`) at exactly the content's box, title them "Settings", and let changes apply live through the shared model — no Apply/OK row, no copy explaining the window.
 - Tests: after the open Msg, deliver the new window's `gpu_surface_frame` (its window id from `runtime.listWindows`) to install its tree; simulate a user close by dispatching `.window_frame_changed` with `open = false`. See `examples/system-monitor` (settings shortcut -> settings window).
 
-## Hidden titlebar: `titlebar = "hidden_inset"`/`"hidden_inset_tall"` + `window-drag` + `on_chrome`
+## Hidden titlebar in both core tiers: `titlebar` + `window-drag` + the chrome channel
 
 The modern editor-app shape — content under a transparent titlebar, the app's header as the working titlebar. Two heights: `hidden_inset` keeps the compact band (~28pt, traffic lights hug the top), `hidden_inset_tall` switches to the unified-toolbar band (~52pt, macOS vertically centers the traffic lights — the tall unified-toolbar look). Pick tall when the header replacing the titlebar is toolbar-height, so the lights center against it. Three parts, all declared:
 
-1. **app.zon**: `.titlebar = "hidden_inset"` or `"hidden_inset_tall"` on the shell window (and the matching `.titlebar = .hidden_inset`/`.hidden_inset_tall` on the `ShellWindow` in main.zig). The first shell window's declaration threads through the STARTUP window create, so the main window's chrome is right from the first frame; `zig build validate` checks the value.
+1. **app.zon**: `.titlebar = "hidden_inset"` or `"hidden_inset_tall"` on the shell window. That is the whole declaration in a default TypeScript app. An owned Zig shell also sets the matching `.titlebar = .hidden_inset`/`.hidden_inset_tall` on its `ShellWindow`. The first shell window's declaration threads through the STARTUP window create, so the main window's chrome is right from the first frame; `native validate` checks the manifest value.
 2. **The header row** gets `window-drag="true"`: its background (and plain text/icons inside) moves the window; buttons inside stay buttons; double-click zooms (macOS honors the user's titlebar double-click preference).
-3. **`Options.on_chrome`** (`fn (chrome: platform.WindowChrome) ?Msg`) delivers the chrome overlay geometry — `chrome.insets`: titlebar band height on top (compact or tall), traffic-light extent on the leading edge; `chrome.buttons`: the traffic-light cluster's frame in content coordinates (top-left origin), the vertical truth for centering. All-zero in fullscreen, on standard chrome, and on other platforms. It fires BEFORE the first view build and on changes; store the geometry in the model, pad the header with a leading `<spacer width="{chrome_leading}" />`, and with the tall band match the header's height to `insets.top` (floored at its natural height) so `cross="center"` puts its controls on the lights' centerline.
+3. **The core's chrome channel** delivers the overlay geometry — `insets`: titlebar band height on top and traffic-light extent on the leading edge; `buttons`: the traffic-light cluster's frame in content coordinates (top-left origin), the vertical truth for centering. All-zero in fullscreen, on standard chrome, and on other platforms. It fires BEFORE the first view build and on changes. Store the geometry in model fields, pad the header with a leading spacer, and with the tall band match the header's height to `insets.top` (floored at its natural height) so `cross="center"` puts its controls on the lights' centerline.
+
+In a default TypeScript core, import `ChromeInsets`/`ChromeButtons` from `@native-sdk/core/events`, add the matching Msg arm, and export the channel name from `src/core.ts`:
+
+```ts
+import { type ChromeButtons, type ChromeInsets } from "@native-sdk/core/events";
+
+export type Msg = /* ... */ | {
+  readonly kind: "chrome_changed";
+  readonly insets: ChromeInsets;
+  readonly buttons: ChromeButtons;
+  readonly tabsProjected: boolean;
+};
+export const chromeMsg = "chrome_changed";
+```
+
+Handle that arm by storing `msg.insets.left` and `Math.max(headerNaturalHeight, msg.insets.top)` in fields such as `chromeLeading`/`headerHeight`; markup binds those exact TypeScript spellings (`<spacer width="{chromeLeading}" />`). `examples/system-monitor-ts` is the complete reference. In a Zig core, the equivalent hook is `Options.on_chrome: fn (platform.WindowChrome) ?Msg`, with snake-case bindings such as `{chrome_leading}` when the Zig model uses those names.
 
 macOS-first like `resizable = false`: GTK/Win32 keep standard chrome and the whole channel is harmless there. Full retrofit: `examples/markdown-viewer` (tall band; toolbar row is the drag region and tracks the band height). Tests: the null platform records `startWindowDrag` calls (`window_drag_starts`), per-window `window_titlebar`, and serves settable `window_chrome` (insets + buttons frame).
 
@@ -895,7 +911,19 @@ test_clock.setWallMs(1_700_000_000_000);  // NTP-style wall jump, monotonic unto
 ```
 
 Wall answers "what time is it?" (jumps with OS clock adjustments); monotonic answers "how long did it take?". Don't subtract wall timestamps for durations.
-## Images: runtime-registered pixels + the avatar pattern
+
+## Images in both core tiers: load/register, then bind the id
+
+In a default TypeScript app, static images ship through `app.zon`'s `.assets.images` table and are registered before the first frame. Runtime images use effects-as-data: return `Cmd.imageLoad(id, { path?, url?, cachePath?, expectedBytes? }, { event })` from `update`, and store the numeric id in the model only when the result arm reports `state === "loaded"`. `Cmd.imageCancel(id)` ends an in-flight load, and `Cmd.imageUnregister(id)` releases a loaded registry slot. The `ts-core` skill specifies the result record and limits; the [Dynamic Images guide](https://native-sdk.dev/dynamic-images) is the complete TypeScript + Zig example.
+
+The view binds that model-owned id in either tier; `0` is the no-image sentinel and keeps the fallback visible:
+
+```html
+<image image="{cover}" width="120" height="80" label="Cover art" />
+<avatar image="{avatar}" label="Octocat">OC</avatar>
+```
+
+### Zig cores and extensions: direct registration
 
 Image pixels are runtime-registered resources keyed by a caller-chosen `ImageId` (`u64` in the model, effect-key style; 0 = no image). The framework bundles NO codecs — encoded bytes decode through the platform (CGImageSource / gdk-pixbuf / WIC) via `PlatformServices.decode_image_fn`. Registration lives on the effects channel (synchronous calls, not effects — no Msg follows):
 
@@ -916,11 +944,7 @@ ui.avatar(.{ .image = model.avatar_image, .semantics = .{ .label = "Octocat" } }
 ui.image(.{ .image = model.chart_image, .width = 120, .height = 80, .semantics = .{ .label = "Chart" } }),
 ```
 
-```html
-<!-- Markup avatars bind the same model id: one {binding} to the u64 ImageId
-     (a field or pub fn — never a literal); 0 renders the initials fallback. -->
-<avatar image="{avatar_image}" label="Octocat">OC</avatar>
-```
+Markup binds the same model id through a field or derived helper, never a literal. A Zig core commonly spells that field `{avatar_image}`; a TypeScript core binds its authored spelling exactly, such as `{avatar}`.
 
 Rules:
 

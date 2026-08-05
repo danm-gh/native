@@ -36,6 +36,7 @@ const platform = @import("../platform/root.zig");
 const core = @import("core.zig");
 const canvas_frame = @import("canvas_frame.zig");
 const canvas_limits = @import("canvas_limits.zig");
+const canvas_widget_events = @import("canvas_widget_events.zig");
 const launch_timing = @import("launch_timing.zig");
 const runtime_effects = @import("effects.zig");
 const terminal_session = @import("terminal_session.zig");
@@ -5666,9 +5667,13 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
         /// point, and view dimensions so it can preview a semantic insertion
         /// during motion, commit it on release, or restore it on cancel.
         fn handleWidgetDrag(self: *Self, runtime: *Runtime, drag_event: core.CanvasWidgetDragEvent) anyerror!void {
-            if (drag_event.drag.phase != .cancel and
-                @abs(drag_event.drag.delta.dx) < 6 and
-                @abs(drag_event.drag.delta.dy) < 6) return;
+            // The runtime promotes a source only after this slop, so terminal
+            // phases are always real drags and must dispatch even when the
+            // pointer returned near its origin before release. Change events
+            // below slop remain on the low-level channel to own text motion,
+            // but declarative apps do not hear them.
+            if (drag_event.drag.phase == .change and
+                !canvas_widget_events.canvasWidgetDragCrossedSlop(drag_event.drag.delta)) return;
             const source = drag_event.source orelse return;
             const tree = self.treeForViewLabel(drag_event.view_label) orelse return;
             const layout = runtime.canvasWidgetLayout(drag_event.window_id, drag_event.view_label) catch return;

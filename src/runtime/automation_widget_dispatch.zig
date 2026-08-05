@@ -679,6 +679,13 @@ pub fn RuntimeAutomationWidgetDispatch(comptime Runtime: type) type {
             const previous_pressed_id = self.views[view_index].canvas_widget_pressed_id;
             const previous_state = self.views[view_index].canvasWidgetRenderState();
             self.views[view_index].canvas_widget_pressed_id = id;
+            // Accessibility owns the outer action record and therefore seeds
+            // the press directly instead of journaling a synthetic down. Give
+            // the shared physical drag path the same origin a down would have
+            // recorded; platform pointer-drag deltas are not cumulative (and
+            // are zero on several hosts), so reconstruction from the event's
+            // delta cannot recover this point.
+            self.views[view_index].canvas_widget_drag_start_point = origin;
             if (previous_pressed_id != id) try CanvasWidgetEventMethods().invalidateForCanvasWidgetRenderStateChange(self, view_index, previous_state, self.views[view_index].canvasWidgetRenderState());
             errdefer {
                 if (view_index < self.view_count and self.views[view_index].canvas_widget_pressed_id == id) {

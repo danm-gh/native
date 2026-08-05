@@ -175,6 +175,10 @@ pub fn emitWidgetLayoutWithState(builder: *Builder, layout: anytype, tokens: Des
 fn emitWidgetLayoutDragPreview(builder: *Builder, layout: anytype, tokens: DesignTokens, state: WidgetRenderState) Error!void {
     const source_id = state.drag_preview_id orelse return;
     const source_index = widget_tree.widgetIndexById(layout, source_id) orelse return;
+    // Resizable panels and split dividers use semantic drag for their built-in
+    // geometry controls. Their retained frame already follows the pointer;
+    // painting a generic translated preview would duplicate the control.
+    if (!widgetKindUsesFloatingDragPreview(layout.nodes[source_index].widget.kind)) return;
     if (widget_tree.isWidgetHiddenInAncestors(layout, source_index)) return;
     if (widget_tree.isWidgetConcealedByDisclosure(layout, source_index)) return;
 
@@ -605,8 +609,7 @@ fn emitWidgetLayoutNode(
     if (!state.rendering_drag_preview and
         state.drag_preview_id != null and
         state.drag_preview_id.? == node.widget.id and
-        node.widget.kind != .resizable and
-        node.widget.kind != .split_divider) return;
+        widgetKindUsesFloatingDragPreview(node.widget.kind)) return;
 
     var widget = widgetWithRenderState(widgetWithFrame(node.widget, node.frame), state);
     widget.group_segment = segment;
@@ -625,6 +628,13 @@ fn emitWidgetLayoutNode(
     if (wrap_transform) try builder.transform(inverse_transform);
     if (wrap_layout_motion) try builder.transform(Affine.translate(-layout_motion.dx, -layout_motion.dy));
     if (wrap_opacity) try builder.popOpacity();
+}
+
+fn widgetKindUsesFloatingDragPreview(kind: WidgetKind) bool {
+    return switch (kind) {
+        .resizable, .split_divider => false,
+        else => true,
+    };
 }
 
 fn emitWidgetLayoutNodeContent(

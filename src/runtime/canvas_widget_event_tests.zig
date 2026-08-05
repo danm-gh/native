@@ -2698,6 +2698,7 @@ test "runtime dispatches opted-in canvas widget drag events" {
         raw_input_count: u32 = 0,
         widget_pointer_count: u32 = 0,
         widget_drag_count: u32 = 0,
+        command_count: u32 = 0,
         last_drag_source_id: canvas.ObjectId = 0,
         last_drag_route_len: usize = 0,
         last_drag_x: f32 = 0,
@@ -2713,6 +2714,7 @@ test "runtime dispatches opted-in canvas widget drag events" {
             switch (event_value) {
                 .gpu_surface_input => self.raw_input_count += 1,
                 .canvas_widget_pointer => self.widget_pointer_count += 1,
+                .command => self.command_count += 1,
                 .canvas_widget_drag => |drag_event| {
                     self.widget_drag_count += 1;
                     self.last_drag_source_id = if (drag_event.source) |source| source.id else 0;
@@ -2745,6 +2747,7 @@ test "runtime dispatches opted-in canvas widget drag events" {
             .kind = .button,
             .frame = geometry.RectF.init(12, 16, 96, 32),
             .text = "Drag",
+            .command = "drag.press",
             .semantics = .{ .actions = .{ .drag = true } },
         },
         .{
@@ -2770,6 +2773,8 @@ test "runtime dispatches opted-in canvas widget drag events" {
     try std.testing.expectEqual(@as(u32, 1), app_state.widget_pointer_count);
     try std.testing.expectEqual(@as(u32, 1), app_state.raw_input_count);
 
+    // A plain click on a draggable remains a press. It produces no terminal
+    // drag and cannot leave a zero-origin landing armed for a later rebuild.
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",
@@ -2780,15 +2785,51 @@ test "runtime dispatches opted-in canvas widget drag events" {
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = "canvas",
+        .kind = .pointer_up,
+        .x = 20,
+        .y = 28,
+    } });
+    try std.testing.expectEqual(@as(u32, 1), app_state.command_count);
+    try std.testing.expectEqual(@as(u32, 0), app_state.widget_drag_count);
+    try std.testing.expect(!harness.runtime.views[0].canvas_widget_drag_layout_motion_armed);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 0), harness.runtime.views[0].canvas_widget_drag_landing_source_id);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = 20,
+        .y = 28,
+    } });
+    // Motion inside the slop stays observable to the low-level channel so it
+    // owns text selection, but it activates no preview or landing state.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
         .kind = .pointer_drag,
-        .x = 64,
+        .x = 24,
         .y = 30,
-        .delta_x = 44,
-        .delta_y = 2,
     } });
     try std.testing.expectEqual(@as(u32, 1), app_state.widget_drag_count);
-    try std.testing.expectEqual(@as(u32, 3), app_state.widget_pointer_count);
-    try std.testing.expectEqual(@as(u32, 3), app_state.raw_input_count);
+    try std.testing.expect(harness.runtime.views[0].canvasWidgetRenderState().drag_preview_id == null);
+    try std.testing.expect(!harness.runtime.views[0].canvas_widget_drag_layout_motion_armed);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{
+        .gpu_surface_input = .{
+            .window_id = 1,
+            .label = "canvas",
+            .kind = .pointer_drag,
+            .x = 64,
+            .y = 30,
+            // Physical hosts report per-event deltas (often zero); widget drag
+            // displacement must come from the pointer-down origin instead.
+            .delta_x = 0,
+            .delta_y = 0,
+        },
+    });
+    try std.testing.expectEqual(@as(u32, 2), app_state.widget_drag_count);
+    try std.testing.expectEqual(@as(u32, 6), app_state.widget_pointer_count);
+    try std.testing.expectEqual(@as(u32, 6), app_state.raw_input_count);
     try std.testing.expectEqual(@as(canvas.ObjectId, 2), app_state.last_drag_source_id);
     try std.testing.expectEqual(@as(usize, 3), app_state.last_drag_route_len);
     try std.testing.expectEqual(@as(f32, 64), app_state.last_drag_x);
@@ -2807,7 +2848,10 @@ test "runtime dispatches opted-in canvas widget drag events" {
         .x = 64,
         .y = 30,
     } });
-    try std.testing.expectEqual(@as(u32, 2), app_state.widget_drag_count);
+    try std.testing.expectEqual(@as(u32, 3), app_state.widget_drag_count);
+    // The captured release ended a real drag, so it cannot also activate the
+    // source button's command/on_press path.
+    try std.testing.expectEqual(@as(u32, 1), app_state.command_count);
     try std.testing.expect(harness.runtime.views[0].canvasWidgetRenderState().drag_preview_id == null);
 
     // A drag-driven rebuild keeps truthful final layout geometry while the
@@ -2995,6 +3039,7 @@ test "runtime resizes retained canvas resizable widgets from pointer drag" {
     const layout = try canvas.layoutWidgetTree(.{ .id = 1, .kind = .stack, .children = &.{resizable} }, geometry.RectF.init(0, 0, 260, 120), &nodes);
     _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
     _ = try harness.runtime.emitCanvasWidgetDisplayList(1, "canvas", .{});
+    const baseline_command_count = (try harness.runtime.canvasDisplayList(1, "canvas")).commandCount();
 
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
@@ -3017,6 +3062,9 @@ test "runtime resizes retained canvas resizable widgets from pointer drag" {
     try std.testing.expectEqualDeep(geometry.RectF.init(10, 16, 150, 44), retained.findById(2).?.widget.frame);
 
     var display_list = try harness.runtime.canvasDisplayList(1, "canvas");
+    // Built-in resize semantics mutate retained geometry in place; they do
+    // not also paint the generic translated drag preview.
+    try std.testing.expectEqual(baseline_command_count, display_list.commandCount());
     switch (display_list.findCommandById(testCanvasWidgetPartId(2, 5)).?.command) {
         .draw_line => |line| try std.testing.expect(line.from.x > 152),
         else => return error.TestUnexpectedResult,

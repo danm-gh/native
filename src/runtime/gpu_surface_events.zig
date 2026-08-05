@@ -311,6 +311,19 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                 => null,
                 else => return err,
             };
+            // A terminal drag event exists only after the gesture crossed the
+            // runtime's drag slop. Pointer capture also routes this release to
+            // the original press target, so retire its click now: otherwise an
+            // element with both on_press and on_drag would activate before its
+            // drop Msg. A sub-slop release produces no drag event and keeps the
+            // ordinary press path intact.
+            const widget_drag_terminal = if (widget_drag_event) |drag_event|
+                drag_event.drag.phase == .end or drag_event.drag.phase == .cancel
+            else
+                false;
+            if (widget_drag_terminal) {
+                if (widget_pointer_event) |*pointer_event| pointer_event.press_target = null;
+            }
             var dismissed_surface_id: canvas.ObjectId = 0;
             var window_drag_started = false;
             if (widget_pointer_event) |*pointer_event| {
@@ -339,7 +352,11 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                     // pointer really went down.
                     try CanvasWidgetEventMethods().reconcileCanvasTooltipIntentForConsumedPointerInput(self, input_event);
                 } else {
-                    try CanvasWidgetEventMethods().updateCanvasWidgetControlFromPointer(self, pointer_event.*);
+                    // The same click-vs-drag arbitration covers runtime-owned
+                    // activation (checkbox/toggle state), not only app Msgs and
+                    // commands. Geometry controls applied their live resize on
+                    // move; a terminal drag owes no release mutation.
+                    if (!widget_drag_terminal) try CanvasWidgetEventMethods().updateCanvasWidgetControlFromPointer(self, pointer_event.*);
                     try CanvasWidgetEventMethods().updateCanvasWidgetInteractionFromPointer(self, pointer_event.*);
                     // The text pass may stamp a caret/selection or clear
                     // edit onto the event for the app dispatch below.

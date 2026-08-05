@@ -51,6 +51,16 @@ const canvas_widget_multi_click_interval_ns: u64 = 500 * std.time.ns_per_ms;
 /// hand tremor keeps the chain, a click somewhere else breaks it.
 const canvas_widget_multi_click_slop: f32 = 4.0;
 
+/// Movement per axis (canvas points) that promotes a pressed draggable
+/// candidate into a live drag. Below this threshold pointer motion remains
+/// observable to the low-level drag channel, but it owns no floating preview,
+/// terminal phase, or landing animation — the release is still a click.
+pub const canvas_widget_drag_slop: f32 = 6.0;
+
+pub fn canvasWidgetDragCrossedSlop(delta: geometry.OffsetF) bool {
+    return @abs(delta.dx) >= canvas_widget_drag_slop or @abs(delta.dy) >= canvas_widget_drag_slop;
+}
+
 pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
     return struct {
         pub fn routeCanvasWidgetPointerInput(self: *const Runtime, input_event: GpuSurfaceInputEvent, output: []canvas.WidgetEventRouteEntry) anyerror!?CanvasWidgetPointerEvent {
@@ -280,6 +290,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 self.views[index].canvas_widget_drag_start_point = geometry.PointF.init(input_event.x, input_event.y);
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
+                self.views[index].canvas_widget_drag_layout_motion_armed = false;
                 self.views[index].canvas_widget_drag_landing_source_id = 0;
                 self.views[index].canvas_widget_drag_landing_origin = .{};
                 const next_render_state = self.views[index].canvasWidgetRenderState();
@@ -291,20 +302,15 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             if (input_event.kind != .pointer_drag and input_event.kind != .pointer_up and input_event.kind != .pointer_cancel) return null;
 
             const active_source = self.views[index].canvas_widget_drag_source_id;
+            // A release/cancel belongs to the drag channel only after motion
+            // crossed the slop and installed an active source. Until then it
+            // is the terminal edge of an ordinary click (or an abandoned
+            // press), so it must not arm a landing from the zero origin.
+            if (active_source == 0 and input_event.kind != .pointer_drag) return null;
             const candidate_source = if (active_source != 0) active_source else self.views[index].canvas_widget_pressed_id;
             if (candidate_source == 0) return null;
 
             const point = geometry.PointF.init(input_event.x, input_event.y);
-            // Automation/accessibility can seed a pressed id directly and
-            // begin at the drag event. Reconstruct its origin from the
-            // supplied first delta; physical input set the same point on
-            // pointer-down.
-            if (active_source == 0 and input_event.kind == .pointer_drag) {
-                self.views[index].canvas_widget_drag_start_point = geometry.PointF.init(
-                    point.x - input_event.delta_x,
-                    point.y - input_event.delta_y,
-                );
-            }
             const phase: canvas.WidgetDragPhase = switch (input_event.kind) {
                 .pointer_drag => .change,
                 .pointer_up => .end,
@@ -337,6 +343,20 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 return null;
             }
             drag.source_id = route.target.?.id;
+            // Keep sub-slop motion on the low-level channel so draggable text
+            // still owns its selection gesture and existing observers retain
+            // pointer-drag fidelity. Do not promote it into runtime drag state:
+            // UiApp filters these change messages, and a matching release
+            // remains a press because no active source was installed.
+            if (active_source == 0 and !canvasWidgetDragCrossedSlop(drag.delta)) {
+                return .{
+                    .window_id = input_event.window_id,
+                    .view_label = self.views[index].label,
+                    .drag = drag,
+                    .source = route.target,
+                    .route = route.entries,
+                };
+            }
             // The app's Msg may rebuild into a different insertion pose.
             // Arm exactly that adoption for FLIP motion, including terminal
             // phases where the source itself moves into (or back from) the

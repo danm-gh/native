@@ -933,6 +933,7 @@ pub const Runtime = struct {
     pub const startCanvasWidgetLayoutTween = CanvasWidgetStateMethods.startCanvasWidgetLayoutTween;
     pub const advanceCanvasWidgetLayoutTweensForFrame = CanvasWidgetStateMethods.advanceCanvasWidgetLayoutTweensForFrame;
     pub const advanceCanvasWidgetDisclosureTweenForFrame = CanvasWidgetStateMethods.advanceCanvasWidgetDisclosureTweenForFrame;
+    pub const advanceCanvasWidgetDragLayoutMotionForFrame = CanvasWidgetStateMethods.advanceCanvasWidgetDragLayoutMotionForFrame;
     pub const setCanvasWidgetDesignTokens = CanvasWidgetStateMethods.setCanvasWidgetDesignTokens;
     pub const canvasWidgetDesignTokens = CanvasWidgetStateMethods.canvasWidgetDesignTokens;
     pub const canvasWidgetTextGeometry = CanvasWidgetStateMethods.canvasWidgetTextGeometry;

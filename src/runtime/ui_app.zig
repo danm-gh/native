@@ -617,6 +617,13 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             /// also declare canvas scroll regions should leave this
             /// null (regions consume wheel input themselves).
             on_wheel: ?*const fn (wheel: platform.WheelEvent) ?MsgT = null,
+            /// Optional mapping from an OS file drop into a message. This
+            /// app-level channel receives every drop after any targeted
+            /// canvas widget handler, with the source window/view, optional
+            /// view-local point, and the complete path list intact. The
+            /// paths are borrowed for the callback; dispatch copies any
+            /// bytes the model retains through the ordinary update path.
+            on_drop: ?*const fn (drop: platform.FileDropEvent) ?MsgT = null,
             /// Optional mapping from runtime timer events (started via
             /// `runtime.startTimer`) into messages. Framework-reserved timer
             /// ids (>= `platform.reserved_timer_id_base`) are handled
@@ -3985,9 +3992,14 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                     try self.rebuildVideoChrome(runtime);
                 },
                 .effects_wake => try self.drainEffects(runtime),
+                .files_dropped => |drop| {
+                    const map = self.options.on_drop orelse return;
+                    if (map(drop)) |msg| try self.dispatch(runtime, drop.window_id, msg);
+                },
                 .gpu_surface_frame => |frame_event| try self.handleFrame(runtime, frame_event),
                 .gpu_surface_resized => |resize_event| try self.handleResize(runtime, resize_event),
                 .canvas_widget_pointer => |pointer_event| try self.handlePointer(runtime, pointer_event),
+                .canvas_widget_drag => |drag_event| try self.handleWidgetDrag(runtime, drag_event),
                 .canvas_widget_keyboard => |keyboard_event| try self.handleKeyboard(runtime, keyboard_event),
                 .canvas_widget_scroll => |scroll_event| try self.handleScroll(runtime, scroll_event),
                 .canvas_widget_context_menu => |menu_event| try self.handleContextMenu(runtime, menu_event),
@@ -5645,6 +5657,25 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             const tree = self.treeForViewLabel(resize_event.view_label) orelse return;
             if (tree.msgForResize(resize_event.id, resize_event.fraction)) |msg| {
                 try self.dispatch(runtime, resize_event.window_id, msg);
+            }
+        }
+
+        /// A markup `on-drag` dispatches live motion, release, and
+        /// cancellation. Motion remains runtime-owned for capture and the
+        /// floating preview; the model receives the source binding, phase,
+        /// point, and view dimensions so it can preview a semantic insertion
+        /// during motion, commit it on release, or restore it on cancel.
+        fn handleWidgetDrag(self: *Self, runtime: *Runtime, drag_event: core.CanvasWidgetDragEvent) anyerror!void {
+            if (drag_event.drag.phase != .cancel and
+                @abs(drag_event.drag.delta.dx) < 6 and
+                @abs(drag_event.drag.delta.dy) < 6) return;
+            const source = drag_event.source orelse return;
+            const tree = self.treeForViewLabel(drag_event.view_label) orelse return;
+            const layout = runtime.canvasWidgetLayout(drag_event.window_id, drag_event.view_label) catch return;
+            if (layout.nodes.len == 0) return;
+            const root = layout.nodes[0].frame.normalized();
+            if (tree.msgForDrag(source.id, drag_event.drag, geometry.SizeF.init(root.width, root.height))) |msg| {
+                try self.dispatch(runtime, drag_event.window_id, msg);
             }
         }
 

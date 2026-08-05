@@ -696,6 +696,17 @@ pub fn RuntimeAutomationWidgetDispatch(comptime Runtime: type) type {
                 .delta_y = delta.dy,
             } });
 
+            // Complete the gesture through the same release path as a
+            // physical pointer so markup `on-drag` handlers receive their
+            // release position instead of automation stopping mid-drag.
+            try self.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+                .window_id = window_id,
+                .label = label,
+                .kind = .pointer_up,
+                .x = origin.x + delta.dx,
+                .y = origin.y + delta.dy,
+            } });
+
             if (runtimeFindViewIndex(self, window_id, label)) |current_index| {
                 if (self.views[current_index].canvas_widget_pressed_id == id) {
                     const release_previous_state = self.views[current_index].canvasWidgetRenderState();

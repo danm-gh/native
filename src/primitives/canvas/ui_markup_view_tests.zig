@@ -4748,6 +4748,32 @@ test "declaredScrollStateRecord accepts the emitted mirror shape and rejects nea
     try testing.expect(!markup_view.declaredLegacyScrollStateRecord(struct { offset: f64, velocity: f64, viewport_extent: f64, contentExtent: f64 }));
 }
 
+test "declaredWidgetDragDropRecord accepts the live drag shape and rejects the release-only shape" {
+    try testing.expect(markup_view.declaredWidgetDragDropRecord(struct {
+        sourceId: i64,
+        phase: i64,
+        x: f64,
+        y: f64,
+        viewWidth: f64,
+        viewHeight: f64,
+    }));
+    try testing.expect(!markup_view.declaredWidgetDragDropRecord(struct {
+        sourceId: i64,
+        x: f64,
+        y: f64,
+        viewWidth: f64,
+        viewHeight: f64,
+    }));
+    try testing.expect(!markup_view.declaredWidgetDragDropRecord(struct {
+        sourceId: i64,
+        phase: []const u8,
+        x: f64,
+        y: f64,
+        viewWidth: f64,
+        viewHeight: f64,
+    }));
+}
+
 test "valueArmClass classifies exactly the value-carrying arm shapes" {
     try testing.expect(markup_view.valueArmClass(f32) == .identity);
     try testing.expect(markup_view.valueArmClass(f64) == .float);

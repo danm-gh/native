@@ -2082,6 +2082,10 @@ pub fn MarkupView(comptime ModelT: type, comptime MsgT: type) type {
                 };
                 return;
             }
+            if (std.mem.eql(u8, event, "drag")) {
+                options.on_drag = try self.constructDragMessage(scope, node, expression);
+                return;
+            }
             // The value-payload change event: a slider's `on-change` with a
             // bare tag naming a value-carrying arm dispatches the APPLIED
             // value through the `on_value` constructor (the `on-resize`
@@ -2154,6 +2158,21 @@ pub fn MarkupView(comptime ModelT: type, comptime MsgT: type) type {
                 }
             }
             return self.failMsg(node, "unknown message tag");
+        }
+
+        fn constructDragMessage(self: *Self, scope: *Scope, node: markup.MarkupNode, expression: markup.MessageExpression) BuildError!MsgT {
+            if (expression.payload.len == 0) return self.failMsg(node, markup.on_drag_payload_message);
+            @setEvalBranchQuota(scan_quota);
+            inline for (@typeInfo(MsgT).@"union".fields) |field| {
+                if (std.mem.eql(u8, field.name, expression.tag)) {
+                    if (comptime !reflect.declaredWidgetDragDropRecord(field.type)) return self.failMsg(node, markup.on_drag_payload_message);
+                    const value = try self.evalBinding(scope, node, expression.payload, true);
+                    var payload: field.type = std.mem.zeroes(field.type);
+                    payload.sourceId = try self.coerce(@FieldType(field.type, "sourceId"), node, value);
+                    return @unionInit(MsgT, field.name, payload);
+                }
+            }
+            return self.failMsg(node, markup.on_drag_payload_message);
         }
 
         fn coerce(self: *Self, comptime T: type, node: markup.MarkupNode, value: Value) BuildError!T {
@@ -2612,6 +2631,7 @@ pub const declaredTextInputUnion = reflect.declaredTextInputUnion;
 pub const declaredScrollStateRecord = reflect.declaredScrollStateRecord;
 pub const declaredTerminalStateRecord = reflect.declaredTerminalStateRecord;
 pub const declaredLegacyScrollStateRecord = reflect.declaredLegacyScrollStateRecord;
+pub const declaredWidgetDragDropRecord = reflect.declaredWidgetDragDropRecord;
 pub const valueArmClass = reflect.valueArmClass;
 pub const sliceElement = reflect.sliceElement;
 pub const isItemFn = reflect.isItemFn;

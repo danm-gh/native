@@ -166,6 +166,34 @@ pub fn emitWidgetLayoutWithState(builder: *Builder, layout: anytype, tokens: Des
     try emitWidgetLayoutChildren(builder, layout, null, tokens, state);
     try emitWidgetLayoutAnchored(builder, layout, tokens, state);
     try emitWidgetLayoutChartHoverDetails(builder, layout, tokens, state);
+    try emitWidgetLayoutDragPreview(builder, layout, tokens, state);
+}
+
+/// Paint the active drag source in a late, window-level pass so the card under
+/// the pointer escapes its column's clip. Normal emission suppresses this
+/// subtree, leaving its one current layout slot blank.
+fn emitWidgetLayoutDragPreview(builder: *Builder, layout: anytype, tokens: DesignTokens, state: WidgetRenderState) Error!void {
+    const source_id = state.drag_preview_id orelse return;
+    const source_index = widget_tree.widgetIndexById(layout, source_id) orelse return;
+    if (widget_tree.isWidgetHiddenInAncestors(layout, source_index)) return;
+    if (widget_tree.isWidgetConcealedByDisclosure(layout, source_index)) return;
+
+    var preview_state = WidgetRenderState{
+        .rendering_drag_preview = true,
+    };
+    // Keep disclosure content in the preview in the same visible phase as
+    // the standing tree, while dropping focus/hover/press chrome from the
+    // floating copy itself.
+    preview_state.revealing_disclosure_ids = state.revealing_disclosure_ids;
+
+    const current_origin = layout.nodes[source_index].frame.normalized();
+    const source_origin = state.drag_preview_origin orelse geometry.PointF.init(current_origin.x, current_origin.y);
+    const translate_x = source_origin.x + state.drag_preview_offset.dx - current_origin.x;
+    const translate_y = source_origin.y + state.drag_preview_offset.dy - current_origin.y;
+    const translation = Affine.translate(translate_x, translate_y);
+    try builder.transform(translation);
+    try emitWidgetLayoutNode(builder, layout, source_index, tokens, preview_state, .none);
+    try builder.transform(Affine.translate(-translate_x, -translate_y));
 }
 
 /// The union of the layout's root-node frames: the whole laid-out
@@ -571,19 +599,31 @@ fn emitWidgetLayoutNode(
 ) Error!void {
     const node = layout.nodes[node_index];
     if (node.widget.semantics.hidden) return;
+    // During a drag the retained source remains in flow as the exact blank
+    // source slot. Its one visible rendering happens in the late floating
+    // pass above, fully opaque under the pointer.
+    if (!state.rendering_drag_preview and
+        state.drag_preview_id != null and
+        state.drag_preview_id.? == node.widget.id and
+        node.widget.kind != .resizable and
+        node.widget.kind != .split_divider) return;
 
     var widget = widgetWithRenderState(widgetWithFrame(node.widget, node.frame), state);
     widget.group_segment = segment;
     const opacity = widgetOpacity(widget);
     if (opacity <= 0) return;
+    const layout_motion = state.layoutMotionOffset(widget.id);
+    const wrap_layout_motion = layout_motion.dx != 0 or layout_motion.dy != 0;
     const wrap_opacity = opacity < 1;
     const transform = widgetTransform(widget);
     const wrap_transform = !affinesEqual(transform, Affine.identity());
     const inverse_transform = if (wrap_transform) transform.inverse() orelse return error.InvalidTransform else Affine.identity();
     if (wrap_opacity) try builder.pushOpacity(opacity);
+    if (wrap_layout_motion) try builder.transform(Affine.translate(layout_motion.dx, layout_motion.dy));
     if (wrap_transform) try builder.transform(transform);
     try emitWidgetLayoutNodeContent(builder, layout, node_index, tokens, state, widget);
     if (wrap_transform) try builder.transform(inverse_transform);
+    if (wrap_layout_motion) try builder.transform(Affine.translate(-layout_motion.dx, -layout_motion.dy));
     if (wrap_opacity) try builder.popOpacity();
 }
 
@@ -4032,7 +4072,19 @@ fn widgetWithRenderState(widget: Widget, state: WidgetRenderState) Widget {
     if (state.pressed_id) |pressed_id| {
         copy.state.pressed = copy.id != 0 and copy.id == pressed_id;
     }
+    if (state.rendering_drag_preview and copy.id != 0) {
+        copy.id = dragPreviewWidgetId(copy.id);
+    }
     return copy;
+}
+
+/// A separate deterministic object-id namespace for preview paint commands.
+/// Widget emitters derive every command id from the widget id, so remapping
+/// each node before emission keeps the copied subtree valid for display-list
+/// diffing without changing its retained/accessibility identity.
+fn dragPreviewWidgetId(id: ObjectId) ObjectId {
+    const mapped = std.hash.Wyhash.hash(0x5eed_59a2_d6a6_0001, std.mem.asBytes(&id));
+    return if (mapped == 0) 0x5eed_59a2_d6a6_0001 else mapped;
 }
 
 /// The terminal cursor follows logical keyboard focus, not merely

@@ -2145,6 +2145,10 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
                 options.on_resize = comptime (resizeConstructor(expression.tag) orelse fail(node, markup.on_resize_payload_message));
                 return;
             }
+            if (comptime std.mem.eql(u8, event, "drag")) {
+                options.on_drag = constructDragMessage(node, expression, entries, ui, model, scope);
+                return;
+            }
             // The value-payload change event: a slider's `on-change` with a
             // bare tag naming a value-carrying arm dispatches the APPLIED
             // value through the `on_value` constructor (the `on-resize`
@@ -2331,6 +2335,22 @@ fn CompiledMarkupEngine(comptime ModelT: type, comptime MsgT: type, comptime res
             const variant = comptime pathVariant(node, entries, expression.payload, true);
             const value = bindingValue(node, entries, expression.payload, ui, model, scope, true);
             return @unionInit(MsgT, field.name, coerce(field.type, node, variant, ui, value));
+        }
+
+        fn constructDragMessage(comptime node: markup.MarkupNode, comptime expression: markup.MessageExpression, comptime entries: []const ScopeEntry, ui: *Ui, model: *const ModelT, scope: anytype) MsgT {
+            comptime {
+                if (expression.payload.len == 0) fail(node, markup.on_drag_payload_message);
+            }
+            const tag_index = comptime (msgTagIndex(expression.tag) orelse fail(node, markup.on_drag_payload_message));
+            const field = comptime @typeInfo(MsgT).@"union".fields[tag_index];
+            comptime {
+                if (!interpreter.declaredWidgetDragDropRecord(field.type)) fail(node, markup.on_drag_payload_message);
+            }
+            const variant = comptime pathVariant(node, entries, expression.payload, true);
+            const value = bindingValue(node, entries, expression.payload, ui, model, scope, true);
+            var payload: field.type = std.mem.zeroes(field.type);
+            payload.sourceId = coerce(@FieldType(field.type, "sourceId"), node, variant, ui, value);
+            return @unionInit(MsgT, field.name, payload);
         }
 
         /// Runtime mirror of the interpreter's `coerce`, with the

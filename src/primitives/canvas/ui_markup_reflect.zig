@@ -256,6 +256,25 @@ pub fn declaredTerminalStateRecord(comptime T: type) bool {
     return declaredRecordMatchesVocabulary(T, &terminal_state_field_names, &terminal_state_field_names);
 }
 
+/// A markup `on-drag` Msg payload. `sourceId` is filled from the authored
+/// binding (`on-drag="card_dropped:{card.id}"`); the runtime fills the
+/// drag phase, point, and receiving view size. Keeping this as one closed
+/// record makes the event usable from transpiled cores without type
+/// identity crossing the generated-module boundary.
+pub fn declaredWidgetDragDropRecord(comptime T: type) bool {
+    const info = switch (@typeInfo(T)) {
+        .@"struct" => |s| s,
+        else => return false,
+    };
+    if (info.fields.len != 6) return false;
+    if (!@hasField(T, "sourceId") or !@hasField(T, "phase") or !@hasField(T, "x") or !@hasField(T, "y") or
+        !@hasField(T, "viewWidth") or !@hasField(T, "viewHeight")) return false;
+    inline for (info.fields) |field| {
+        if (!isNumeric(field.type)) return false;
+    }
+    return true;
+}
+
 /// A mirror of the RETIRED one-axis scroll state — `{offset, velocity,
 /// viewport_extent, content_extent}` in either spelling. Recognized only
 /// to fail with a teaching that names the new per-axis fields, so an app

@@ -224,6 +224,7 @@ const DesignTokens = support.DesignTokens;
 const WidgetKind = support.WidgetKind;
 const WidgetCursor = support.WidgetCursor;
 const WidgetState = support.WidgetState;
+const WidgetLayoutMotion = support.WidgetLayoutMotion;
 const WidgetRenderState = support.WidgetRenderState;
 const WidgetMainAlignment = support.WidgetMainAlignment;
 const WidgetCrossAlignment = support.WidgetCrossAlignment;
@@ -604,6 +605,10 @@ test "widget render state dirty bounds tracks changed runtime states" {
     );
     try std.testing.expect(layout.renderStateDirtyBounds(.{ .focused_id = 2 }, .{ .focused_id = 2 }) == null);
     try std.testing.expect(layout.renderStateDirtyBounds(.{ .focused_id = 99 }, .{ .focused_id = 100 }) == null);
+    try expectRect(
+        geometry.RectF.init(0, 0, 160, 140),
+        layout.renderStateDirtyBounds(.{}, .{ .drag_preview_id = 2, .drag_preview_offset = geometry.OffsetF.init(80, 4) }),
+    );
 }
 
 test "widget render state dirty bounds tracks terminal logical focus" {
@@ -2622,6 +2627,84 @@ test "widget layout emission can render runtime focus state" {
     }
     try std.testing.expect(saw_runtime_focus);
     try std.testing.expect(!saw_stale_focus);
+}
+
+test "widget layout emission paints the opaque dragged item with distinct ids" {
+    const item_children = [_]Widget{.{
+        .id = 3,
+        .kind = .text,
+        .text = "Drag me",
+    }};
+    const children = [_]Widget{.{
+        .id = 2,
+        .kind = .row,
+        .frame = geometry.RectF.init(12, 16, 120, 36),
+        .style = .{ .background = Color.rgb8(240, 240, 240), .radius = 6 },
+        .children = &item_children,
+    }};
+    var nodes: [3]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTree(.{ .id = 1, .kind = .panel, .children = &children }, geometry.RectF.init(0, 0, 240, 120), &nodes);
+
+    var commands: [16]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try layout.emitDisplayListWithState(&builder, .{}, .{
+        .drag_preview_id = 2,
+        .drag_preview_origin = geometry.PointF.init(32, 25),
+        .drag_preview_offset = geometry.OffsetF.init(48, 7),
+    });
+    const display_list = builder.displayList();
+
+    var saw_preview_opacity = false;
+    var saw_preview_translation = false;
+    var saw_preview_inverse = false;
+    for (display_list.commands) |command| switch (command) {
+        .push_opacity => |opacity| saw_preview_opacity = saw_preview_opacity or opacity == 0.82,
+        .transform => |transform| {
+            saw_preview_translation = saw_preview_translation or affinesEqual(transform, Affine.translate(68, 16));
+            saw_preview_inverse = saw_preview_inverse or affinesEqual(transform, Affine.translate(-68, -16));
+        },
+        else => {},
+    };
+    try std.testing.expect(!saw_preview_opacity);
+    try std.testing.expect(saw_preview_translation);
+    try std.testing.expect(saw_preview_inverse);
+
+    // Diff validation rejects duplicate object ids. The source and its
+    // preview therefore occupy independent retained-command namespaces.
+    var changes: [16]DiffChange = undefined;
+    const added = try DisplayList.diff(.{}, display_list, &changes);
+    try std.testing.expect(added.len > 0);
+}
+
+test "widget layout emission applies presentation motion to a keyed draggable" {
+    const children = [_]Widget{.{
+        .id = 2,
+        .kind = .row,
+        .frame = geometry.RectF.init(12, 16, 120, 36),
+        .style = .{ .background = Color.rgb8(240, 240, 240), .radius = 6 },
+    }};
+    var nodes: [3]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTree(.{ .id = 1, .kind = .panel, .children = &children }, geometry.RectF.init(0, 0, 240, 120), &nodes);
+    const layout_motions = [_]WidgetLayoutMotion{.{
+        .id = 2,
+        .offset = geometry.OffsetF.init(0, 9),
+    }};
+
+    var commands: [12]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try layout.emitDisplayListWithState(&builder, .{}, .{ .layout_motions = &layout_motions });
+
+    var saw_motion = false;
+    var saw_motion_inverse = false;
+    for (builder.displayList().commands) |command| switch (command) {
+        .transform => |transform| {
+            saw_motion = saw_motion or affinesEqual(transform, Affine.translate(0, 9));
+            saw_motion_inverse = saw_motion_inverse or affinesEqual(transform, Affine.translate(0, -9));
+        },
+        else => {},
+    };
+    try std.testing.expect(saw_motion);
+    try std.testing.expect(saw_motion_inverse);
 }
 
 test "input-group wears the focus ring for its focused descendant" {

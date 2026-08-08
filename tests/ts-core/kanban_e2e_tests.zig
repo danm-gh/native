@@ -125,6 +125,16 @@ const Harness = struct {
     fn hasText(self: *Harness, text: []const u8) bool {
         return findTextIn(self.app_state.tree.?.root, text);
     }
+
+    fn findLabel(self: *Harness, label: []const u8) ?canvas.ObjectId {
+        return findByLabel(self.app_state.tree.?.root, label);
+    }
+
+    fn click(self: *Harness, id: canvas.ObjectId) !void {
+        var buffer: [96]u8 = undefined;
+        const command = try std.fmt.bufPrint(&buffer, "widget-click {s} {d}", .{ canvas_label, id });
+        try self.harness.runtime.dispatchAutomationCommand(self.app, command);
+    }
 };
 
 fn findTextIn(widget: canvas.Widget, text: []const u8) bool {
@@ -133,6 +143,14 @@ fn findTextIn(widget: canvas.Widget, text: []const u8) bool {
         if (findTextIn(child, text)) return true;
     }
     return false;
+}
+
+fn findByLabel(widget: canvas.Widget, label: []const u8) ?canvas.ObjectId {
+    if (std.mem.eql(u8, widget.semantics.label, label)) return widget.id;
+    for (widget.children) |child| {
+        if (findByLabel(child, label)) |id| return id;
+    }
+    return null;
 }
 
 fn findCard(widget: canvas.Widget, title: []const u8) ?canvas.Widget {
@@ -154,6 +172,41 @@ fn findLayoutMotion(state: canvas.WidgetRenderState, id: canvas.ObjectId) ?canva
         if (motion.id == id) return motion;
     }
     return null;
+}
+
+test "overflowing columns scroll through the live runtime" {
+    const h = try Harness.create();
+    defer h.destroy();
+
+    const add_button = h.findLabel("Add card").?;
+    for (0..5) |_| try h.click(add_button);
+
+    try std.testing.expectEqual(@as(i64, 7), Bridge.model().todoCount());
+    const newest = findCard(h.app_state.tree.?.root, "Investigate agent task 10").?;
+    const before_scroll = try h.frameFor(newest.id);
+    try std.testing.expect(before_scroll.y + before_scroll.height > 560);
+
+    try h.harness.runtime.dispatchPlatformEvent(h.app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .timestamp_ns = 1_000_000_000,
+        .kind = .scroll,
+        .x = 100,
+        .y = 300,
+        .delta_y = 240,
+    } });
+
+    try std.testing.expect(Bridge.model().todoScroll > 0);
+    const after_scroll = try h.frameFor(newest.id);
+    try std.testing.expect(after_scroll.y < before_scroll.y);
+    try std.testing.expect(after_scroll.y + after_scroll.height <= 560);
+
+    // Drag hit-testing translates the viewport y back into scrolled content
+    // coordinates. At this visible y the reserved slot belongs before id 6;
+    // ignoring the offset would incorrectly choose the second card, id 2.
+    try h.beginDrag(newest.id, 100, 140);
+    try std.testing.expectEqual(@as(i64, 6), Bridge.model().dragBeforeId);
+    try h.escapeDrag();
 }
 
 test "native file drops add cards and card drags preview and commit arbitrary insertion" {

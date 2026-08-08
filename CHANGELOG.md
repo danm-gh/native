@@ -2,9 +2,26 @@
 
 All notable changes to the Native SDK (formerly zero-native) will be documented in this file.
 
-## 0.8.2
+## 0.8.3
 
 <!-- release:start -->
+
+### Bug Fixes
+
+- **Packaged TypeScript app assets**: Runtime asset lookup now finds bundled macOS resources before the process working directory, so Native markup boot images such as the Kanban agent avatars render after launch (#297).
+- **Unclipped drag landing motion**: Dropped cards now stay in the lifted drag layer through their landing animation while neighboring reflow remains clipped within its swimlane (#297).
+
+### Improvements
+
+- **Denser Kanban showcase**: The seeded board now includes twice as many Jira-style tickets and removes redundant issue glyphs from card metadata (#297).
+
+### Contributors
+
+- @ctate
+
+<!-- release:end -->
+
+## 0.8.2
 
 ### New Features
 
@@ -25,8 +42,6 @@ All notable changes to the Native SDK (formerly zero-native) will be documented 
 - @ctate
 - @johnlindquist
 - @Railly
-
-<!-- release:end -->
 
 ## 0.8.1
 

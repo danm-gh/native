@@ -1311,7 +1311,12 @@ test "the registry's attr value classes match the ElementOptions field types" {
         const expected: contract.AttrClass = switch (@typeInfo(FieldType)) {
             .float => .number,
             .int => .whole,
-            .bool, .optional => .truthy,
+            .bool => .truthy,
+            .optional => |optional| switch (@typeInfo(optional.child)) {
+                .bool => .truthy,
+                .float => .number,
+                else => unreachable,
+            },
             .@"enum" => .option,
             .pointer => .text,
             else => unreachable,

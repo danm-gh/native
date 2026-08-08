@@ -618,7 +618,7 @@ pub fn Ui(comptime Msg: type) type {
             min_width: f32 = 0,
             grow: f32 = 0,
             gap: f32 = 0,
-            padding: f32 = 0,
+            padding: ?f32 = null,
             main: canvas.WidgetMainAlignment = .start,
             cross: canvas.WidgetCrossAlignment = .stretch,
             /// Line policy for `text` leaves. `true`: word-wrap through
@@ -3614,7 +3614,7 @@ pub fn Ui(comptime Msg: type) type {
         /// default gap. Explicit spacing always wins for its own field.
         fn applyKindDefaultLayout(kind: WidgetKind, options: ElementOptions, layout: *canvas.WidgetLayoutStyle) void {
             const defaults = canvas.widgetKindDefaultLayout(kind, options.size) orelse return;
-            if (options.padding == 0) {
+            if (options.padding == null) {
                 layout.padding = defaults.padding;
                 layout.padding_is_kind_default = true;
             }
@@ -3654,12 +3654,7 @@ pub fn Ui(comptime Msg: type) type {
                     .disabled = options.disabled,
                 },
                 .layout = .{
-                    .padding = .{
-                        .top = options.padding,
-                        .right = options.padding,
-                        .bottom = options.padding,
-                        .left = options.padding,
-                    },
+                    .padding = geometry.InsetsF.all(options.padding orelse 0),
                     .gap = options.gap,
                     .grow = options.grow,
                     .main_alignment = options.main,

@@ -304,7 +304,7 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
             // clear the raw pressed text id on release. A live widget drag
             // owns text motion, so the text-selection pass below stands
             // down instead of selecting the card label.
-            var widget_drag_event = CanvasWidgetEventMethods().routeCanvasWidgetDragInput(self, input_event, &self.widget_event_route_entries) catch |err| switch (err) {
+            var widget_drag_event = CanvasWidgetEventMethods().routeCanvasWidgetDragInput(self, input_event, &self.widget_drag_event_route_entries) catch |err| switch (err) {
                 error.WindowNotFound,
                 error.ViewNotFound,
                 error.InvalidViewOptions,
@@ -405,7 +405,7 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
             // exactly one meaning and the app receives phase 2.
             const widget_drag_escape_cancelled = drag_cancelled: {
                 if (targetless_composition_owns_keys or widget_key_lifetime_suppressed) break :drag_cancelled false;
-                const drag_cancel = CanvasWidgetEventMethods().routeCanvasWidgetDragCancelFromKeyboardInput(self, input_event, &self.widget_event_route_entries) catch |err| switch (err) {
+                const drag_cancel = CanvasWidgetEventMethods().routeCanvasWidgetDragCancelFromKeyboardInput(self, input_event, &self.widget_drag_event_route_entries) catch |err| switch (err) {
                     error.WindowNotFound,
                     error.ViewNotFound,
                     error.InvalidViewOptions,

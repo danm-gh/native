@@ -165,6 +165,7 @@ const DragPayload = struct {
 
 const DragModel = struct {
     presses: u32 = 0,
+    holds: u32 = 0,
     changes: u32 = 0,
     ends: u32 = 0,
     cancels: u32 = 0,
@@ -175,6 +176,7 @@ const DragModel = struct {
 
 const DragMsg = union(enum) {
     pressed,
+    held,
     dragged: DragPayload,
 };
 
@@ -183,6 +185,7 @@ const DragApp = ui_app_model.UiApp(DragModel, DragMsg);
 fn dragUpdate(model: *DragModel, msg: DragMsg) void {
     switch (msg) {
         .pressed => model.presses += 1,
+        .held => model.holds += 1,
         .dragged => |drag| {
             model.last_x = drag.x;
             switch (drag.phase) {
@@ -204,6 +207,7 @@ fn dragView(ui: *DragApp.Ui, model: *const DragModel) DragApp.Ui.Node {
         .height = 40,
         .global_key = canvas.uiKey(@as(u64, 7)),
         .on_press = .pressed,
+        .on_hold = .held,
         .on_drag = .{ .dragged = .{
             .sourceId = 7,
             .phase = 0,
@@ -328,6 +332,12 @@ test "ui app keeps clicks below drag slop and suppresses press after a live drag
         .y = point.y,
     } });
     try std.testing.expectEqual(@as(u32, 1), app_state.model.changes);
+    // Crossing drag slop gives this gesture to on-drag and cancels the
+    // on-hold interpretation armed by the same pointer-down. Waiting past
+    // the hold deadline therefore cannot dispatch a second Msg mid-drag.
+    try std.testing.expect(!harness.null_platform.startedTimer(DragApp.press_hold_timer_id).?.active);
+    try std.testing.expect(harness.null_platform.fireTimer(DragApp.press_hold_timer_id, 400_000_000) == null);
+    try std.testing.expectEqual(@as(u32, 0), app_state.model.holds);
     try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = canvas_label,

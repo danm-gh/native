@@ -5689,6 +5689,11 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             if (drag_event.drag.phase == .change and
                 !canvas_widget_events.canvasWidgetDragCrossedSlop(drag_event.drag.delta)) return;
             const source = drag_event.source orelse return;
+            // Once drag wins the pointer gesture it also owns its delayed
+            // interpretation. An element may declare both on-hold and on-drag;
+            // leaving the down-armed timer live would dispatch the hold Msg in
+            // the middle of a stationary drag and then dispatch drag end too.
+            if (drag_event.drag.phase == .change) self.disarmHold(runtime);
             const tree = self.treeForViewLabel(drag_event.view_label);
             const live_template = if (tree) |value| value.msgFor(source.id, .drag) else null;
             const layout: ?canvas.WidgetLayoutTree = runtime.canvasWidgetLayout(drag_event.window_id, drag_event.view_label) catch null;

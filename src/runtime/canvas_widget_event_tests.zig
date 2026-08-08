@@ -2890,6 +2890,102 @@ test "runtime dispatches opted-in canvas widget drag events" {
     try std.testing.expect(!snapshot.widgets[2].actions.drag);
 }
 
+test "drag routing preserves a nested pointer route until pointer dispatch" {
+    const TestApp = struct {
+        pointer_target_id: canvas.ObjectId = 0,
+        drag_source_id: canvas.ObjectId = 0,
+        pointer_route: [5]canvas.WidgetEventRouteEntry = undefined,
+        pointer_route_len: usize = 0,
+
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-drag-routes", .source = platform.WebViewSource.html("<h1>GPU</h1>"), .event_fn = event };
+        }
+
+        fn event(context: *anyopaque, runtime: *Runtime, event_value: Event) anyerror!void {
+            _ = runtime;
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event_value) {
+                .canvas_widget_pointer => |pointer_event| {
+                    if (pointer_event.pointer.phase != .move) return;
+                    self.pointer_target_id = if (pointer_event.target) |target| target.id else 0;
+                    self.pointer_route_len = @min(pointer_event.route.len, self.pointer_route.len);
+                    @memcpy(self.pointer_route[0..self.pointer_route_len], pointer_event.route[0..self.pointer_route_len]);
+                },
+                .canvas_widget_drag => |drag_event| {
+                    self.drag_source_id = if (drag_event.source) |source| source.id else 0;
+                },
+                else => {},
+            }
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 240, 120),
+    });
+
+    const label = canvas.Widget{
+        .id = 3,
+        .kind = .text,
+        .frame = geometry.RectF.init(0, 0, 80, 20),
+        .text = "Drag label",
+    };
+    const source = canvas.Widget{
+        .id = 2,
+        .kind = .row,
+        .frame = geometry.RectF.init(0, 0, 0, 40),
+        .layout = .{ .padding = geometry.InsetsF.all(8) },
+        .semantics = .{ .actions = .{ .drag = true } },
+        .children = &.{label},
+    };
+    var nodes: [3]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(
+        .{ .id = 1, .kind = .panel, .children = &.{source} },
+        geometry.RectF.init(0, 0, 240, 120),
+        &nodes,
+    );
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+    const point = (try harness.runtime.canvasWidgetLayout(1, "canvas")).findById(3).?.frame.normalized().center();
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = point.x,
+        .y = point.y,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_drag,
+        .x = point.x + 12,
+        .y = point.y,
+    } });
+
+    try std.testing.expectEqual(@as(canvas.ObjectId, 3), app_state.pointer_target_id);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), app_state.drag_source_id);
+    try std.testing.expectEqual(@as(usize, 5), app_state.pointer_route_len);
+    try std.testing.expectEqual(canvas.WidgetEventPhase.capture, app_state.pointer_route[0].phase);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 1), app_state.pointer_route[0].id);
+    try std.testing.expectEqual(canvas.WidgetEventPhase.capture, app_state.pointer_route[1].phase);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), app_state.pointer_route[1].id);
+    try std.testing.expectEqual(canvas.WidgetEventPhase.target, app_state.pointer_route[2].phase);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 3), app_state.pointer_route[2].id);
+    try std.testing.expectEqual(canvas.WidgetEventPhase.bubble, app_state.pointer_route[3].phase);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), app_state.pointer_route[3].id);
+    try std.testing.expectEqual(canvas.WidgetEventPhase.bubble, app_state.pointer_route[4].phase);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 1), app_state.pointer_route[4].id);
+}
+
 test "unmounted drag source still dispatches one captured cancel" {
     const TestApp = struct {
         widget_drag_count: u32 = 0,

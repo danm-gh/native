@@ -1749,6 +1749,29 @@ static CGFloat NativeSdkPacketTransformScale(id value) {
     return fmax(0.0001, fmax(xScale, yScale));
 }
 
+/* Three box filters approximate a Gaussian closely while retaining the
+ * O(pixels) sliding-window implementation in vImage. `sigma` is the CSS-like
+ * blur radius in device pixels; the widths below are the standard optimal
+ * three-box approximation, split between the neighboring odd widths whose
+ * combined variance is closest to sigma squared. */
+static void NativeSdkGaussianBoxRadii(NSUInteger sigma, NSUInteger radii[3]) {
+    const double passCount = 3.0;
+    const double idealWidth = sqrt((12.0 * (double)sigma * (double)sigma / passCount) + 1.0);
+    NSUInteger lowerWidth = (NSUInteger)floor(idealWidth);
+    if ((lowerWidth & 1u) == 0) lowerWidth -= 1;
+    lowerWidth = MAX((NSUInteger)1, lowerWidth);
+    const NSUInteger upperWidth = lowerWidth + 2;
+    const double lowerCountValue =
+        (12.0 * (double)sigma * (double)sigma - passCount * (double)lowerWidth * (double)lowerWidth -
+            4.0 * passCount * (double)lowerWidth - 3.0 * passCount) /
+        (-4.0 * (double)lowerWidth - 4.0);
+    const NSInteger lowerCount = MAX((NSInteger)0, MIN((NSInteger)3, (NSInteger)llround(lowerCountValue)));
+    for (NSUInteger pass = 0; pass < 3; pass++) {
+        const NSUInteger width = pass < (NSUInteger)lowerCount ? lowerWidth : upperWidth;
+        radii[pass] = (width - 1) / 2;
+    }
+}
+
 static BOOL NativeSdkPacketApplyBlur(NSDictionary *effect, CGFloat opacity, CGContextRef context, CGFloat scale, id transformValue, BOOL hasClip, NSRect clipRect) {
     if (!effect || !context) return NO;
     void *contextData = CGBitmapContextGetData(context);
@@ -1780,16 +1803,19 @@ static BOOL NativeSdkPacketApplyBlur(NSDictionary *effect, CGFloat opacity, CGCo
     NSUInteger maxY = (NSUInteger)maxYFloat;
     if (maxX <= minX || maxY <= minY) return YES;
 
-    NSUInteger radius = (NSUInteger)llround(fmax(0.0, NativeSdkPacketNumber(effect[@"radius"], 0) * normalizedScale * NativeSdkPacketTransformScale(transformValue)));
-    radius = MIN(radius, (NSUInteger)64);
-    if (radius == 0) return YES;
+    NSUInteger sigma = (NSUInteger)llround(fmax(0.0, NativeSdkPacketNumber(effect[@"radius"], 0) * normalizedScale * NativeSdkPacketTransformScale(transformValue)));
+    sigma = MIN(sigma, (NSUInteger)64);
+    if (sigma == 0) return YES;
     CGFloat mix = fmax(0.0, fmin(1.0, opacity));
     if (mix <= 0) return YES;
 
-    NSUInteger expandedMinX = minX > radius ? minX - radius : 0;
-    NSUInteger expandedMaxX = MIN((NSUInteger)width, maxX + radius);
-    NSUInteger expandedMinY = minY > radius ? minY - radius : 0;
-    NSUInteger expandedMaxY = MIN((NSUInteger)height, maxY + radius);
+    NSUInteger boxRadii[3] = {0, 0, 0};
+    NativeSdkGaussianBoxRadii(sigma, boxRadii);
+    const NSUInteger sampleExtent = boxRadii[0] + boxRadii[1] + boxRadii[2];
+    NSUInteger expandedMinX = minX > sampleExtent ? minX - sampleExtent : 0;
+    NSUInteger expandedMaxX = MIN((NSUInteger)width, maxX + sampleExtent);
+    NSUInteger expandedMinY = minY > sampleExtent ? minY - sampleExtent : 0;
+    NSUInteger expandedMaxY = MIN((NSUInteger)height, maxY + sampleExtent);
     if (expandedMaxX <= expandedMinX || expandedMaxY <= expandedMinY) return YES;
 
     NSUInteger regionWidth = expandedMaxX - expandedMinX;
@@ -1797,11 +1823,13 @@ static BOOL NativeSdkPacketApplyBlur(NSDictionary *effect, CGFloat opacity, CGCo
     size_t regionBytesPerRow = regionWidth * 4;
     size_t regionByteLength = regionBytesPerRow * regionHeight;
     NSMutableData *sourceData = [NSMutableData dataWithLength:regionByteLength];
-    NSMutableData *horizontalData = [NSMutableData dataWithLength:regionByteLength];
-    if (!sourceData || !horizontalData) return NO;
+    NSMutableData *firstPassData = [NSMutableData dataWithLength:regionByteLength];
+    NSMutableData *secondPassData = [NSMutableData dataWithLength:regionByteLength];
+    if (!sourceData || !firstPassData || !secondPassData) return NO;
     uint8_t *destination = (uint8_t *)contextData;
     uint8_t *source = (uint8_t *)sourceData.mutableBytes;
-    uint8_t *horizontal = (uint8_t *)horizontalData.mutableBytes;
+    uint8_t *firstPass = (uint8_t *)firstPassData.mutableBytes;
+    uint8_t *secondPass = (uint8_t *)secondPassData.mutableBytes;
     for (NSUInteger row = 0; row < regionHeight; row++) {
         memcpy(
             source + row * regionBytesPerRow,
@@ -1810,91 +1838,37 @@ static BOOL NativeSdkPacketApplyBlur(NSDictionary *effect, CGFloat opacity, CGCo
         );
     }
 
-    /* Both passes keep the ORIGINAL clamped-window box average — the
-     * window shrinks at the surface edges exactly as before — but slide
-     * the window incrementally (add the entering sample, subtract the
-     * leaving one), turning O(region x radius) into O(region). The sums
-     * are the same integers the per-pixel rescan produced, so the output
-     * is byte-identical; a full-window dirty pass that repaints a
-     * backdrop-blurred popover stops costing milliseconds of scalar
-     * resampling. */
-    for (NSUInteger y = expandedMinY; y < expandedMaxY; y++) {
-        const uint8_t *sourceRow = source + (y - expandedMinY) * regionBytesPerRow;
-        uint8_t *horizontalRow = horizontal + (y - expandedMinY) * regionBytesPerRow;
-        NSUInteger windowMinX = minX > radius ? minX - radius : 0;
-        NSUInteger windowMaxX = MIN((NSUInteger)width - 1, minX + radius);
-        uint64_t sums[4] = {0, 0, 0, 0};
-        for (NSUInteger sx = windowMinX; sx <= windowMaxX; sx++) {
-            const uint8_t *pixel = sourceRow + (sx - expandedMinX) * 4;
-            sums[0] += pixel[0];
-            sums[1] += pixel[1];
-            sums[2] += pixel[2];
-            sums[3] += pixel[3];
+    vImage_Buffer buffers[3] = {
+        { .data = source, .height = regionHeight, .width = regionWidth, .rowBytes = regionBytesPerRow },
+        { .data = firstPass, .height = regionHeight, .width = regionWidth, .rowBytes = regionBytesPerRow },
+        { .data = secondPass, .height = regionHeight, .width = regionWidth, .rowBytes = regionBytesPerRow },
+    };
+    const Pixel_8888 edgeColor = {0, 0, 0, 0};
+    for (NSUInteger pass = 0; pass < 3; pass++) {
+        const vImage_Buffer *input = pass == 0 ? &buffers[0] : (pass == 1 ? &buffers[1] : &buffers[2]);
+        const vImage_Buffer *output = pass == 1 ? &buffers[2] : &buffers[1];
+        const uint32_t kernelSize = (uint32_t)(boxRadii[pass] * 2 + 1);
+        if (kernelSize == 1) {
+            memcpy(output->data, input->data, regionByteLength);
+            continue;
         }
-        for (NSUInteger x = minX; x < maxX; x++) {
-            NSUInteger sampleMinX = x > radius ? x - radius : 0;
-            NSUInteger sampleMaxX = MIN((NSUInteger)width - 1, x + radius);
-            while (windowMaxX < sampleMaxX) {
-                windowMaxX += 1;
-                const uint8_t *pixel = sourceRow + (windowMaxX - expandedMinX) * 4;
-                sums[0] += pixel[0];
-                sums[1] += pixel[1];
-                sums[2] += pixel[2];
-                sums[3] += pixel[3];
-            }
-            while (windowMinX < sampleMinX) {
-                const uint8_t *pixel = sourceRow + (windowMinX - expandedMinX) * 4;
-                sums[0] -= pixel[0];
-                sums[1] -= pixel[1];
-                sums[2] -= pixel[2];
-                sums[3] -= pixel[3];
-                windowMinX += 1;
-            }
-            NSUInteger count = sampleMaxX - sampleMinX + 1;
-            uint8_t *out = horizontalRow + (x - expandedMinX) * 4;
-            out[0] = (uint8_t)(sums[0] / count);
-            out[1] = (uint8_t)(sums[1] / count);
-            out[2] = (uint8_t)(sums[2] / count);
-            out[3] = (uint8_t)(sums[3] / count);
-        }
+        const vImage_Error error = vImageBoxConvolve_ARGB8888(
+            input, output, NULL, 0, 0, kernelSize, kernelSize, edgeColor, kvImageEdgeExtend
+        );
+        if (error != kvImageNoError) return NO;
     }
 
-    for (NSUInteger x = minX; x < maxX; x++) {
-        const uint8_t *horizontalColumn = horizontal + (x - expandedMinX) * 4;
-        NSUInteger windowMinY = minY > radius ? minY - radius : 0;
-        NSUInteger windowMaxY = MIN((NSUInteger)height - 1, minY + radius);
-        uint64_t sums[4] = {0, 0, 0, 0};
-        for (NSUInteger sy = windowMinY; sy <= windowMaxY; sy++) {
-            const uint8_t *pixel = horizontalColumn + (sy - expandedMinY) * regionBytesPerRow;
-            sums[0] += pixel[0];
-            sums[1] += pixel[1];
-            sums[2] += pixel[2];
-            sums[3] += pixel[3];
-        }
-        for (NSUInteger y = minY; y < maxY; y++) {
-            NSUInteger sampleMinY = y > radius ? y - radius : 0;
-            NSUInteger sampleMaxY = MIN((NSUInteger)height - 1, y + radius);
-            while (windowMaxY < sampleMaxY) {
-                windowMaxY += 1;
-                const uint8_t *pixel = horizontalColumn + (windowMaxY - expandedMinY) * regionBytesPerRow;
-                sums[0] += pixel[0];
-                sums[1] += pixel[1];
-                sums[2] += pixel[2];
-                sums[3] += pixel[3];
-            }
-            while (windowMinY < sampleMinY) {
-                const uint8_t *pixel = horizontalColumn + (windowMinY - expandedMinY) * regionBytesPerRow;
-                sums[0] -= pixel[0];
-                sums[1] -= pixel[1];
-                sums[2] -= pixel[2];
-                sums[3] -= pixel[3];
-                windowMinY += 1;
-            }
-            NSUInteger count = sampleMaxY - sampleMinY + 1;
+    /* The third pass lands in firstPass. Preserve command opacity by
+     * mixing that Gaussian approximation with the untouched backdrop. */
+    for (NSUInteger y = minY; y < maxY; y++) {
+        const NSUInteger regionY = y - expandedMinY;
+        for (NSUInteger x = minX; x < maxX; x++) {
+            const NSUInteger regionX = x - expandedMinX;
+            const size_t regionIndex = regionY * regionBytesPerRow + regionX * 4;
             uint8_t *out = destination + y * bytesPerRow + x * 4;
             for (NSUInteger channel = 0; channel < 4; channel++) {
-                CGFloat blurred = (CGFloat)(sums[channel] / count);
-                CGFloat original = (CGFloat)source[(y - expandedMinY) * regionBytesPerRow + (x - expandedMinX) * 4 + channel];
+                const CGFloat original = (CGFloat)source[regionIndex + channel];
+                const CGFloat blurred = (CGFloat)firstPass[regionIndex + channel];
                 out[channel] = (uint8_t)llround(original + (blurred - original) * mix);
             }
         }
@@ -4033,7 +4007,7 @@ static const char *NativeSdkGpuShotDir(void) {
  *     through the same CG code, clipped to the repaint region, and draw
  *     as transient textured quads;
  *   - blur reads the backdrop, so the pass splits around it: commit +
- *     wait, read the target back, run the existing scalar box blur on
+ *     wait, read the target back, run the vImage Gaussian approximation on
  *     the readback, upload the blurred rect, and continue — a hybrid
  *     frame, CPU only where the effect is inherently a backdrop read.
  * Scissor/dirty-rect semantics mirror the CPU path: full passes clear
@@ -4520,7 +4494,7 @@ static BOOL NativeSdkCompositeBlurWriteRegion(NSDictionary *command, CGFloat sca
         if (op->type == 0) continue;
         if (op->type == 3) {
             /* Blur sandwich: flush the pass, read the target back, run
-             * the reference scalar blur on the readback, upload the
+             * the vImage Gaussian approximation on the readback, upload the
              * blurred rect, and continue compositing above it. */
             [encoder endEncoding];
             encoder = nil;

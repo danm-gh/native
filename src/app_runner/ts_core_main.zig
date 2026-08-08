@@ -31,7 +31,8 @@
 //!                    its exports (export exists -> wired): `frameMsg`
 //!                    (presented frames), `keyMsg` (the app-level key
 //!                    fallback), `appearanceMsg`/`chromeMsg` (Msg arms
-//!                    the host fills structurally).
+//!                    the host fills structurally), and `dropMsg`
+//!                    (native file drops with source, point, and paths).
 //!   images           app.zon's `.assets.images` entries (`.{ .id = 1,
 //!                    .path = "assets/..." }`) are read once at launch
 //!                    and registered on the installing frame — the ids

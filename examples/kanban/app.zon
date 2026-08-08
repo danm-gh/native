@@ -2,7 +2,7 @@
     .id = "dev.native_sdk.kanban",
     .name = "kanban",
     .display_name = "Kanban",
-    .description = "A kanban board with todo, doing, and done columns.",
+    .description = "A TypeScript kanban board where native file drops become todo cards.",
     .version = "0.1.0",
     .platforms = .{"macos"},
     .permissions = .{ "view", "command" },

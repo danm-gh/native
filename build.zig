@@ -3088,7 +3088,7 @@ fn tsCoreE2eArtifact(
     markup_e2e_mod.addImport("native_sdk", desktop_mod);
     markup_e2e_mod.addImport("ts_markup_fixture", markup_fixture_mod);
 
-    // The rewritten Kanban example's real TypeScript core and imported
+    // The rewritten Kanban example's real TypeScript core and self-contained
     // shipping markup. Its battery drives native multi-file drops through
     // the generated dropMsg adapter and then moves the created cards.
     const kanban_fixture = externalCoreFixtureModule(b, target, optimize, node, corewire_exe, .{
@@ -3100,7 +3100,6 @@ fn tsCoreE2eArtifact(
     const kanban_stage = b.addWriteFiles();
     const kanban_root = kanban_stage.addCopyFile(b.path("tests/ts-core/kanban_e2e_tests.zig"), "kanban_e2e_tests.zig");
     _ = kanban_stage.addCopyFile(b.path("examples/kanban/src/app.native"), "app.native");
-    _ = kanban_stage.addCopyFile(b.path("examples/kanban/src/components/board-column.native"), "components/board-column.native");
     const kanban_mod = b.createModule(.{
         .root_source_file = kanban_root,
         .target = target,

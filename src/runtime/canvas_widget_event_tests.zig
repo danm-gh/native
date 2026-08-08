@@ -2890,6 +2890,112 @@ test "runtime dispatches opted-in canvas widget drag events" {
     try std.testing.expect(!snapshot.widgets[2].actions.drag);
 }
 
+test "unmounted drag source still dispatches one captured cancel" {
+    const TestApp = struct {
+        widget_drag_count: u32 = 0,
+        last_drag_phase: canvas.WidgetDragPhase = .change,
+        last_drag_source_id: canvas.ObjectId = 0,
+        last_drag_route_len: usize = 0,
+        source_unmounted: bool = false,
+
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-drag-unmount", .source = platform.WebViewSource.html("<h1>GPU</h1>"), .event_fn = event };
+        }
+
+        fn event(context: *anyopaque, runtime: *Runtime, event_value: Event) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event_value) {
+                .canvas_widget_drag => |drag_event| {
+                    self.widget_drag_count += 1;
+                    self.last_drag_phase = drag_event.drag.phase;
+                    self.last_drag_source_id = if (drag_event.source) |source| source.id else 0;
+                    self.last_drag_route_len = drag_event.route.len;
+                    if (drag_event.drag.phase == .change and !self.source_unmounted) {
+                        self.source_unmounted = true;
+                        var empty_nodes: [1]canvas.WidgetLayoutNode = undefined;
+                        const empty_layout = try canvas.layoutWidgetTree(
+                            .{ .id = 1, .kind = .panel },
+                            geometry.RectF.init(0, 0, 240, 120),
+                            &empty_nodes,
+                        );
+                        _ = try runtime.setCanvasWidgetLayout(1, "canvas", empty_layout);
+                    }
+                },
+                else => {},
+            }
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 240, 120),
+    });
+    const children = [_]canvas.Widget{.{
+        .id = 2,
+        .kind = .button,
+        .frame = geometry.RectF.init(12, 16, 96, 32),
+        .text = "Drag",
+        .semantics = .{ .actions = .{ .drag = true } },
+    }};
+    var nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const layout = try canvas.layoutWidgetTree(.{ .id = 1, .kind = .panel, .children = &children }, geometry.RectF.init(0, 0, 240, 120), &nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", layout);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = 20,
+        .y = 28,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_drag,
+        .x = 64,
+        .y = 30,
+    } });
+    try std.testing.expectEqual(@as(u32, 1), app_state.widget_drag_count);
+    try std.testing.expectEqual(canvas.WidgetDragPhase.change, app_state.last_drag_phase);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_drag_source_id);
+    try std.testing.expect(!harness.runtime.views[0].canvas_widget_drag_source_attached);
+    try std.testing.expect(harness.runtime.views[0].canvasWidgetRenderState().drag_preview_id == null);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_up,
+        .x = 70,
+        .y = 32,
+    } });
+    try std.testing.expectEqual(@as(u32, 2), app_state.widget_drag_count);
+    try std.testing.expectEqual(canvas.WidgetDragPhase.cancel, app_state.last_drag_phase);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), app_state.last_drag_source_id);
+    try std.testing.expectEqual(@as(usize, 3), app_state.last_drag_route_len);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 0), harness.runtime.views[0].canvas_widget_drag_source_id);
+    try std.testing.expectEqual(@as(u64, 0), harness.runtime.views[0].canvas_widget_drag_pointer_id);
+
+    // The physical sequence is retired with the synthesized cancellation;
+    // another terminal edge cannot deliver the captured route twice.
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_cancel,
+        .x = 70,
+        .y = 32,
+    } });
+    try std.testing.expectEqual(@as(u32, 2), app_state.widget_drag_count);
+}
+
 test "plain escape cancels an active canvas widget drag and release cannot revive it" {
     const TestApp = struct {
         widget_drag_count: u32 = 0,

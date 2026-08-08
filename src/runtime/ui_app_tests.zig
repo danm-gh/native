@@ -169,6 +169,8 @@ const DragModel = struct {
     ends: u32 = 0,
     cancels: u32 = 0,
     last_x: f32 = 0,
+    unmount_on_drag: bool = false,
+    target_mounted: bool = true,
 };
 
 const DragMsg = union(enum) {
@@ -184,7 +186,10 @@ fn dragUpdate(model: *DragModel, msg: DragMsg) void {
         .dragged => |drag| {
             model.last_x = drag.x;
             switch (drag.phase) {
-                0 => model.changes += 1,
+                0 => {
+                    model.changes += 1;
+                    if (model.unmount_on_drag) model.target_mounted = false;
+                },
                 1 => model.ends += 1,
                 2 => model.cancels += 1,
                 else => {},
@@ -194,7 +199,7 @@ fn dragUpdate(model: *DragModel, msg: DragMsg) void {
 }
 
 fn dragView(ui: *DragApp.Ui, model: *const DragModel) DragApp.Ui.Node {
-    _ = model;
+    if (!model.target_mounted) return ui.column(.{ .padding = 12 }, .{});
     var target = ui.row(.{
         .height = 40,
         .global_key = canvas.uiKey(@as(u64, 7)),
@@ -434,6 +439,63 @@ test "ui app keeps clicks below drag slop and suppresses press after a live drag
     try std.testing.expectEqual(@as(u32, 3), app_state.model.changes);
     try std.testing.expectEqual(@as(u32, 2), app_state.model.ends);
     try std.testing.expectEqual(@as(u64, 0), harness.runtime.views[0].canvas_widget_drag_pointer_id);
+}
+
+test "ui app delivers cancel when a drag update unmounts its source" {
+    const harness = try core.TestHarness().create(std.testing.allocator, .{ .size = geometry.SizeF.init(400, 300) });
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+
+    const app_state = try std.testing.allocator.create(DragApp);
+    defer std.testing.allocator.destroy(app_state);
+    app_state.* = DragApp.init(std.heap.page_allocator, .{ .unmount_on_drag = true }, dragOptions());
+    defer app_state.deinit();
+    const app = app_state.app();
+    try harness.start(app);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_frame = .{
+        .label = canvas_label,
+        .size = geometry.SizeF.init(400, 300),
+        .scale_factor = 2,
+        .frame_index = 1,
+        .timestamp_ns = 1_000_000,
+        .nonblank = true,
+    } });
+
+    const target_id = findWidgetIdByText(app_state.tree.?, .row, "Drag target").?;
+    const layout = try harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const point = layout.findById(target_id).?.frame.normalized().center();
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_down,
+        .x = point.x,
+        .y = point.y,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_drag,
+        .x = point.x + 40,
+        .y = point.y + 4,
+    } });
+    try std.testing.expectEqual(@as(u32, 1), app_state.model.changes);
+    try std.testing.expect(!app_state.model.target_mounted);
+    try std.testing.expectEqual(target_id, app_state.drag_msg_source_id);
+    try std.testing.expect(harness.runtime.views[0].canvasWidgetRenderState().drag_preview_id == null);
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = .pointer_up,
+        .x = point.x + 46,
+        .y = point.y + 7,
+    } });
+    try std.testing.expectEqual(@as(u32, 1), app_state.model.changes);
+    try std.testing.expectEqual(@as(u32, 0), app_state.model.ends);
+    try std.testing.expectEqual(@as(u32, 1), app_state.model.cancels);
+    try std.testing.expectEqual(point.x + 46, app_state.model.last_x);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 0), app_state.drag_msg_source_id);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 0), harness.runtime.views[0].canvas_widget_drag_source_id);
 }
 
 // -------------------------------------- context-menu fallback fixture

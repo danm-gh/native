@@ -1245,12 +1245,15 @@ pub fn Ui(comptime Msg: type) type {
             pub fn msgForDrag(self: Tree, id: ObjectId, drag: canvas.WidgetDragEvent, view_size: geometry.SizeF) ?Msg {
                 for (self.handlers) |handler| {
                     if (handler.id != id or handler.event != .drag or handler.action != .message) continue;
-                    return injectDragGeometry(handler.action.message, drag, view_size);
+                    return msgForDragTemplate(handler.action.message, drag, view_size);
                 }
                 return null;
             }
 
-            fn injectDragGeometry(template: Msg, drag: canvas.WidgetDragEvent, view_size: geometry.SizeF) ?Msg {
+            /// Rehydrate a previously captured drag handler template with the
+            /// terminal phase and geometry. UiApp uses this when the source's
+            /// phase-0 update unmounted the live handler before cancellation.
+            pub fn msgForDragTemplate(template: Msg, drag: canvas.WidgetDragEvent, view_size: geometry.SizeF) ?Msg {
                 return switch (template) {
                     inline else => |payload, tag| if (comptime reflect.declaredWidgetDragDropRecord(@TypeOf(payload))) blk: {
                         var out = payload;

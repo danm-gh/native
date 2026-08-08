@@ -350,11 +350,13 @@ pub fn RuntimeViewCanvasWidgetTree(comptime RuntimeView: type) type {
             if (self.canvas_widget_pressed_id != 0 and !canvasWidgetInteractionTargetExists(self.widgetLayoutTree(), self.canvas_widget_pressed_id)) {
                 self.canvas_widget_pressed_id = 0;
             }
-            if (self.canvas_widget_drag_source_id != 0 and !canvasWidgetInteractionTargetExists(self.widgetLayoutTree(), self.canvas_widget_drag_source_id)) {
-                self.canvas_widget_drag_source_id = 0;
-                self.canvas_widget_drag_pointer_id = 0;
-                self.canvas_widget_drag_source_origin = .{};
-                self.canvas_widget_drag_delta = .{};
+            // Keep live drag capture across a source unmount/disable/hide.
+            // Its preview naturally disappears because the fresh layout has
+            // no paintable source, while the next motion or terminal pointer
+            // edge resolves through the retained route snapshot and emits the
+            // cancel owed to consumers that already received `.change`.
+            if (self.canvas_widget_drag_source_id != 0) {
+                self.canvas_widget_drag_source_attached = canvasWidgetInteractionTargetExists(self.widgetLayoutTree(), self.canvas_widget_drag_source_id);
             }
             self.pruneCanvasWidgetTextHistory();
             self.canvas_widget_cursor = self.canvasWidgetCursorForId(self.canvas_widget_hovered_id);
@@ -386,8 +388,8 @@ pub fn RuntimeViewCanvasWidgetTree(comptime RuntimeView: type) type {
                 // the press fall-through so a click anywhere in a
                 // composite row lights the row, matching the hover walk.
                 .pressed_id = if (self.canvas_widget_pressed_id == 0) null else canvasWidgetPressWashTargetId(self, self.canvas_widget_pressed_id),
-                .drag_preview_id = if (self.canvas_widget_drag_source_id == 0) null else self.canvas_widget_drag_source_id,
-                .drag_preview_origin = if (self.canvas_widget_drag_source_id == 0) null else self.canvas_widget_drag_source_origin,
+                .drag_preview_id = if (self.canvas_widget_drag_source_id == 0 or !self.canvas_widget_drag_source_attached) null else self.canvas_widget_drag_source_id,
+                .drag_preview_origin = if (self.canvas_widget_drag_source_id == 0 or !self.canvas_widget_drag_source_attached) null else self.canvas_widget_drag_source_origin,
                 .drag_preview_offset = self.canvas_widget_drag_delta,
                 .layout_motions = self.canvas_widget_drag_layout_motions[0..self.canvas_widget_drag_layout_motion_count],
                 .hover_point = if (self.canvas_widget_hovered_id == 0) null else self.canvas_widget_hover_point,

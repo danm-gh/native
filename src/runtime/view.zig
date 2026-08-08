@@ -579,6 +579,10 @@ pub const RuntimeView = struct {
     /// `pressed_id` deliberately stays the raw text hit for ordinary text
     /// selection; this separate latch lets a draggable card own that drag.
     canvas_widget_drag_source_id: canvas.ObjectId = 0,
+    /// Whether that captured source still has an interactive node in the
+    /// adopted layout. Capture survives false to deliver cancellation, but
+    /// the floating preview must disappear with the source.
+    canvas_widget_drag_source_attached: bool = false,
     /// Pointer sequence that owns the drag candidate/live drag. Hosts with
     /// multiple contacts must not let a second finger move, finish, or
     /// silently replace the first finger's model-visible gesture.
@@ -586,6 +590,13 @@ pub const RuntimeView = struct {
     canvas_widget_drag_start_point: geometry.PointF = .{},
     canvas_widget_drag_source_origin: geometry.PointF = .{},
     canvas_widget_drag_delta: geometry.OffsetF = .{},
+    /// Last live drag-source hit and route. A rebuild may remove, hide, or
+    /// disable the source before the pointer's terminal edge; retaining this
+    /// POD snapshot lets that edge still deliver one truthful `.cancel`
+    /// instead of silently forgetting a phase the app already heard begin.
+    canvas_widget_drag_source_hit: ?canvas.WidgetHit = null,
+    canvas_widget_drag_route_entries: [canvas.max_widget_depth * 2]canvas.WidgetEventRouteEntry = undefined,
+    canvas_widget_drag_route_len: usize = 0,
     /// Pointer-up/cancel handoff: the floating card's last presented origin
     /// becomes the real keyed widget's FLIP origin in the next adoption, so
     /// the item under the pointer itself eases into its destination.

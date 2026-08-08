@@ -190,13 +190,20 @@ fn emitWidgetLayoutDragPreview(builder: *Builder, layout: anytype, tokens: Desig
     // floating copy itself.
     preview_state.revealing_disclosure_ids = state.revealing_disclosure_ids;
 
-    const current_origin = layout.nodes[source_index].frame.normalized();
-    const source_origin = state.drag_preview_origin orelse geometry.PointF.init(current_origin.x, current_origin.y);
+    const ancestor_transform = widgetLayoutNodeAncestorEmissionTransform(layout, source_index) orelse return error.InvalidTransform;
+    const wrap_ancestor_transform = !affinesEqual(ancestor_transform, Affine.identity());
+    const inverse_ancestor_transform = if (wrap_ancestor_transform) ancestor_transform.inverse() orelse return error.InvalidTransform else Affine.identity();
+    const current_frame = layout.nodes[source_index].frame.normalized();
+    const current_origin = ancestor_transform.transformPoint(geometry.PointF.init(current_frame.x, current_frame.y));
+    const source_layout_origin = state.drag_preview_origin orelse geometry.PointF.init(current_frame.x, current_frame.y);
+    const source_origin = ancestor_transform.transformPoint(source_layout_origin);
     const translate_x = source_origin.x + state.drag_preview_offset.dx - current_origin.x;
     const translate_y = source_origin.y + state.drag_preview_offset.dy - current_origin.y;
     const translation = Affine.translate(translate_x, translate_y);
     try builder.transform(translation);
+    if (wrap_ancestor_transform) try builder.transform(ancestor_transform);
     try emitWidgetLayoutNode(builder, layout, source_index, tokens, preview_state, .none);
+    if (wrap_ancestor_transform) try builder.transform(inverse_ancestor_transform);
     try builder.transform(Affine.translate(-translate_x, -translate_y));
 }
 
@@ -234,6 +241,18 @@ fn widgetLayoutNodeEmissionTransform(layout: anytype, node_index: usize) ?Affine
         transform = transform.multiply(widgetTransform(layout.nodes[indices[len]].widget));
     }
     return transform;
+}
+
+/// The transform stack a node inherits at its ordinary paint position. A
+/// drag preview is hoisted to the window-level late pass to escape clipping,
+/// so it must explicitly restore this stack before painting the source.
+/// Anchored nodes were already hoisted and therefore inherit no original
+/// ancestors there.
+fn widgetLayoutNodeAncestorEmissionTransform(layout: anytype, node_index: usize) ?Affine {
+    if (node_index >= layout.nodes.len) return null;
+    if (widget_tree.widgetIsAnchored(layout.nodes[node_index].widget)) return Affine.identity();
+    const parent_index = layout.nodes[node_index].parent_index orelse return Affine.identity();
+    return widgetLayoutNodeEmissionTransform(layout, parent_index);
 }
 
 /// The rectangular part of one layout node that can reach the surface,

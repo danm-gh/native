@@ -292,10 +292,13 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 // strand the app after its phase-0 Msg.
                 if (self.views[index].canvas_widget_drag_source_id != 0) return null;
                 self.views[index].canvas_widget_drag_source_id = 0;
+                self.views[index].canvas_widget_drag_source_attached = false;
                 self.views[index].canvas_widget_drag_pointer_id = input_event.pointer_id;
                 self.views[index].canvas_widget_drag_start_point = geometry.PointF.init(input_event.x, input_event.y);
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
+                self.views[index].canvas_widget_drag_source_hit = null;
+                self.views[index].canvas_widget_drag_route_len = 0;
                 self.views[index].canvas_widget_drag_layout_motion_armed = false;
                 self.views[index].canvas_widget_drag_landing_source_id = 0;
                 self.views[index].canvas_widget_drag_landing_origin = .{};
@@ -341,17 +344,36 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             };
             const route = try self.views[index].widgetLayoutTree().routeDragEvent(drag, output);
             if (route.target == null) {
-                // A source removed or disabled mid-gesture cannot leave its
-                // last preview stranded on screen.
+                // A source removed, hidden, or disabled after a live change
+                // still owes the consumer one terminal phase. Its last valid
+                // hit/route are POD snapshots owned by the view, so they stay
+                // usable after the retained layout was replaced.
+                const captured_source = self.views[index].canvas_widget_drag_source_hit;
+                const captured_route = self.views[index].canvas_widget_drag_route_entries[0..self.views[index].canvas_widget_drag_route_len];
                 self.views[index].canvas_widget_drag_source_id = 0;
+                self.views[index].canvas_widget_drag_source_attached = false;
                 self.views[index].canvas_widget_drag_pointer_id = 0;
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
+                self.views[index].canvas_widget_drag_source_hit = null;
+                self.views[index].canvas_widget_drag_route_len = 0;
+                if (active_source != 0) self.views[index].canvas_widget_pressed_id = 0;
                 self.views[index].canvas_widget_drag_landing_source_id = 0;
                 self.views[index].canvas_widget_drag_landing_origin = .{};
                 const next_render_state = self.views[index].canvasWidgetRenderState();
                 if (!canvasWidgetRenderStatesEqual(previous_render_state, next_render_state)) {
                     try invalidateForCanvasWidgetRenderStateChange(self, index, previous_render_state, next_render_state);
+                }
+                if (active_source != 0 and captured_source != null) {
+                    drag.source_id = captured_source.?.id;
+                    drag.phase = .cancel;
+                    return .{
+                        .window_id = input_event.window_id,
+                        .view_label = self.views[index].label,
+                        .drag = drag,
+                        .source = captured_source,
+                        .route = captured_route,
+                    };
                 }
                 return null;
             }
@@ -370,6 +392,12 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                     .route = route.entries,
                 };
             }
+            self.views[index].canvas_widget_drag_source_hit = route.target;
+            self.views[index].canvas_widget_drag_route_len = @min(route.entries.len, self.views[index].canvas_widget_drag_route_entries.len);
+            @memcpy(
+                self.views[index].canvas_widget_drag_route_entries[0..self.views[index].canvas_widget_drag_route_len],
+                route.entries[0..self.views[index].canvas_widget_drag_route_len],
+            );
             // The app's Msg may rebuild into a different insertion pose.
             // Arm exactly that adoption for FLIP motion, including terminal
             // phases where the source itself moves into (or back from) the
@@ -383,6 +411,7 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                     self.views[index].canvas_widget_drag_source_origin = geometry.PointF.init(source_bounds.x, source_bounds.y);
                 }
                 self.views[index].canvas_widget_drag_source_id = drag.source_id;
+                self.views[index].canvas_widget_drag_source_attached = true;
                 self.views[index].canvas_widget_drag_delta = drag.delta;
             } else {
                 const source_origin = self.views[index].canvas_widget_drag_source_origin;
@@ -392,9 +421,12 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                     source_origin.y + drag.delta.dy,
                 );
                 self.views[index].canvas_widget_drag_source_id = 0;
+                self.views[index].canvas_widget_drag_source_attached = false;
                 self.views[index].canvas_widget_drag_pointer_id = 0;
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
+                self.views[index].canvas_widget_drag_source_hit = null;
+                self.views[index].canvas_widget_drag_route_len = 0;
             }
             const next_render_state = self.views[index].canvasWidgetRenderState();
             if (!canvasWidgetRenderStatesEqual(previous_render_state, next_render_state)) {
@@ -442,16 +474,31 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
             };
             const route = try self.views[index].widgetLayoutTree().routeDragEvent(drag, output);
             if (route.target == null) {
+                const captured_source = self.views[index].canvas_widget_drag_source_hit;
+                const captured_route = self.views[index].canvas_widget_drag_route_entries[0..self.views[index].canvas_widget_drag_route_len];
                 self.views[index].canvas_widget_drag_source_id = 0;
+                self.views[index].canvas_widget_drag_source_attached = false;
                 self.views[index].canvas_widget_drag_pointer_id = 0;
                 self.views[index].canvas_widget_drag_source_origin = .{};
                 self.views[index].canvas_widget_drag_delta = .{};
+                self.views[index].canvas_widget_drag_source_hit = null;
+                self.views[index].canvas_widget_drag_route_len = 0;
                 self.views[index].canvas_widget_pressed_id = 0;
                 self.views[index].canvas_widget_drag_landing_source_id = 0;
                 self.views[index].canvas_widget_drag_landing_origin = .{};
                 const next_render_state = self.views[index].canvasWidgetRenderState();
                 if (!canvasWidgetRenderStatesEqual(previous_render_state, next_render_state)) {
                     try invalidateForCanvasWidgetRenderStateChange(self, index, previous_render_state, next_render_state);
+                }
+                if (captured_source) |source| {
+                    drag.source_id = source.id;
+                    return .{
+                        .window_id = input_event.window_id,
+                        .view_label = self.views[index].label,
+                        .drag = drag,
+                        .source = source,
+                        .route = captured_route,
+                    };
                 }
                 return null;
             }
@@ -465,9 +512,12 @@ pub fn RuntimeCanvasWidgetEvents(comptime Runtime: type) type {
                 source_origin.y + delta.dy,
             );
             self.views[index].canvas_widget_drag_source_id = 0;
+            self.views[index].canvas_widget_drag_source_attached = false;
             self.views[index].canvas_widget_drag_pointer_id = 0;
             self.views[index].canvas_widget_drag_source_origin = .{};
             self.views[index].canvas_widget_drag_delta = .{};
+            self.views[index].canvas_widget_drag_source_hit = null;
+            self.views[index].canvas_widget_drag_route_len = 0;
             self.views[index].canvas_widget_pressed_id = 0;
             const next_render_state = self.views[index].canvasWidgetRenderState();
             if (!canvasWidgetRenderStatesEqual(previous_render_state, next_render_state)) {

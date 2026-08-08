@@ -1,6 +1,6 @@
 //! End-to-end proof for examples/kanban: the real TypeScript core and
-//! shipping imported markup driven through TsUiApp. Native file drops cross
-//! the platform/runtime/adapter boundary, add every basename to Todo, and
+//! shipping self-contained markup driven through TsUiApp. Native file drops
+//! cross the platform/runtime/adapter boundary, add every basename to Todo, and
 //! the resulting cards keep their global-key identity while a live
 //! blank insertion slot reflows either column with retained drag motion and
 //! release commits its order.
@@ -16,12 +16,7 @@ const App = Adapter.App;
 const Bridge = Adapter.Host;
 
 const app_markup = @embedFile("app.native");
-const component_markup = @embedFile("components/board-column.native");
-const app_markup_files = [_]canvas.ui_markup.SourceFile{
-    .{ .path = "app.native", .source = app_markup },
-    .{ .path = "components/board-column.native", .source = component_markup },
-};
-const CompiledAppView = canvas.CompiledMarkupImports(core.Model, core.Msg, "app.native", &app_markup_files);
+const CompiledAppView = canvas.CompiledMarkupView(core.Model, core.Msg, app_markup);
 
 const canvas_label = "kanban-canvas";
 const app_views = [_]native_sdk.ShellView{

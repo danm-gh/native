@@ -2875,6 +2875,7 @@ test "runtime dispatches opted-in canvas widget drag events" {
     try std.testing.expectEqual(@as(canvas.ObjectId, 2), motion_state.layout_motions[0].id);
     try std.testing.expectEqual(@as(f32, 44), motion_state.layout_motions[0].offset.dx);
     try std.testing.expectEqual(@as(f32, -40), motion_state.layout_motions[0].offset.dy);
+    try std.testing.expect(motion_state.layout_motions[0].escape_ancestor_clips);
     try harness.runtime.advanceCanvasWidgetDragLayoutMotionForFrame(0, 1_000_000_000);
     motion_state = harness.runtime.views[0].canvasWidgetRenderState();
     try std.testing.expectEqual(@as(f32, 44), motion_state.layout_motions[0].offset.dx);

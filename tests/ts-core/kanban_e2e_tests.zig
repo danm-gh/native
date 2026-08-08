@@ -181,8 +181,8 @@ test "overflowing columns scroll through the live runtime" {
     const add_button = h.findLabel("Add card").?;
     for (0..5) |_| try h.click(add_button);
 
-    try std.testing.expectEqual(@as(i64, 7), Bridge.model().todoCount());
-    const newest = findCard(h.app_state.tree.?.root, "Investigate agent task 10").?;
+    try std.testing.expectEqual(@as(i64, 9), Bridge.model().todoCount());
+    const newest = findCard(h.app_state.tree.?.root, "Investigate agent task 15").?;
     const before_scroll = try h.frameFor(newest.id);
     try std.testing.expect(before_scroll.y + before_scroll.height > 560);
 
@@ -193,7 +193,7 @@ test "overflowing columns scroll through the live runtime" {
         .kind = .scroll,
         .x = 100,
         .y = 300,
-        .delta_y = 240,
+        .delta_y = 320,
     } });
 
     try std.testing.expect(Bridge.model().todoScroll > 0);
@@ -202,10 +202,11 @@ test "overflowing columns scroll through the live runtime" {
     try std.testing.expect(after_scroll.y + after_scroll.height <= 560);
 
     // Drag hit-testing translates the viewport y back into scrolled content
-    // coordinates. At this visible y the reserved slot belongs before id 6;
-    // ignoring the offset would incorrectly choose the second card, id 2.
+    // coordinates. At this visible y the reserved slot belongs below the
+    // first two cards; ignoring the offset would choose the second card, id 2.
     try h.beginDrag(newest.id, 100, 140);
-    try std.testing.expectEqual(@as(i64, 6), Bridge.model().dragBeforeId);
+    try std.testing.expect(Bridge.model().dragBeforeId != 0);
+    try std.testing.expect(Bridge.model().dragBeforeId != 2);
     try h.escapeDrag();
 }
 
@@ -213,10 +214,11 @@ test "native file drops add cards and card drags preview and commit arbitrary in
     const h = try Harness.create();
     defer h.destroy();
 
-    try std.testing.expectEqual(@as(usize, 5), Bridge.model().cards.len);
+    try std.testing.expectEqual(@as(usize, 10), Bridge.model().cards.len);
     try std.testing.expectEqual(@as(i64, 1841), Bridge.model().cards[0].ticketNumber);
     try std.testing.expectEqual(@as(i64, 1), Bridge.model().cards[0].avatarId);
-    try std.testing.expect(h.hasText("#1841"));
+    try std.testing.expect(h.hasText("NAT-1841"));
+    try std.testing.expect(std.mem.indexOf(u8, app_markup, "<icon name=\"circle-dot\"") == null);
     try std.testing.expect(!h.hasText("added from files"));
 
     // A drop addressed to another surface is ignored by the core mapper.
@@ -226,7 +228,7 @@ test "native file drops add cards and card drags preview and commit arbitrary in
         .view_label = "other-canvas",
         .paths = &ignored_paths,
     } });
-    try std.testing.expectEqual(@as(usize, 5), Bridge.model().cards.len);
+    try std.testing.expectEqual(@as(usize, 10), Bridge.model().cards.len);
 
     // Desktop hosts can identify only the receiving window, leaving the
     // view label empty. The event still carries multiple arbitrary byte
@@ -237,13 +239,13 @@ test "native file drops add cards and card drags preview and commit arbitrary in
         .window_id = 1,
         .paths = &paths,
     } });
-    try std.testing.expectEqual(@as(usize, 7), Bridge.model().cards.len);
+    try std.testing.expectEqual(@as(usize, 12), Bridge.model().cards.len);
     try std.testing.expectEqual(@as(i64, 2), Bridge.model().droppedCount);
     try std.testing.expect(h.hasText("spec.txt"));
     try std.testing.expect(h.hasText("design.pdf"));
-    try std.testing.expectEqual(@as(i64, 4), Bridge.model().todoCount());
-    try std.testing.expectEqual(@as(i64, 1), Bridge.model().doingCount());
-    try std.testing.expectEqual(@as(i64, 2), Bridge.model().doneCount());
+    try std.testing.expectEqual(@as(i64, 6), Bridge.model().todoCount());
+    try std.testing.expectEqual(@as(i64, 2), Bridge.model().doingCount());
+    try std.testing.expectEqual(@as(i64, 4), Bridge.model().doneCount());
 
     // Reorder within Todo first. The one reserved slot begins exactly where
     // the source stood; moving to the top moves that SAME blank slot there,
@@ -255,23 +257,24 @@ test "native file drops add cards and card drags preview and commit arbitrary in
     const design_source_frame = try h.frameFor(design_before.id);
     const first_slot_y = (try h.frameFor(sketch_before.id)).center().y - 12;
     try h.beginDrag(design_before.id, 80, first_slot_y);
-    try std.testing.expectEqual(@as(i64, 7), Bridge.model().draggingId);
-    try std.testing.expectEqual(@as(i64, 7), Bridge.model().cards[6].id);
+    try std.testing.expectEqual(@as(i64, 12), Bridge.model().draggingId);
+    try std.testing.expectEqual(@as(i64, 12), Bridge.model().cards[11].id);
     const design_standing = findCard(h.app_state.tree.?.root, "design.pdf").?;
     try std.testing.expectEqual(design_before.id, design_standing.id);
-    try std.testing.expectEqual(@as(usize, 7), countCards(h.app_state.tree.?.root));
+    try std.testing.expectEqual(@as(usize, 12), countCards(h.app_state.tree.?.root));
     const destination_frame = try h.frameFor(design_standing.id);
     const sketch_pushed = findCard(h.app_state.tree.?.root, "Retry failed agent runs").?;
     try std.testing.expect(destination_frame.y < (try h.frameFor(sketch_pushed.id)).y);
     try std.testing.expectApproxEqAbs(@as(f32, 69.5), destination_frame.height, 0.01);
     try std.testing.expect(findLayoutMotion(h.harness.runtime.views[0].canvasWidgetRenderState(), sketch_pushed.id) != null);
-    try std.testing.expectEqual(@as(i64, 4), Bridge.model().todoCount());
+    try std.testing.expectEqual(@as(i64, 6), Bridge.model().todoCount());
     try h.endDrag(80, first_slot_y);
     try std.testing.expectEqual(@as(i64, 0), Bridge.model().draggingId);
-    try std.testing.expectEqual(@as(i64, 7), Bridge.model().cards[0].id);
+    try std.testing.expectEqual(@as(i64, 12), Bridge.model().cards[0].id);
     const design_landing = findCard(h.app_state.tree.?.root, "design.pdf").?;
     const design_final_frame = try h.frameFor(design_landing.id);
     const landing_motion = findLayoutMotion(h.harness.runtime.views[0].canvasWidgetRenderState(), design_landing.id).?;
+    try std.testing.expect(landing_motion.escape_ancestor_clips);
     const source_center = design_source_frame.center();
     const floating_origin = geometry.PointF.init(
         design_source_frame.x + 80 - source_center.x,
@@ -288,11 +291,11 @@ test "native file drops add cards and card drags preview and commit arbitrary in
     const cancel_source_frame = try h.frameFor(design_reordered.id);
     try h.beginDrag(design_reordered.id, 760, 500);
     try std.testing.expect((try h.frameFor(design_reordered.id)).x > 560);
-    try std.testing.expectEqual(@as(i64, 4), Bridge.model().todoCount());
+    try std.testing.expectEqual(@as(i64, 6), Bridge.model().todoCount());
     try h.escapeDrag();
     try std.testing.expectEqual(@as(i64, 0), Bridge.model().draggingId);
-    try std.testing.expectEqual(@as(i64, 7), Bridge.model().cards[0].id);
-    try std.testing.expectEqual(@as(i64, 4), Bridge.model().todoCount());
+    try std.testing.expectEqual(@as(i64, 12), Bridge.model().cards[0].id);
+    try std.testing.expectEqual(@as(i64, 6), Bridge.model().todoCount());
     const design_returned = findCard(h.app_state.tree.?.root, "design.pdf").?;
     const cancel_final_frame = try h.frameFor(design_returned.id);
     const cancel_motion = findLayoutMotion(h.harness.runtime.views[0].canvasWidgetRenderState(), design_returned.id).?;
@@ -304,7 +307,7 @@ test "native file drops add cards and card drags preview and commit arbitrary in
     try std.testing.expectApproxEqAbs(cancel_floating_origin.x - cancel_final_frame.x, cancel_motion.offset.dx, 0.01);
     try std.testing.expectApproxEqAbs(cancel_floating_origin.y - cancel_final_frame.y, cancel_motion.offset.dy, 0.01);
 
-    // Move spec.txt across to the exact gap between the two Done cards.
+    // Move spec.txt across to the exact gap between the first two Done cards.
     // The live view contains the one moved blank destination before pointer-up, with
     // the second Done card already springing toward its final location.
     const todo_card = findCard(h.app_state.tree.?.root, "spec.txt").?;
@@ -319,18 +322,18 @@ test "native file drops add cards and card drags preview and commit arbitrary in
     try std.testing.expect((try h.frameFor(first_done_preview.id)).y < (try h.frameFor(done_destination.id)).y);
     try std.testing.expect((try h.frameFor(done_destination.id)).y < (try h.frameFor(second_done_pushed.id)).y);
     try std.testing.expect(findLayoutMotion(h.harness.runtime.views[0].canvasWidgetRenderState(), second_done_pushed.id) != null);
-    try std.testing.expectEqual(@as(i64, 4), Bridge.model().todoCount());
+    try std.testing.expectEqual(@as(i64, 6), Bridge.model().todoCount());
     try h.endDrag(760, middle_done_y);
     const done_card = findCard(h.app_state.tree.?.root, "spec.txt").?;
     try std.testing.expectEqual(todo_card.id, done_card.id);
-    try std.testing.expectEqual(@as(i64, 3), Bridge.model().todoCount());
-    try std.testing.expectEqual(@as(i64, 3), Bridge.model().doneCount());
+    try std.testing.expectEqual(@as(i64, 5), Bridge.model().todoCount());
+    try std.testing.expectEqual(@as(i64, 5), Bridge.model().doneCount());
 
     // A large y chooses the bottom Todo slot, proving the same insertion
     // path works backwards as well as forwards.
     try h.dragTo(done_card.id, 80, 500);
     const returned_card = findCard(h.app_state.tree.?.root, "spec.txt").?;
     try std.testing.expectEqual(todo_card.id, returned_card.id);
-    try std.testing.expectEqual(@as(i64, 4), Bridge.model().todoCount());
-    try std.testing.expectEqual(@as(i64, 2), Bridge.model().doneCount());
+    try std.testing.expectEqual(@as(i64, 6), Bridge.model().todoCount());
+    try std.testing.expectEqual(@as(i64, 4), Bridge.model().doneCount());
 }

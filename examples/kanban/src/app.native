@@ -20,8 +20,7 @@
               <column grow="1" gap="8">
                 <text>{c.title}</text>
                 <row height="24" gap="6" cross="center">
-                  <icon name="circle-dot" width="14" height="14" foreground="text_muted" />
-                  <text size="sm" foreground="text_muted">#{c.ticketNumber}</text>
+                  <text size="sm" foreground="text_muted">NAT-{c.ticketNumber}</text>
                   <spacer grow="1" />
                   <if test="{c.assignee == 'openai'}">
                     <avatar width="24" height="24" image="{c.avatarId}" label="OpenAI agent">OA</avatar>
@@ -45,8 +44,7 @@
               <column grow="1" gap="8">
                 <text>{c.title}</text>
                 <row height="24" gap="6" cross="center">
-                  <icon name="circle-dot" width="14" height="14" foreground="text_muted" />
-                  <text size="sm" foreground="text_muted">#{c.ticketNumber}</text>
+                  <text size="sm" foreground="text_muted">NAT-{c.ticketNumber}</text>
                   <spacer grow="1" />
                   <if test="{c.assignee == 'openai'}">
                     <avatar width="24" height="24" image="{c.avatarId}" label="OpenAI agent">OA</avatar>
@@ -70,8 +68,7 @@
               <column grow="1" gap="8">
                 <text>{c.title}</text>
                 <row height="24" gap="6" cross="center">
-                  <icon name="circle-dot" width="14" height="14" foreground="text_muted" />
-                  <text size="sm" foreground="text_muted">#{c.ticketNumber}</text>
+                  <text size="sm" foreground="text_muted">NAT-{c.ticketNumber}</text>
                   <spacer grow="1" />
                   <if test="{c.assignee == 'openai'}">
                     <avatar width="24" height="24" image="{c.avatarId}" label="OpenAI agent">OA</avatar>

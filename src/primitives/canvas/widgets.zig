@@ -279,6 +279,10 @@ pub const WidgetLayoutMotion = struct {
     id: ObjectId,
     from_offset: geometry.OffsetF = .{},
     offset: geometry.OffsetF = .{},
+    /// A drag landing begins at the pointer after the live preview has
+    /// disappeared. Hoist that one moving subtree above ancestor clips until
+    /// it settles; ordinary neighbor reflow stays clipped to its scroll lane.
+    escape_ancestor_clips: bool = false,
     start_ns: u64 = 0,
     duration_ms: u32 = 180,
     easing: Easing = .emphasized,
@@ -343,6 +347,14 @@ pub const WidgetRenderState = struct {
             if (motion.id == id) return motion.offset;
         }
         return .{};
+    }
+
+    pub fn layoutMotionEscapesAncestorClips(self: WidgetRenderState, id: ObjectId) bool {
+        if (id == 0 or self.rendering_drag_preview) return false;
+        for (self.layout_motions) |motion| {
+            if (motion.id == id) return motion.escape_ancestor_clips;
+        }
+        return false;
     }
 };
 

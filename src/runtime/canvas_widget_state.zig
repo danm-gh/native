@@ -564,6 +564,10 @@ pub fn RuntimeCanvasWidgetState(comptime Runtime: type) type {
                     .id = id,
                     .from_offset = offset,
                     .offset = offset,
+                    // The terminal source replaces a window-level floating
+                    // preview, so keep it above both its old and new lane's
+                    // clips until it reaches the committed slot.
+                    .escape_ancestor_clips = view.canvas_widget_drag_landing_source_id == id,
                     .duration_ms = duration_ms,
                     .easing = .emphasized,
                     .spring = view.widget_tokens.motion.spring,

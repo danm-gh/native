@@ -2756,6 +2756,46 @@ test "widget layout emission applies presentation motion to a keyed draggable" {
     try std.testing.expect(saw_motion_inverse);
 }
 
+test "drag landing layout motion escapes its scroll lane clip" {
+    const cards = [_]Widget{.{
+        .id = 3,
+        .kind = .row,
+        .frame = geometry.RectF.init(12, 16, 120, 36),
+        .style = .{ .background = Color.rgb8(240, 240, 240), .radius = 6 },
+    }};
+    const columns = [_]Widget{.{
+        .id = 2,
+        .kind = .scroll_view,
+        .frame = geometry.RectF.init(10, 10, 140, 80),
+        .children = &cards,
+    }};
+    var nodes: [3]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTree(.{ .id = 1, .kind = .panel, .children = &columns }, geometry.RectF.init(0, 0, 320, 140), &nodes);
+    const layout_motions = [_]WidgetLayoutMotion{.{
+        .id = 3,
+        .offset = geometry.OffsetF.init(180, 0),
+        .escape_ancestor_clips = true,
+    }};
+
+    var commands: [16]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try layout.emitDisplayListWithState(&builder, .{}, .{ .layout_motions = &layout_motions });
+
+    var clip_depth: usize = 0;
+    var saw_landing_motion = false;
+    for (builder.displayList().commands) |command| switch (command) {
+        .push_clip => clip_depth += 1,
+        .pop_clip => clip_depth -= 1,
+        .transform => |transform| {
+            if (!affinesEqual(transform, Affine.translate(180, 0))) continue;
+            saw_landing_motion = true;
+            try std.testing.expectEqual(@as(usize, 0), clip_depth);
+        },
+        else => {},
+    };
+    try std.testing.expect(saw_landing_motion);
+}
+
 test "input-group wears the focus ring for its focused descendant" {
     const tokens = DesignTokens{};
     const group_children = [_]Widget{

@@ -164,9 +164,31 @@ pub fn emitWidgetLayout(builder: *Builder, layout: anytype, tokens: DesignTokens
 pub fn emitWidgetLayoutWithState(builder: *Builder, layout: anytype, tokens: DesignTokens, state: WidgetRenderState) Error!void {
     scrim_viewport = widgetLayoutRootBounds(layout);
     try emitWidgetLayoutChildren(builder, layout, null, tokens, state);
+    try emitWidgetLayoutClipEscapingMotions(builder, layout, tokens, state);
     try emitWidgetLayoutAnchored(builder, layout, tokens, state);
     try emitWidgetLayoutChartHoverDetails(builder, layout, tokens, state);
     try emitWidgetLayoutDragPreview(builder, layout, tokens, state);
+}
+
+/// Pointer-up replaces the window-level drag preview with a FLIP landing.
+/// Paint that one moving subtree in the same unclipped coordinate space until
+/// its offset reaches zero, so crossing into another scroll lane does not crop
+/// the card at the destination lane's bounds. Other layout motions stay in the
+/// ordinary tree walk and retain their scroll clipping.
+fn emitWidgetLayoutClipEscapingMotions(builder: *Builder, layout: anytype, tokens: DesignTokens, state: WidgetRenderState) Error!void {
+    for (layout.nodes, 0..) |node, index| {
+        if (widget_tree.widgetIsAnchored(node.widget)) continue;
+        if (!state.layoutMotionEscapesAncestorClips(node.widget.id)) continue;
+        if (widget_tree.isWidgetHiddenInAncestors(layout, index)) continue;
+        if (widget_tree.isWidgetConcealedByDisclosure(layout, index)) continue;
+
+        const ancestor_transform = widgetLayoutNodeAncestorEmissionTransform(layout, index) orelse return error.InvalidTransform;
+        const wrap_ancestor_transform = !affinesEqual(ancestor_transform, Affine.identity());
+        const inverse_ancestor_transform = if (wrap_ancestor_transform) ancestor_transform.inverse() orelse return error.InvalidTransform else Affine.identity();
+        if (wrap_ancestor_transform) try builder.transform(ancestor_transform);
+        try emitWidgetLayoutNode(builder, layout, index, tokens, state, .none);
+        if (wrap_ancestor_transform) try builder.transform(inverse_ancestor_transform);
+    }
 }
 
 /// Paint the active drag source in a late, window-level pass so the card under
@@ -586,7 +608,9 @@ fn emitWidgetLayoutChildren(
         const child_index = nextWidgetLayoutPaintChild(layout, parent_index, tokens, previous) orelse return;
         // Anchored floating children paint in the late z-pass
         // (`emitWidgetLayoutAnchored`), never in tree position.
-        if (!widget_tree.widgetIsAnchored(layout.nodes[child_index].widget)) {
+        if (!widget_tree.widgetIsAnchored(layout.nodes[child_index].widget) and
+            !state.layoutMotionEscapesAncestorClips(layout.nodes[child_index].widget.id))
+        {
             const segment = if (group_index) |index|
                 layoutButtonGroupSegment(layout, index, child_index)
             else

@@ -6,8 +6,8 @@
     .version = "0.1.0",
     .platforms = .{"macos"},
     // The network permission covers the one effect the app performs:
-    // the buffered `Cmd.fetch` exchange with the configured
-    // chat-completions endpoint. Nothing else leaves the process.
+    // the `Cmd.fetch` exchange with the configured chat-completions
+    // endpoint. Nothing else leaves the process.
     .permissions = .{ "view", "network" },
     .capabilities = .{ "native_views", "gpu_surfaces" },
     // The stock theme pack, composed with the live system appearance —

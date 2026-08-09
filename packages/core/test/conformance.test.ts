@@ -3734,6 +3734,20 @@ export function f(x: number, y: number): number { return pick(x, y, x < y); }`,
 // taught rules everywhere else.
 const streamingCases: Case[] = [
   {
+    name: "fetch streams route response lines and one terminal HTTP status",
+    src: `
+import { Cmd, asciiBytes } from "@native-sdk/core";
+${streamMsg}
+export function update(model: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+  switch (msg.kind) {
+    case "go": return [model, Cmd.fetch(
+      { url: asciiBytes("https://a.test/events"), method: "POST", headers: { accept: "text/event-stream" }, body: model.out, timeoutMs: 60000, maxLineBytes: 65536 },
+      { key: "events", line: "line", ok: "done", err: "failed" },
+    )];
+${streamTail}
+`,
+  },
+  {
     name: "the window verbs emit in their documented shapes",
     src: `
 import { Cmd } from "@native-sdk/core";

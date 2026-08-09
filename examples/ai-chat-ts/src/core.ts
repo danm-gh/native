@@ -14,9 +14,9 @@
 //   @native-sdk/core/text  the SDK's byte-splice text engine, transpiled
 //            in for the composer's caret/selection/IME fidelity
 //
-// The whole network surface is ONE effect: `Cmd.fetch` on the "chat" key,
-// buffered (fetch streaming is consciously not in v1 — the reply arrives
-// whole; the README frames the roadmap). The in-flight discipline is
+// The whole network surface is ONE effect: `Cmd.fetch` on the "chat" key.
+// This example chooses the buffered overload (the SDK also supports a
+// line-routed SSE/NDJSON stream). The in-flight discipline is
 // model-first: `phase === "sending"` blocks every re-send in update, so a
 // second request cannot exist while one is out — and the "chat" key backs
 // that up at the engine (a duplicate live key would be rejected, never

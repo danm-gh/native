@@ -289,6 +289,11 @@ const mini_core = struct {
         uget, // 81: fetch "uget" -> ufetched/failed
         ufetched: struct { status: u64, body: []const u8 }, // 82: fetch ok
         // record with a u64-classed number field
+        stream_get, // 83: streaming fetch "events" -> stream_line/stream_done/failed
+        stream_line: []const u8, // 84: one complete response line
+        stream_done: i64, // 85: terminal HTTP status
+        stop_stream, // 86: cancel "events" (loud -> failed "cancelled")
+        dup_stream, // 87: a second live "events" stream is rejected
     };
 
     pub const InitResult = struct { model: *const Model, cmd: []const u8 };
@@ -457,6 +462,23 @@ const mini_core = struct {
                 out.status = response.body;
                 return .{ .model = out, .cmd = "" };
             },
+            .stream_get => {
+                const headers = [_]FetchHeader{.{ .name = "accept", .value = "text/event-stream" }};
+                return .{ .model = model, .cmd = cmdFetchStream("events", 84, 85, 8, 1, 60_000, 65_536, "https://status.test/events", &headers, "ask") };
+            },
+            .stream_line => |line| {
+                const out = frameCreate(model.*);
+                out.line_count = model.line_count + 1;
+                out.last_line = line;
+                return .{ .model = out, .cmd = "" };
+            },
+            .stream_done => |status| {
+                const out = frameCreate(model.*);
+                out.code = status;
+                return .{ .model = out, .cmd = "" };
+            },
+            .stop_stream => return .{ .model = model, .cmd = cmdCancel("events") },
+            .dup_stream => return .{ .model = model, .cmd = cmdFetchStream("events", 84, 85, 8, 0, 0, 0, "https://status.test/other", &.{}, "") },
             .run_lines => return .{ .model = model, .cmd = cmdSpawn("job", 25, 26, 8, 0, &.{ "/bin/probe", "--fast" }, "feed me") },
             .run_quiet => return .{ .model = model, .cmd = cmdSpawn("job", 0xFF, 26, 8, 0, &.{"/bin/quiet"}, "") },
             .run_collect => return .{ .model = model, .cmd = cmdSpawn("job", 0xFF, 27, 8, 1, &.{ "/bin/ps", "-axo" }, "") },
@@ -782,6 +804,34 @@ const mini_core = struct {
             off = writeLongBytes(out, off, h.value);
         }
         off = writeLongBytes(out, off, body);
+        return out;
+    }
+
+    fn cmdFetchStream(key: []const u8, line_tag: u8, ok_tag: u8, err_tag: u8, method: u8, timeout_ms: u32, max_line_bytes: u32, url: []const u8, headers: []const FetchHeader, body: []const u8) []const u8 {
+        var header_bytes: usize = 0;
+        for (headers) |h| header_bytes += 1 + h.name.len + 4 + h.value.len;
+        const out = rt.frameAlloc(u8, 2 + key.len + 3 + 1 + 4 + 4 + 4 + url.len + 1 + header_bytes + 4 + body.len);
+        out[0] = 0x1E;
+        out[1] = @intCast(key.len);
+        @memcpy(out[2..][0..key.len], key);
+        var off: usize = 2 + key.len;
+        out[off] = line_tag;
+        out[off + 1] = ok_tag;
+        out[off + 2] = err_tag;
+        out[off + 3] = method;
+        std.mem.writeInt(u32, out[off + 4 ..][0..4], timeout_ms, .little);
+        std.mem.writeInt(u32, out[off + 8 ..][0..4], max_line_bytes, .little);
+        off += 12;
+        off = writeLongBytes(out, off, url);
+        out[off] = @intCast(headers.len);
+        off += 1;
+        for (headers) |h| {
+            out[off] = @intCast(h.name.len);
+            @memcpy(out[off + 1 ..][0..h.name.len], h.name);
+            off += 1 + h.name.len;
+            off = writeLongBytes(out, off, h.value);
+        }
+        _ = writeLongBytes(out, off, body);
         return out;
     }
 
@@ -1550,6 +1600,89 @@ test "cancel is silent for every named-op family - write_file, fetch, clip_read"
     try std.testing.expectEqual(@as(i64, 0), Host.model().errs);
     try std.testing.expectEqualStrings("", Host.model().last_err);
     try std.testing.expectEqualStrings("", Host.model().status);
+}
+
+// ------------------------------------------------------ fetch streams
+
+const event_fetch_key: u64 = ts_core_host.spawn_key_base + 0;
+
+test "a streaming fetch decodes whole, routes lines repeatedly, and terminates with the HTTP status" {
+    const fx = freshChannel();
+    defer fx.deinit();
+    Host.init(fx);
+
+    Host.dispatch(fx, .stream_get);
+    try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
+    const request = fx.pendingFetchAt(0).?;
+    try std.testing.expectEqual(event_fetch_key, request.key);
+    try std.testing.expectEqual(std.http.Method.POST, request.method);
+    try std.testing.expectEqual(effects_mod.FetchResponseMode.stream, request.response);
+    try std.testing.expectEqual(@as(usize, 65_536), request.max_line_bytes);
+    try std.testing.expectEqualStrings("https://status.test/events", request.url);
+    try std.testing.expectEqual(@as(usize, 1), request.headers.len);
+    try std.testing.expectEqualStrings("accept", request.headers[0].name);
+    try std.testing.expectEqualStrings("text/event-stream", request.headers[0].value);
+    try std.testing.expectEqualStrings("ask", request.body);
+
+    try fx.feedLine(event_fetch_key, "data: one");
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 1), Host.model().line_count);
+    try std.testing.expectEqualStrings("data: one", Host.model().last_line);
+
+    try fx.feedLine(event_fetch_key, "data: two");
+    try fx.feedLine(event_fetch_key, "");
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 3), Host.model().line_count);
+    try std.testing.expectEqualStrings("", Host.model().last_line);
+
+    // A non-2xx status is still a delivered response and therefore the
+    // successful terminal. Stream terminals carry no body.
+    try fx.feedResponse(event_fetch_key, 429, "ignored");
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 429), Host.model().code);
+    try std.testing.expectError(error.EffectNotFound, fx.feedLine(event_fetch_key, "late"));
+    try std.testing.expectEqual(@as(i64, 0), Host.model().errs);
+}
+
+test "streaming fetch failures and cancellation are loud terminals" {
+    const fx = freshChannel();
+    defer fx.deinit();
+    Host.init(fx);
+
+    Host.dispatch(fx, .stream_get);
+    try fx.feedResponseOutcome(event_fetch_key, .timed_out, 0, "");
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 1), Host.model().errs);
+    try std.testing.expectEqualStrings("timed_out", Host.model().last_err);
+
+    Host.dispatch(fx, .stream_get);
+    try fx.feedLine(event_fetch_key, "queued before cancel");
+    Host.dispatch(fx, .stop_stream);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 0), Host.model().line_count);
+    try std.testing.expectEqual(@as(i64, 2), Host.model().errs);
+    try std.testing.expectEqualStrings("cancelled", Host.model().last_err);
+    try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
+}
+
+test "a duplicate live streaming fetch key is rejected without replacing the stream" {
+    const fx = freshChannel();
+    defer fx.deinit();
+    Host.init(fx);
+
+    Host.dispatch(fx, .stream_get);
+    Host.dispatch(fx, .dup_stream);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
+    try std.testing.expectEqual(@as(i64, 1), Host.model().errs);
+    try std.testing.expectEqualStrings("rejected", Host.model().last_err);
+
+    try fx.feedLine(event_fetch_key, "original still live");
+    try fx.feedResponse(event_fetch_key, 204, "");
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 1), Host.model().line_count);
+    try std.testing.expectEqualStrings("original still live", Host.model().last_line);
+    try std.testing.expectEqual(@as(i64, 204), Host.model().code);
 }
 
 // ------------------------------------------------------ spawn streams

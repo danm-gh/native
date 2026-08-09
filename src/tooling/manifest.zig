@@ -53,6 +53,7 @@ pub const Metadata = struct {
     shortcuts: []const ShortcutMetadata = &.{},
     file_associations: []const FileAssociationMetadata = &.{},
     url_schemes: []const UrlSchemeMetadata = &.{},
+    dmg: DmgMetadata = .{},
 
     pub fn displayName(self: Metadata) []const u8 {
         return self.display_name orelse self.name;
@@ -186,6 +187,13 @@ pub const Metadata = struct {
             allocator.free(scheme.role);
         }
         if (self.url_schemes.len > 0) allocator.free(self.url_schemes);
+        if (self.dmg.volume_name) |value| allocator.free(value);
+        if (self.dmg.background) |value| allocator.free(value);
+        for (self.dmg.items) |item| {
+            if (item.path) |value| allocator.free(value);
+            if (item.name) |value| allocator.free(value);
+        }
+        if (self.dmg.items.len > 0) allocator.free(self.dmg.items);
     }
 };
 
@@ -329,6 +337,37 @@ pub const UrlSchemeMetadata = struct {
     role: []const u8 = "viewer",
 };
 
+pub const DmgPosition = struct {
+    x: u16,
+    y: u16,
+};
+
+pub const DmgItemKind = enum {
+    app,
+    applications,
+    file,
+    link,
+};
+
+pub const DmgItemMetadata = struct {
+    kind: DmgItemKind,
+    path: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    position: DmgPosition,
+};
+
+pub const DmgMetadata = struct {
+    volume_name: ?[]const u8 = null,
+    background: ?[]const u8 = null,
+    window_width: u16 = 660,
+    window_height: u16 = 400,
+    icon_size: u16 = 128,
+    app_position: DmgPosition = .{ .x = 166, .y = 182 },
+    applications_position: DmgPosition = .{ .x = 486, .y = 182 },
+    applications_link: bool = true,
+    items: []const DmgItemMetadata = &.{},
+};
+
 pub const FrontendDevMetadata = struct {
     url: []const u8,
     command: []const []const u8 = &.{},
@@ -375,6 +414,8 @@ const RawMenuItem = raw_manifest.RawMenuItem;
 const RawShortcut = raw_manifest.RawShortcut;
 const RawFileAssociation = raw_manifest.RawFileAssociation;
 const RawUrlScheme = raw_manifest.RawUrlScheme;
+const RawDmg = raw_manifest.RawDmg;
+const RawDmgItem = raw_manifest.RawDmgItem;
 
 pub fn validateFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !ValidationResult {
     const source = try readFile(allocator, io, path);
@@ -433,6 +474,13 @@ pub fn validateFile(allocator: std.mem.Allocator, io: std.Io, path: []const u8) 
     defer allocator.free(file_associations);
     const url_schemes = parseUrlSchemes(allocator, metadata.url_schemes) catch return .{ .ok = false, .message = "app.zon URL schemes are invalid" };
     defer allocator.free(url_schemes);
+    validateDmgSettings(metadata.dmg) catch return .{ .ok = false, .message = "app.zon dmg settings are invalid - check the window/icon geometry and positions; an explicit items list needs exactly one app and unique safe destination names" };
+    if (try checkDmgBackground(allocator, io, std.fs.path.dirname(path) orelse ".", metadata.dmg.background)) |dmg_message| {
+        return .{ .ok = false, .message = dmg_message };
+    }
+    if (try checkDmgItemSources(allocator, io, std.fs.path.dirname(path) orelse ".", metadata.dmg.items)) |dmg_message| {
+        return .{ .ok = false, .message = dmg_message };
+    }
     const manifest_web_engine = parseWebEngine(metadata.web_engine) catch return .{ .ok = false, .message = "app.zon web engine is invalid" };
     const manifest_webview_layer = parseWebViewLayer(metadata.webview_layer) catch return .{ .ok = false, .message = "app.zon webview_layer is invalid - expected \"auto\", \"include\", or \"exclude\"" };
     if (!std.mem.eql(u8, metadata.core_compiler, "external")) {
@@ -539,7 +587,59 @@ pub fn parseText(allocator: std.mem.Allocator, source: []const u8) !Metadata {
         .shortcuts = try convertRawShortcuts(allocator, raw.shortcuts),
         .file_associations = try convertRawFileAssociations(allocator, raw.file_associations),
         .url_schemes = try convertRawUrlSchemes(allocator, raw.url_schemes),
+        .dmg = try convertRawDmg(allocator, raw.dmg),
     };
+}
+
+fn convertRawDmg(allocator: std.mem.Allocator, dmg: RawDmg) !DmgMetadata {
+    return .{
+        .volume_name = try duplicateOptionalString(allocator, dmg.volume_name),
+        .background = try duplicateOptionalString(allocator, dmg.background),
+        .window_width = dmg.window_width,
+        .window_height = dmg.window_height,
+        .icon_size = dmg.icon_size,
+        .app_position = .{ .x = dmg.app_position.x, .y = dmg.app_position.y },
+        .applications_position = .{ .x = dmg.applications_position.x, .y = dmg.applications_position.y },
+        .applications_link = dmg.applications_link,
+        .items = try convertRawDmgItems(allocator, dmg.items),
+    };
+}
+
+fn convertRawDmgItems(allocator: std.mem.Allocator, items: []const RawDmgItem) ![]const DmgItemMetadata {
+    if (items.len == 0) return &.{};
+    const converted = try allocator.alloc(DmgItemMetadata, items.len);
+    errdefer allocator.free(converted);
+    var initialized: usize = 0;
+    errdefer for (converted[0..initialized]) |item| {
+        if (item.path) |value| allocator.free(value);
+        if (item.name) |value| allocator.free(value);
+    };
+    for (items, 0..) |item, index| {
+        converted[index] = try convertRawDmgItem(allocator, item);
+        initialized += 1;
+    }
+    return converted;
+}
+
+fn convertRawDmgItem(allocator: std.mem.Allocator, item: RawDmgItem) !DmgItemMetadata {
+    const path = try duplicateOptionalString(allocator, item.path);
+    errdefer if (path) |value| allocator.free(value);
+    const name = try duplicateOptionalString(allocator, item.name);
+    errdefer if (name) |value| allocator.free(value);
+    return .{
+        .kind = try parseDmgItemKind(item.kind),
+        .path = path,
+        .name = name,
+        .position = .{ .x = item.position.x, .y = item.position.y },
+    };
+}
+
+fn parseDmgItemKind(value: []const u8) !DmgItemKind {
+    if (std.mem.eql(u8, value, "app")) return .app;
+    if (std.mem.eql(u8, value, "applications")) return .applications;
+    if (std.mem.eql(u8, value, "file")) return .file;
+    if (std.mem.eql(u8, value, "link")) return .link;
+    return error.InvalidDmgItemKind;
 }
 
 fn duplicateOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
@@ -1531,6 +1631,118 @@ fn validateRelativePath(path: []const u8) !void {
     try validatePathSegment(path[segment_start..]);
 }
 
+pub fn validateDmgSettings(dmg: DmgMetadata) !void {
+    if (dmg.window_width < 320 or dmg.window_width > 2000) return error.InvalidDmgWindow;
+    if (dmg.window_height < 240 or dmg.window_height > 1400) return error.InvalidDmgWindow;
+    if (dmg.icon_size < 32 or dmg.icon_size > 256) return error.InvalidDmgIconSize;
+    if (dmg.items.len == 0) {
+        if (!dmgPositionInsideWindow(dmg, dmg.app_position)) return error.InvalidDmgPosition;
+        if (dmg.applications_link and !dmgPositionInsideWindow(dmg, dmg.applications_position)) return error.InvalidDmgPosition;
+    } else {
+        if (dmg.items.len > 64) return error.TooManyDmgItems;
+        var app_count: usize = 0;
+        var applications_count: usize = 0;
+        for (dmg.items, 0..) |item, index| {
+            if (!dmgPositionInsideWindow(dmg, item.position)) return error.InvalidDmgPosition;
+            switch (item.kind) {
+                .app => {
+                    app_count += 1;
+                    if (item.path != null) return error.InvalidDmgItem;
+                    if (item.name) |name| try validateDmgItemName(name);
+                },
+                .applications => {
+                    applications_count += 1;
+                    if (item.path != null or item.name != null) return error.InvalidDmgItem;
+                },
+                .file => {
+                    const path = item.path orelse return error.InvalidDmgItem;
+                    try validateRelativePath(path);
+                    if (item.name) |name| try validateDmgItemName(name);
+                },
+                .link => {
+                    const target = item.path orelse return error.InvalidDmgItem;
+                    if (!std.fs.path.isAbsolute(target)) return error.InvalidDmgItem;
+                    for (target) |byte| if (byte < 0x20 or byte == 0x7f) return error.InvalidDmgItem;
+                    if (item.name) |name| try validateDmgItemName(name);
+                },
+            }
+            const name = dmgItemDestinationName(item) orelse continue;
+            try validateDmgItemName(name);
+            for (dmg.items[0..index]) |previous| {
+                const previous_name = dmgItemDestinationName(previous) orelse continue;
+                if (std.ascii.eqlIgnoreCase(previous_name, name)) return error.DuplicateDmgItem;
+            }
+        }
+        if (app_count != 1 or applications_count > 1) return error.InvalidDmgItem;
+    }
+    if (dmg.volume_name) |name| {
+        if (name.len == 0 or name.len > 127) return error.InvalidDmgVolumeName;
+        for (name) |byte| {
+            if (byte < 0x20 or byte == 0x7f or byte == '/' or byte == ':') return error.InvalidDmgVolumeName;
+        }
+    }
+    if (dmg.background) |background| {
+        try validateRelativePath(background);
+        if (!dmgBackgroundExtensionSupported(background)) return error.InvalidDmgBackground;
+    }
+}
+
+fn dmgPositionInsideWindow(dmg: DmgMetadata, position: DmgPosition) bool {
+    return position.x < dmg.window_width and position.y < dmg.window_height;
+}
+
+pub fn dmgItemDestinationName(item: DmgItemMetadata) ?[]const u8 {
+    return switch (item.kind) {
+        .app => null,
+        .applications => "Applications",
+        .file, .link => item.name orelse if (item.path) |path| std.fs.path.basename(path) else null,
+    };
+}
+
+fn validateDmgItemName(name: []const u8) !void {
+    if (name.len == 0 or name.len > 255) return error.InvalidDmgItem;
+    if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidDmgItem;
+    if (std.ascii.eqlIgnoreCase(name, ".background") or std.ascii.eqlIgnoreCase(name, ".DS_Store")) return error.InvalidDmgItem;
+    for (name) |byte| {
+        if (byte < 0x20 or byte == 0x7f or byte == '/' or byte == ':' or byte == '\\') return error.InvalidDmgItem;
+    }
+}
+
+fn dmgBackgroundExtensionSupported(path: []const u8) bool {
+    return app_icon_tool.pathHasExtension(path, ".png") or
+        app_icon_tool.pathHasExtension(path, ".jpg") or
+        app_icon_tool.pathHasExtension(path, ".jpeg") or
+        app_icon_tool.pathHasExtension(path, ".tif") or
+        app_icon_tool.pathHasExtension(path, ".tiff");
+}
+
+fn checkDmgBackground(allocator: std.mem.Allocator, io: std.Io, manifest_dir: []const u8, background: ?[]const u8) !?[]const u8 {
+    const path = background orelse return null;
+    validateRelativePath(path) catch return "app.zon dmg background is invalid - use a project-relative PNG, JPEG, or TIFF path";
+    if (!dmgBackgroundExtensionSupported(path)) return "app.zon dmg background is invalid - Finder backgrounds must be PNG, JPEG, or TIFF";
+    const resolved = try std.fs.path.join(allocator, &.{ manifest_dir, path });
+    defer allocator.free(resolved);
+    var file = std.Io.Dir.cwd().openFile(io, resolved, .{}) catch return "app.zon dmg background could not be read";
+    file.close(io);
+    return null;
+}
+
+fn checkDmgItemSources(allocator: std.mem.Allocator, io: std.Io, manifest_dir: []const u8, items: []const DmgItemMetadata) !?[]const u8 {
+    for (items) |item| {
+        if (item.kind != .file) continue;
+        const path = item.path orelse continue;
+        const resolved = try std.fs.path.join(allocator, &.{ manifest_dir, path });
+        defer allocator.free(resolved);
+        var file = std.Io.Dir.cwd().openFile(io, resolved, .{}) catch {
+            var dir = std.Io.Dir.cwd().openDir(io, resolved, .{}) catch return "app.zon dmg item source could not be read";
+            dir.close(io);
+            continue;
+        };
+        file.close(io);
+    }
+    return null;
+}
+
 fn validatePathSegment(segment: []const u8) !void {
     if (segment.len == 0) return error.InvalidPath;
     if (std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..")) return error.InvalidPath;
@@ -1582,6 +1794,16 @@ test "manifest metadata parser reads identity version and lists" {
         \\  .url_schemes = .{
         \\    .{ .scheme = "example-app" },
         \\  },
+        \\  .dmg = .{
+        \\    .volume_name = "Example Installer",
+        \\    .background = "assets/dmg-background.png",
+        \\    .window_width = 720,
+        \\    .window_height = 440,
+        \\    .icon_size = 144,
+        \\    .app_position = .{ .x = 180, .y = 210 },
+        \\    .applications_position = .{ .x = 540, .y = 210 },
+        \\    .applications_link = false,
+        \\  },
         \\}
     );
     defer metadata.deinit(std.testing.allocator);
@@ -1631,6 +1853,15 @@ test "manifest metadata parser reads identity version and lists" {
     try std.testing.expectEqualStrings("text/markdown", metadata.file_associations[0].mime_types[0]);
     try std.testing.expectEqualStrings("assets/markdown.icns", metadata.file_associations[0].icon.?);
     try std.testing.expectEqualStrings("example-app", metadata.url_schemes[0].scheme);
+    try std.testing.expectEqualStrings("Example Installer", metadata.dmg.volume_name.?);
+    try std.testing.expectEqualStrings("assets/dmg-background.png", metadata.dmg.background.?);
+    try std.testing.expectEqual(@as(u16, 720), metadata.dmg.window_width);
+    try std.testing.expectEqual(@as(u16, 440), metadata.dmg.window_height);
+    try std.testing.expectEqual(@as(u16, 144), metadata.dmg.icon_size);
+    try std.testing.expectEqual(@as(u16, 180), metadata.dmg.app_position.x);
+    try std.testing.expectEqual(@as(u16, 210), metadata.dmg.app_position.y);
+    try std.testing.expectEqual(@as(u16, 540), metadata.dmg.applications_position.x);
+    try std.testing.expect(!metadata.dmg.applications_link);
     try std.testing.expectEqualStrings("chromium", metadata.web_engine);
     try std.testing.expectEqualStrings("third_party/cef/macos", metadata.cef.dir);
     try std.testing.expect(metadata.cef.auto_install);
@@ -2393,4 +2624,137 @@ test "manifest validates the theme accent hex color" {
     try std.testing.expect(!isHexColor("#df267"));
     try std.testing.expect(!isHexColor("#df26700"));
     try std.testing.expect(!isHexColor("#df267g"));
+}
+
+test "DMG settings default to a complete drag-to-Applications layout" {
+    const metadata = try parseText(std.testing.allocator,
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.0.0",
+        \\}
+    );
+    defer metadata.deinit(std.testing.allocator);
+    try validateDmgSettings(metadata.dmg);
+    try std.testing.expectEqual(@as(u16, 660), metadata.dmg.window_width);
+    try std.testing.expectEqual(@as(u16, 400), metadata.dmg.window_height);
+    try std.testing.expectEqual(@as(u16, 128), metadata.dmg.icon_size);
+    try std.testing.expectEqual(@as(u16, 166), metadata.dmg.app_position.x);
+    try std.testing.expectEqual(@as(u16, 182), metadata.dmg.app_position.y);
+    try std.testing.expectEqual(@as(u16, 486), metadata.dmg.applications_position.x);
+    try std.testing.expectEqual(@as(u16, 182), metadata.dmg.applications_position.y);
+    try std.testing.expect(metadata.dmg.applications_link);
+    try std.testing.expect(metadata.dmg.background == null);
+    try std.testing.expectEqual(@as(usize, 0), metadata.dmg.items.len);
+}
+
+test "DMG settings reject unsafe paths and out-of-window positions" {
+    try std.testing.expectError(error.InvalidPath, validateDmgSettings(.{ .background = "../outside.png" }));
+    try std.testing.expectError(error.InvalidDmgBackground, validateDmgSettings(.{ .background = "assets/background.svg" }));
+    try std.testing.expectError(error.InvalidDmgPosition, validateDmgSettings(.{ .app_position = .{ .x = 660, .y = 190 } }));
+    try std.testing.expectError(error.InvalidDmgVolumeName, validateDmgSettings(.{ .volume_name = "Bad/Name" }));
+    try validateDmgSettings(.{ .window_width = 400, .applications_link = false });
+    try validateDmgSettings(.{ .background = "assets/background.tiff" });
+}
+
+test "DMG explicit items select and position Finder contents" {
+    const metadata = try parseText(std.testing.allocator,
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.0.0",
+        \\  .dmg = .{
+        \\    .items = .{
+        \\      .{ .kind = "app", .position = .{ .x = 150, .y = 170 } },
+        \\      .{ .kind = "applications", .position = .{ .x = 510, .y = 170 } },
+        \\      .{ .kind = "file", .path = "docs/README.pdf", .name = "Read Me.pdf", .position = .{ .x = 260, .y = 330 } },
+        \\      .{ .kind = "link", .path = "/Library/QuickLook", .name = "QuickLook", .position = .{ .x = 400, .y = 330 } },
+        \\    },
+        \\  },
+        \\}
+    );
+    defer metadata.deinit(std.testing.allocator);
+    try validateDmgSettings(metadata.dmg);
+    try std.testing.expectEqual(@as(usize, 4), metadata.dmg.items.len);
+    try std.testing.expectEqual(DmgItemKind.app, metadata.dmg.items[0].kind);
+    try std.testing.expectEqual(DmgItemKind.file, metadata.dmg.items[2].kind);
+    try std.testing.expectEqualStrings("Read Me.pdf", dmgItemDestinationName(metadata.dmg.items[2]).?);
+    try std.testing.expectEqualStrings("QuickLook", dmgItemDestinationName(metadata.dmg.items[3]).?);
+}
+
+test "DMG explicit items require one app and reject unsafe or duplicate destinations" {
+    const applications_only = [_]DmgItemMetadata{
+        .{ .kind = .applications, .position = .{ .x = 490, .y = 182 } },
+    };
+    try std.testing.expectError(error.InvalidDmgItem, validateDmgSettings(.{ .items = &applications_only }));
+
+    const duplicate_applications = [_]DmgItemMetadata{
+        .{ .kind = .app, .position = .{ .x = 170, .y = 182 } },
+        .{ .kind = .applications, .position = .{ .x = 490, .y = 182 } },
+        .{ .kind = .link, .path = "/Applications", .name = "applications", .position = .{ .x = 330, .y = 320 } },
+    };
+    try std.testing.expectError(error.DuplicateDmgItem, validateDmgSettings(.{ .items = &duplicate_applications }));
+
+    const unsafe_file = [_]DmgItemMetadata{
+        .{ .kind = .app, .position = .{ .x = 170, .y = 182 } },
+        .{ .kind = .file, .path = "../README.pdf", .position = .{ .x = 490, .y = 182 } },
+    };
+    try std.testing.expectError(error.InvalidPath, validateDmgSettings(.{ .items = &unsafe_file }));
+
+    const relative_link = [_]DmgItemMetadata{
+        .{ .kind = .app, .position = .{ .x = 170, .y = 182 } },
+        .{ .kind = .link, .path = "Library/QuickLook", .position = .{ .x = 490, .y = 182 } },
+    };
+    try std.testing.expectError(error.InvalidDmgItem, validateDmgSettings(.{ .items = &relative_link }));
+}
+
+test "manifest validation resolves a custom DMG background beside app.zon" {
+    var cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/test-manifest-dmg-background";
+    try cwd.deleteTree(std.testing.io, root);
+    defer cwd.deleteTree(std.testing.io, root) catch {};
+    try cwd.createDirPath(std.testing.io, root ++ "/art");
+    try cwd.writeFile(std.testing.io, .{ .sub_path = root ++ "/art/installer.png", .data = "fixture" });
+    try cwd.writeFile(std.testing.io, .{ .sub_path = root ++ "/app.zon", .data =
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.0.0",
+        \\  .dmg = .{ .background = "art/installer.png" },
+        \\}
+    });
+
+    const valid = try validateFile(std.testing.allocator, std.testing.io, root ++ "/app.zon");
+    try std.testing.expect(valid.ok);
+    try cwd.deleteFile(std.testing.io, root ++ "/art/installer.png");
+    const missing = try validateFile(std.testing.allocator, std.testing.io, root ++ "/app.zon");
+    try std.testing.expect(!missing.ok);
+    try std.testing.expect(std.mem.indexOf(u8, missing.message, "dmg background could not be read") != null);
+}
+
+test "manifest validation resolves explicit DMG file items beside app.zon" {
+    var cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/test-manifest-dmg-items";
+    try cwd.deleteTree(std.testing.io, root);
+    defer cwd.deleteTree(std.testing.io, root) catch {};
+    try cwd.createDirPath(std.testing.io, root ++ "/docs");
+    try cwd.writeFile(std.testing.io, .{ .sub_path = root ++ "/docs/README.pdf", .data = "fixture" });
+    try cwd.writeFile(std.testing.io, .{ .sub_path = root ++ "/app.zon", .data =
+        \\.{
+        \\  .id = "com.example.app",
+        \\  .name = "example",
+        \\  .version = "1.0.0",
+        \\  .dmg = .{ .items = .{
+        \\    .{ .kind = "app", .position = .{ .x = 170, .y = 182 } },
+        \\    .{ .kind = "file", .path = "docs/README.pdf", .position = .{ .x = 490, .y = 182 } },
+        \\  } },
+        \\}
+    });
+
+    const valid = try validateFile(std.testing.allocator, std.testing.io, root ++ "/app.zon");
+    try std.testing.expect(valid.ok);
+    try cwd.deleteFile(std.testing.io, root ++ "/docs/README.pdf");
+    const missing = try validateFile(std.testing.allocator, std.testing.io, root ++ "/app.zon");
+    try std.testing.expect(!missing.ok);
+    try std.testing.expect(std.mem.indexOf(u8, missing.message, "dmg item source could not be read") != null);
 }

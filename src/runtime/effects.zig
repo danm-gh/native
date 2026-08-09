@@ -6599,6 +6599,7 @@ pub fn Effects(comptime Msg: type) type {
         /// Stop a keyed capture. Accepted PCM already staged drains first,
         /// then exactly one `.stopped` terminal delivers through the channel.
         pub fn stopAudioCapture(self: *Self, key: u64) void {
+            if (self.findAudioCaptureByKey(key) == null) return;
             self.closeChannel(key);
         }
 

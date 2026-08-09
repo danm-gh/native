@@ -10,6 +10,7 @@ const testing = std.testing;
 
 const Msg = union(enum) {
     capture: effects_mod.EffectAudioCaptureEvent,
+    channel: effects_mod.EffectChannelEvent,
 };
 
 const Fx = effects_mod.Effects(Msg);
@@ -90,6 +91,29 @@ test "audio capture refuses a key owned by the other source without corrupting i
     try testing.expectEqual(platform.AudioCaptureSource.system, (try takeCapture(&fx, .data)).source);
     fx.stopAudioCapture(33);
     _ = try takeCapture(&fx, .stopped);
+}
+
+test "stopping an unknown audio key leaves an ordinary channel open" {
+    var fx = Fx.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+
+    const handle = fx.openChannel(.{ .key = 34, .on_event = Fx.channelMsg(.channel) });
+    try testing.expect(handle.live());
+
+    fx.stopAudioCapture(34);
+    try testing.expect(handle.live());
+    try testing.expectEqual(effects_mod.ChannelHandle.PostResult.accepted, handle.post("still open"));
+
+    const data = fx.takeMsg() orelse return error.TestExpectedMsg;
+    try testing.expect(data == .channel);
+    try testing.expectEqual(effects_mod.EffectChannelEventKind.data, data.channel.kind);
+    try testing.expectEqualStrings("still open", data.channel.bytes);
+
+    fx.closeChannel(34);
+    const closed = fx.takeMsg() orelse return error.TestExpectedMsg;
+    try testing.expect(closed == .channel);
+    try testing.expectEqual(effects_mod.EffectChannelEventKind.closed, closed.channel.kind);
 }
 
 test "audio capture validates format and reports bounded queue drops" {

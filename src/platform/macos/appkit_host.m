@@ -7274,6 +7274,7 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
     double _resampleInputRate;
     uint32_t _resampleInputChannels;
     BOOL _resampleHasPrevious;
+    BOOL _started;
     float _resamplePrevious[2];
 }
 @property(nonatomic, assign) int source;
@@ -7288,6 +7289,7 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
 - (BOOL)isCaptureActive;
 - (void)markInactive;
 - (void)deactivateAndWait;
+- (void)emitStarted;
 - (void)emitKind:(int)kind;
 - (void)consumeBufferList:(const AudioBufferList *)buffers format:(const AudioStreamBasicDescription *)format frames:(uint32_t)frames timestampNs:(uint64_t)timestampNs;
 @end
@@ -7355,6 +7357,13 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
     [self.condition unlock];
     return YES;
 }
+- (BOOL)beginDataPush {
+    [self.condition lock];
+    if (!self.active || !_started) { [self.condition unlock]; return NO; }
+    self.inFlight += 1;
+    [self.condition unlock];
+    return YES;
+}
 - (void)endPush {
     [self.condition lock];
     self.inFlight -= 1;
@@ -7367,6 +7376,22 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
     while (self.inFlight > 0) [self.condition wait];
     [self.condition unlock];
 }
+- (void)emitStarted {
+    [self.condition lock];
+    if (!self.active || _started) { [self.condition unlock]; return; }
+    self.inFlight += 1;
+    [self.condition unlock];
+
+    int result = self.pushFn ? self.pushFn(self.pushContext, 0, self.source,
+        self.sampleRate, self.channels, 0, 0, NULL, 0) : 1;
+
+    [self.condition lock];
+    if (result == 1) self.active = NO;
+    else if (self.active) _started = YES;
+    self.inFlight -= 1;
+    if (self.inFlight == 0) [self.condition broadcast];
+    [self.condition unlock];
+}
 - (void)emitKind:(int)kind {
     if (![self beginPush]) return;
     int result = self.pushFn ? self.pushFn(self.pushContext, kind, self.source,
@@ -7375,7 +7400,7 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
     if (result == 1) [self deactivateAndWait];
 }
 - (void)consumeBufferList:(const AudioBufferList *)buffers format:(const AudioStreamBasicDescription *)format frames:(uint32_t)frames timestampNs:(uint64_t)timestampNs {
-    if (!buffers || !format || frames == 0 || format->mSampleRate <= 0 || ![self beginPush]) return;
+    if (!buffers || !format || frames == 0 || format->mSampleRate <= 0 || ![self beginDataPush]) return;
     const uint32_t inputChannels = MAX(1u, format->mChannelsPerFrame);
     if (_resampleInputRate != format->mSampleRate || _resampleInputChannels != inputChannels) {
         _resamplePosition = 0.0;
@@ -7501,7 +7526,7 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
             strongSelf.stream = stream;
             [stream startCaptureWithCompletionHandler:^(NSError *startError) {
                 if (startError) [strongSelf.target emitKind:2];
-                else [strongSelf.target emitKind:0];
+                else [strongSelf.target emitStarted];
             }];
         }];
     } else {
@@ -10720,7 +10745,7 @@ static int NativeSdkSpectrumComputeBands(native_sdk_spectrum_tap_state_t *state,
         return;
     }
     self.microphoneCaptureEngine = engine;
-    [target emitKind:0];
+    [target emitStarted];
 }
 
 - (int)audioCaptureStartSource:(int)source sampleRate:(uint32_t)sampleRate channels:(uint8_t)channels pushFn:(native_sdk_appkit_audio_capture_push_t)pushFn pushContext:(void *)pushContext {

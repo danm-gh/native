@@ -4330,15 +4330,28 @@ static void audioCaptureThread(std::shared_ptr<AudioCaptureShared> shared) {
         }
         const UINT32 max_frames = 3840u / ((UINT32)shared->channels * 2u);
         int16_t silence[1920] = {};
+        bool terminal_error = false;
         while (!shared->stop.load(std::memory_order_relaxed)) {
-            WaitForSingleObject(ready, 50);
-            UINT32 pending = 0;
-            while (!shared->stop.load(std::memory_order_relaxed) &&
-                   SUCCEEDED(capture->GetNextPacketSize(&pending)) && pending > 0) {
+            const DWORD wait_result = WaitForSingleObject(ready, 50);
+            if (wait_result == WAIT_TIMEOUT) continue;
+            if (wait_result != WAIT_OBJECT_0) {
+                terminal_error = true;
+                break;
+            }
+            while (!shared->stop.load(std::memory_order_relaxed)) {
+                UINT32 pending = 0;
+                if (FAILED(capture->GetNextPacketSize(&pending))) {
+                    terminal_error = true;
+                    break;
+                }
+                if (pending == 0) break;
                 BYTE *data = nullptr;
                 UINT32 frames = 0;
                 DWORD packet_flags = 0;
-                if (FAILED(capture->GetBuffer(&data, &frames, &packet_flags, nullptr, nullptr))) break;
+                if (FAILED(capture->GetBuffer(&data, &frames, &packet_flags, nullptr, nullptr))) {
+                    terminal_error = true;
+                    break;
+                }
                 UINT32 offset = 0;
                 while (offset < frames && !shared->stop.load(std::memory_order_relaxed)) {
                     const UINT32 chunk = std::min(max_frames, frames - offset);
@@ -4352,8 +4365,16 @@ static void audioCaptureThread(std::shared_ptr<AudioCaptureShared> shared) {
                     if (result == 1) shared->stop.store(true, std::memory_order_relaxed);
                     offset += chunk;
                 }
-                capture->ReleaseBuffer(frames);
+                if (FAILED(capture->ReleaseBuffer(frames))) {
+                    terminal_error = true;
+                    break;
+                }
             }
+            if (terminal_error) break;
+        }
+        if (terminal_error && !shared->stop.load(std::memory_order_relaxed) && shared->push) {
+            shared->push(shared->context, 2, shared->source, shared->sample_rate,
+                shared->channels, 0, 0, nullptr, 0);
         }
         client->Stop();
     }

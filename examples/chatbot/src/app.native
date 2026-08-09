@@ -1,0 +1,116 @@
+<!-- The chat client's whole view tier: one markup file over the TS core's
+     model, bound by the names core.ts wrote (fields and exported helpers
+     bind verbatim). The custom hidden titlebar carries only a New chat
+     icon button, and its drag region stays clear of the traffic lights
+     through core.ts's chromeMsg channel. The conversation is a
+     controlled scroll of role bubbles (user right/accent, assistant
+     left/surface) with an assistant bubble that grows as SSE deltas
+     arrive, honest sending and failed rows, and the composer
+     is an input group over the core's byte-splice engine — Enter
+     and the arrow button dispatch the same `send` arm. Until the Gateway API key
+     arrives through the env channel, the teaching panel
+     explains the setup and the app issues zero requests. -->
+<column background="background">
+  <!-- The header IS the titlebar (tall hidden-inset chrome), matching the
+       Kanban example. There is deliberately no visible title text. -->
+  <row height="{headerHeight}" padding="12" cross="center" window-drag="true" label="Chat header">
+    <spacer width="{chromeLeading}" />
+    <spacer grow="1" />
+    <button size="icon" variant="ghost" icon="plus" on-press="clear" label="New chat"></button>
+  </row>
+  <separator />
+  <!-- The titlebar stays edge-to-edge. Everything below it fills narrow
+       windows and centers at a readable 960pt ceiling in wide ones. -->
+  <row grow="1" main="center" label="Chat body">
+    <column grow="1" max-width="960" label="Chat content">
+      <if test="{unconfigured}">
+        <!-- The teaching state: no request ever leaves an unconfigured app
+             — the panel names exactly what is missing. -->
+        <column grow="1" padding="24" main="center" cross="center" label="Setup">
+          <panel padding="24" background="surface" radius="lg" width="520" label="Connect a model">
+            <column gap="12">
+              <text><span weight="bold">Connect a model</span></text>
+              <text size="sm" foreground="text_muted">This app streams OpenAI-compatible chat completions from Vercel AI Gateway. Set AI_GATEWAY_API_KEY and relaunch — the core receives it once, at install, through the env channel.</text>
+              <row gap="8" cross="center">
+                <text size="sm" grow="1">AI_GATEWAY_API_KEY</text>
+                <if test="{keyMissing}">
+                  <text size="sm" foreground="destructive">missing</text>
+                </if>
+                <else>
+                  <text size="sm" foreground="success">set</text>
+                </else>
+              </row>
+              <text size="sm" foreground="text_muted">The default model is openai/gpt-5.6-luna. Optionally set NATIVE_SDK_CHAT_MODEL to another creator/model id from the Gateway catalog.</text>
+            </column>
+          </panel>
+        </column>
+      </if>
+      <else>
+        <scroll grow="1" label="Conversation" value="{chatScrollTop}" on-scroll="chat_scrolled">
+          <column padding="24" gap="10">
+            <if test="{emptyConversation}">
+              <panel padding="24" background="surface" radius="lg" label="Empty conversation">
+                <column gap="6">
+                  <text>Ask anything</text>
+                  <text size="sm" foreground="text_muted">Replies stream token by token through Vercel AI Gateway.</text>
+                </column>
+              </panel>
+            </if>
+            <for each="turnRows" as="t" key="id">
+              <if test="{t.user}">
+                <row key="{t.id}" gap="8" label="You said">
+                  <spacer grow="1" min-width="64" />
+                  <bubble variant="primary">
+                    <text wrap="true">{t.text}</text>
+                  </bubble>
+                </row>
+              </if>
+              <else>
+                <row key="{t.id}" gap="8" label="The model said">
+                  <bubble>
+                    <text wrap="true">{t.text}</text>
+                  </bubble>
+                  <spacer grow="1" min-width="64" />
+                </row>
+              </else>
+            </for>
+            <if test="{sending}">
+              <row gap="8" label="Reply pending">
+                <bubble>
+                  <if test="{waitingForFirstToken}">
+                    <text foreground="text_muted">…</text>
+                  </if>
+                  <else>
+                    <text wrap="true">{pendingReplyLabel}</text>
+                  </else>
+                </bubble>
+                <spacer grow="1" min-width="64" />
+              </row>
+            </if>
+            <if test="{failed}">
+              <panel padding="12" background="surface" radius="lg" label="Request failed">
+                <row gap="10" cross="center">
+                  <icon name="alert" width="14" height="14" foreground="destructive" />
+                  <column gap="2" grow="1">
+                    <text size="sm" foreground="destructive">Request failed</text>
+                    <text size="sm" foreground="text_muted">{failReasonLabel}</text>
+                  </column>
+                  <button size="sm" variant="ghost" icon="refresh-cw" on-press="retry" label="Retry request">Retry</button>
+                </row>
+              </panel>
+            </if>
+          </column>
+        </scroll>
+        <row padding="12" label="Composer">
+          <input-group grow="1" height="96" label="Prompt composer">
+            <textarea text="{draftText}" placeholder="Message the model…" autofocus="true" submit-on-enter="true" on-input="draft_edit" on-submit="send" label="Message" />
+            <input-group-actions>
+              <spacer grow="1" />
+              <button size="icon" variant="primary" icon="arrow-up" disabled="{sendDisabled}" on-press="send" label="Send message"></button>
+            </input-group-actions>
+          </input-group>
+        </row>
+      </else>
+    </column>
+  </row>
+</column>

@@ -179,14 +179,16 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
                 return null;
             }
 
-            // Multi-line editing contract: Enter (plain or shift) inserts
-            // a newline; submit rides the primary-modifier chord instead.
-            // Shared with the app dispatch path so the model's `on_input`
-            // hears exactly the edit the retained text applied.
+            // Multi-line editing contract: Enter normally inserts a
+            // newline, while a submit-on-enter textarea leaves plain
+            // Enter for its submit handler and keeps Shift+Enter as the
+            // newline gesture. Shared with the app dispatch path so the
+            // model's `on_input` hears exactly the edit retained text
+            // applied.
             if (canvas.widgetCodeTabTextEditEvent(widget, keyboard)) |tab_edit| {
                 return tab_edit;
             }
-            if (canvas.widgetKeyboardNewlineTextEditEvent(widget.kind, keyboard)) |newline_edit| {
+            if (canvas.widgetKeyboardNewlineTextEditEvent(widget, keyboard)) |newline_edit| {
                 return newline_edit;
             }
 

@@ -2298,6 +2298,39 @@ test "plain Enter inserts a newline in a canvas textarea; chorded Enter never ed
     } });
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
     try std.testing.expectEqualStrings("First\n", retained.nodes[1].widget.text);
+
+    // The chat-composer policy leaves plain Enter for the UI submit
+    // handler, so retained text does not receive a newline. Shift+Enter
+    // remains an edit and inserts one exactly as the default textarea
+    // does.
+    const prompt = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 180, 84),
+        .text = "Prompt",
+        .submit_on_enter = true,
+        .semantics = .{ .label = "Message" },
+    };
+    var prompt_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const prompt_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{prompt} }, geometry.RectF.init(0, 0, 260, 160), &prompt_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", prompt_layout);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "enter",
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("Prompt", retained.nodes[1].widget.text);
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "enter",
+        .modifiers = .{ .shift = true },
+    } });
+    retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqualStrings("Prompt\n", retained.nodes[1].widget.text);
 }
 
 test "Enter in a single-line input never inserts, even when the host stuffs a newline into the key event" {

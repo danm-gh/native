@@ -5,11 +5,10 @@
 # `cmd fetch ...` lines invite — the same loop the native app runs, with
 # you standing in for the network.
 
-# The launch configuration arrives through the env channel as ordinary
-# Msgs (under the real app the generated wiring dispatches these from the
-# environment at install). The endpoint itself is fixed to Vercel AI
-# Gateway in core.ts; nothing dials out under the core host.
-{"kind":"model_set","value":{"$bytes":"anthropic/claude-sonnet-4.6"}}
+# The API key arrives through the env channel as an ordinary Msg (under
+# the real app the generated wiring dispatches it from the environment
+# at install). The endpoint and openai/gpt-5.6-luna default are fixed in
+# core.ts; nothing dials out under the core host.
 {"kind":"key_set","value":{"$bytes":"example-gateway-key"}}
 
 # Type a message (the composer runs the SDK byte-splice text engine) and

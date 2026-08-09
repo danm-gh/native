@@ -1,4 +1,4 @@
-// ai-chat-ts api module: the Vercel AI Gateway's OpenAI-compatible
+// Chatbot API module: the Vercel AI Gateway's OpenAI-compatible
 // chat-completions wire format in pure subset TypeScript over bytes —
 // request encoding on the way out, SSE parsing on the way back. No JSON
 // runtime exists in a core (the binary carries no JS engine), and none is

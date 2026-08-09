@@ -1,14 +1,14 @@
-//! End-to-end proof battery for examples/ai-chat-ts — the "can I call an
+//! End-to-end proof battery for examples/chatbot — the "can I call an
 //! AI API?" answer as a real app: a streaming Vercel AI Gateway chat
 //! client authored in TypeScript + Native markup with
 //! ZERO hand-written Zig. The build compiles the example's REAL core through the external core compiler
-//! (examples/ai-chat-ts/src/core.ts + src/api.ts) and this suite drives
+//! (examples/chatbot/src/core.ts + src/api.ts) and this suite drives
 //! it through `TsUiApp` with the example's SHIPPING markup (app.native,
 //! staged beside this file), so every pin here is the product path:
 //!
-//!   - the launch configuration rides the envMsgs channel, and the
-//!     teaching state holds (with ZERO fetches) until the model name and
-//!     API key are both present;
+//!   - the API key and optional model override ride the envMsgs channel,
+//!     while the teaching state holds (with ZERO fetches) until the API
+//!     key is present;
 //!   - a scripted two-turn conversation drives the whole loop through
 //!     the fake fetch feed: the composer's byte-splice text engine, the
 //!     Send press, the EXACT streaming request (the fixed Gateway URL,
@@ -57,6 +57,7 @@ const canvas_label = "chat-canvas";
 const chat_fetch_key: u64 = runtime_ns.ts_core_spawn_key_base + 0;
 
 const test_endpoint = "https://ai-gateway.vercel.sh/v1/chat/completions";
+const default_model_name = "openai/gpt-5.6-luna";
 const test_model_name = "test-model";
 const test_api_key = "test-key";
 
@@ -65,12 +66,17 @@ const app_views = [_]native_sdk.ShellView{
 };
 const app_windows = [_]native_sdk.ShellWindow{.{
     .label = "main",
-    .title = "AI Chat TS",
+    .title = "Chatbot",
     .width = 760,
     .height = 640,
+    .titlebar = .hidden_inset_tall,
     .views = &app_views,
 }};
 const app_scene: native_sdk.ShellConfig = .{ .windows = &app_windows };
+const test_window_chrome: native_sdk.WindowChrome = .{
+    .insets = .{ .top = 52, .left = 78 },
+    .buttons = geometry.RectF.init(12, 18, 54, 16),
+};
 
 /// TEST-ONLY command mapper: the journaled menu-command path for the
 /// void arms (record/replay needs every input in the journal; the app
@@ -91,7 +97,7 @@ fn testCommand(name: []const u8) ?core.Msg {
 
 fn appOptions() App.Options {
     return .{
-        .name = "ai-chat-ts-e2e",
+        .name = "chatbot-e2e",
         .scene = app_scene,
         .canvas_label = canvas_label,
         // The comptime-compiled engine over the example's shipping markup
@@ -130,6 +136,10 @@ const Harness = struct {
         });
         errdefer self.harness.destroy(std.testing.allocator);
         self.harness.null_platform.gpu_surfaces = true;
+        self.harness.null_platform.window_chrome = test_window_chrome;
+        // Match the shipping desktop path: conversation scroll regions
+        // are backed by native scroll drivers, not the engine fallback.
+        self.harness.null_platform.gpu_surface_scroll_drivers = true;
         self.harness.runtime.options.session_recorder = recorder;
         self.app_state = try std.testing.allocator.create(App);
         errdefer std.testing.allocator.destroy(self.app_state);
@@ -174,6 +184,13 @@ const Harness = struct {
 
     fn findLabel(self: *Harness, label: []const u8) ?canvas.ObjectId {
         return findByLabel(self.app_state.tree.?.root, label);
+    }
+
+    fn focusedWidgetId(self: *Harness) canvas.ObjectId {
+        for (self.harness.runtime.views[0..self.harness.runtime.view_count]) |view| {
+            if (std.mem.eql(u8, view.label, canvas_label)) return view.canvas_widget_focused_id;
+        }
+        return 0;
     }
 
     /// Click a rendered widget through the automation verb — the same
@@ -278,18 +295,23 @@ const second_request_body =
     "{\"role\":\"user\",\"content\":\"Say hi in two words\"}," ++
     "{\"role\":\"assistant\",\"content\":\"Hi there!\"}," ++
     "{\"role\":\"user\",\"content\":\"Now say it in Zig \\\"strings\\\"\"}],\"stream\":true}";
+const default_request_body =
+    "{\"model\":\"openai/gpt-5.6-luna\",\"messages\":[" ++
+    "{\"role\":\"system\",\"content\":\"You are a helpful assistant inside a native desktop app. Answer concisely, in plain text.\"}," ++
+    "{\"role\":\"user\",\"content\":\"Use the default\"}],\"stream\":true}";
 
 // ---------------------------------------------------- the teaching state
 
-test "the teaching state holds until both launch variables arrive - and issues zero fetches" {
-    // No variables at all: the setup panel teaches both names.
+test "the teaching state only requires the Gateway key and the model has a working default" {
+    // No variables at all: the setup panel teaches the required key and
+    // names the built-in model plus its optional override.
     {
         const h = try Harness.createConfigured(null, &.{});
         defer h.destroy();
         try std.testing.expect(h.hasText("Connect a model"));
         try std.testing.expect(h.hasText("NATIVE_SDK_CHAT_MODEL"));
         try std.testing.expect(h.hasText("AI_GATEWAY_API_KEY"));
-        try std.testing.expect(h.hasText("no model configured"));
+        try std.testing.expect(h.hasText(default_model_name));
         // The composer does not exist in the teaching state, and even a
         // journaled send dispatch issues nothing.
         try std.testing.expect(h.findLabel("Message") == null);
@@ -308,13 +330,31 @@ test "the teaching state holds until both launch variables arrive - and issues z
         const h = try Harness.createConfigured(null, &partial_env);
         defer h.destroy();
         try std.testing.expect(h.hasText("Connect a model"));
-        // The model row reads "set"; the key row still teaches.
-        try std.testing.expect(h.hasText("set"));
+        // The optional override landed in the model; the key row still
+        // teaches. The titlebar intentionally renders no model text.
         try std.testing.expect(h.hasText("missing"));
-        try std.testing.expect(h.hasText(test_model_name));
+        try std.testing.expectEqualStrings(test_model_name, Bridge.model().modelName);
+        try std.testing.expect(!h.hasText(test_model_name));
         try h.menu("chat.send");
         try std.testing.expectEqual(@as(usize, 0), h.app_state.effects.pendingFetchCount());
         try std.testing.expect(Bridge.model().unconfigured());
+    }
+
+    // With only the required key, the teaching state clears and the
+    // first request uses the built-in model byte-for-byte.
+    {
+        const key_only_env = [_]Adapter.EnvValue{
+            .{ .msg = "key_set", .value = test_api_key },
+        };
+        const h = try Harness.createConfigured(null, &key_only_env);
+        defer h.destroy();
+        try std.testing.expect(!h.hasText("Connect a model"));
+        try std.testing.expectEqualStrings(default_model_name, Bridge.model().modelName);
+        try std.testing.expect(!h.hasText(default_model_name));
+        try std.testing.expect(!Bridge.model().unconfigured());
+        try h.say("Use the default");
+        try std.testing.expectEqual(@as(usize, 1), h.app_state.effects.pendingFetchCount());
+        try std.testing.expectEqualStrings(default_request_body, h.app_state.effects.pendingFetchAt(0).?.body);
     }
 }
 
@@ -358,23 +398,76 @@ fn collectTexts(widget: canvas.Widget, out: *std.ArrayListUnmanaged(u8), allocat
 
 // ------------------------------------------------------ the conversation
 
+test "chat content fills narrow windows and caps centered below the full-width titlebar" {
+    const h = try Harness.create();
+    defer h.destroy();
+
+    const narrow = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const narrow_header = narrow.findById(h.findLabel("Chat header").?).?.frame.normalized();
+    const narrow_content = narrow.findById(h.findLabel("Chat content").?).?.frame.normalized();
+    try std.testing.expectEqual(@as(f32, 760), narrow_header.width);
+    try std.testing.expectEqual(@as(f32, 760), narrow_content.width);
+    try std.testing.expectEqual(@as(f32, 0), narrow_content.x);
+
+    try h.harness.runtime.dispatchPlatformEvent(h.app, .{ .gpu_surface_frame = .{
+        .label = canvas_label,
+        .size = geometry.SizeF.init(1600, 640),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2_000_000,
+    } });
+    const wide = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const wide_header = wide.findById(h.findLabel("Chat header").?).?.frame.normalized();
+    const wide_content = wide.findById(h.findLabel("Chat content").?).?.frame.normalized();
+    try std.testing.expectEqual(@as(f32, 1600), wide_header.width);
+    try std.testing.expectEqual(@as(f32, 960), wide_content.width);
+    try std.testing.expectEqual(@as(f32, 320), wide_content.x);
+}
+
 test "a scripted conversation pins the Gateway request and renders each SSE delta before completion" {
     const h = try Harness.create();
     defer h.destroy();
     const fx = &h.app_state.effects;
 
-    // The configured idle state: the model badge and the empty hint.
-    try std.testing.expect(h.hasText(test_model_name));
+    // The configured idle state: a text-free custom titlebar and the
+    // empty-conversation hint. The New chat button is nested inside the
+    // draggable row but remains its own interactive exclusion.
+    const header = findWidgetByLabel(h.app_state.tree.?.root, "Chat header").?;
+    try std.testing.expect(header.window_drag);
+    try std.testing.expectEqual(@as(f64, 78), Bridge.model().chromeLeading);
+    try std.testing.expectEqual(@as(f64, 52), Bridge.model().headerHeight);
+    const new_chat = findWidgetByLabel(h.app_state.tree.?.root, "New chat").?;
+    try std.testing.expect(!new_chat.state.disabled);
+    try std.testing.expect(!h.hasText("Chatbot"));
+    try std.testing.expect(!h.hasText(test_model_name));
     try std.testing.expect(h.hasText("Ask anything"));
 
-    // Type into the composer through the real text-input path (the
-    // core's byte-splice engine) and send. The engine channel holds the
-    // request whole: POST, the fixed Vercel AI Gateway endpoint, the
-    // runtime-built `authorization: Bearer <key>` header (header VALUES
+    // The prompt is one grouped field: a multiline entry first and an
+    // icon-only arrow submit action inside the shared border.
+    const prompt = findWidgetByLabel(h.app_state.tree.?.root, "Prompt composer").?;
+    try std.testing.expectEqual(canvas.WidgetKind.input_group, prompt.kind);
+    try std.testing.expectEqual(@as(usize, 2), prompt.children.len);
+    const message_entry = findWidgetByLabel(prompt, "Message").?;
+    try std.testing.expectEqual(canvas.WidgetKind.textarea, message_entry.kind);
+    try std.testing.expect(message_entry.submit_on_enter);
+    const send_button = findWidgetByLabel(prompt, "Send message").?;
+    try std.testing.expectEqual(canvas.WidgetKind.button, send_button.kind);
+    try std.testing.expectEqualStrings("arrow-up", send_button.icon);
+    try std.testing.expectEqualStrings("", send_button.text);
+
+    // The composer takes focus when the configured app mounts, so text
+    // input lands there without a click. Type through that real input
+    // path (the core's byte-splice engine) and press plain Enter. The
+    // engine channel holds the request whole: POST, the fixed Vercel AI
+    // Gateway endpoint, and the runtime-built
+    // `authorization: Bearer <key>` header (header VALUES
     // may be runtime bytes; the key never rides the URL), the SSE accept
     // header and JSON content type in name-sort order, and the byte-exact
     // body with `stream: true`.
-    try h.say("Say hi in two words");
+    const composer_id = h.findLabel("Message").?;
+    try std.testing.expectEqual(composer_id, h.focusedWidgetId());
+    try h.textInput("Say hi in two words");
+    try h.keyDown("enter");
     try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
     const request = fx.pendingFetchAt(0).?;
     try std.testing.expectEqual(chat_fetch_key, request.key);
@@ -402,8 +495,13 @@ test "a scripted conversation pins the Gateway request and renders each SSE delt
         defer draft_arena.deinit();
         try std.testing.expectEqual(@as(usize, 0), Bridge.model().draftText(draft_arena.allocator()).len);
     }
-    try std.testing.expect(h.hasText("streaming from Vercel AI Gateway"));
     try std.testing.expect(h.hasText("…"));
+    {
+        const layout = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        const conversation = layout.findById(h.findLabel("Conversation").?).?;
+        const user_turn = layout.findById(h.findLabel("You said").?).?;
+        try std.testing.expect(conversation.frame.intersects(user_turn.frame));
+    }
 
     // A role-only chunk is a valid no-op. Then each content delta lands
     // in committed pendingReply and is visible BEFORE [DONE] or the HTTP
@@ -414,6 +512,12 @@ test "a scripted conversation pins the Gateway request and renders each SSE delt
     try std.testing.expect(Bridge.model().phase == .sending);
     try std.testing.expectEqualStrings("Hi ", Bridge.model().pendingReply);
     try std.testing.expect(h.hasText("Hi "));
+    {
+        const layout = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        const conversation = layout.findById(h.findLabel("Conversation").?).?;
+        const pending_reply = layout.findById(h.findLabel("Reply pending").?).?;
+        try std.testing.expect(conversation.frame.intersects(pending_reply.frame));
+    }
     try h.line("data:{\"choices\":[{\"delta\":{\"content\":\"there!\"},\"finish_reason\":\"stop\"}]}\r");
     try std.testing.expectEqualStrings("Hi there!", Bridge.model().pendingReply);
     try std.testing.expect(h.hasText("Hi there!"));
@@ -438,6 +542,68 @@ test "a scripted conversation pins the Gateway request and renders each SSE delt
     try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"const hi =\\n    \\\"hi\\\";\"}}]}");
     try std.testing.expectEqual(@as(usize, 4), Bridge.model().turns.len);
     try std.testing.expectEqualStrings("const hi =\n    \"hi\";", Bridge.model().turns[3].text);
+}
+
+test "long streamed replies wrap inside the conversation instead of overflowing on x" {
+    const h = try Harness.create();
+    defer h.destroy();
+
+    const long_reply =
+        "Every night, Lina left a cup of tea on her windowsill for the moon, " ++
+        "because her grandmother had once said that kindness travels farther " ++
+        "than footsteps and always finds its way home before morning.";
+    const long_reply_event =
+        "data: {\"choices\":[{\"delta\":{\"content\":\"" ++ long_reply ++ "\"}}]}";
+
+    try h.say("tell me a story");
+    try h.line(long_reply_event);
+    try std.testing.expectEqualStrings(long_reply, Bridge.model().pendingReply);
+
+    const layout = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const conversation = layout.findById(h.findLabel("Conversation").?).?.frame.normalized();
+    const reply_text = layout.findById(h.findId(.text, long_reply).?).?.frame.normalized();
+    try std.testing.expect(reply_text.x >= conversation.x);
+    try std.testing.expect(reply_text.maxX() <= conversation.maxX());
+    try std.testing.expect(reply_text.width < conversation.width);
+    try std.testing.expect(reply_text.height > 20);
+
+    try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\" done\"}}]}");
+}
+
+test "a streamed reply paints its visible tail beyond the paragraph page cap" {
+    const h = try Harness.create();
+    defer h.destroy();
+
+    const long_reply =
+        ("The lantern kept watch through the night.\n" ** 150) ++
+        "TAIL_SENTINEL";
+    const long_reply_event =
+        "data: {\"choices\":[{\"delta\":{\"content\":\"" ++
+        ("The lantern kept watch through the night.\\n" ** 150) ++
+        "TAIL_SENTINEL\"}}]}";
+
+    try h.say("tell me a long story");
+    try h.line(long_reply_event);
+    try std.testing.expectEqualStrings(long_reply, Bridge.model().pendingReply);
+
+    // The chat's controlled scroll follows each streamed delta to the
+    // bottom. The visible display list must therefore contain the final
+    // response page, not just reserve its height beneath the first 128
+    // painted visual lines.
+    const layout = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var commands: [512]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetLayout(&builder, layout, .{});
+    var saw_tail = false;
+    for (builder.displayList().commands) |command| {
+        if (command == .draw_text and std.mem.indexOf(u8, command.draw_text.text, "TAIL_SENTINEL") != null) {
+            saw_tail = true;
+        }
+    }
+    try std.testing.expect(saw_tail);
+
+    try h.line("data: [DONE]");
+    try h.finish(200);
 }
 
 test "the in-flight guard: a second send issues nothing and loses nothing" {
@@ -479,6 +645,20 @@ test "the in-flight guard: a second send issues nothing and loses nothing" {
     try h.click(h.findLabel("Send message").?);
     try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
     try std.testing.expectEqual(@as(usize, 4), Bridge.model().turns.len);
+
+    // New chat remains available during a live reply: it cancels the
+    // keyed stream and resets both history and the composer immediately.
+    try h.say("cancel this reply");
+    try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
+    try h.click(h.findLabel("New chat").?);
+    try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
+    try std.testing.expectEqual(@as(usize, 0), Bridge.model().turns.len);
+    try std.testing.expect(Bridge.model().phase == .idle);
+    {
+        var draft_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer draft_arena.deinit();
+        try std.testing.expectEqualStrings("", Bridge.model().draftText(draft_arena.allocator()));
+    }
 }
 
 // ---------------------------------------------------------- failure paths
@@ -534,9 +714,12 @@ test "every failure shape lands in the failed state with a reason and keeps the 
     try std.testing.expectEqualStrings("timed_out", Bridge.model().failReason);
     try std.testing.expect(h.hasText("timed_out"));
 
-    // The history survived the whole gauntlet, and Clear resets it.
+    // The history survived the whole gauntlet, and the titlebar's New
+    // chat button resets it through the real markup press path.
     try std.testing.expectEqual(@as(usize, 3), Bridge.model().turns.len);
-    try h.menu("chat.clear");
+    const new_chat = findWidgetByLabel(h.app_state.tree.?.root, "New chat").?;
+    try std.testing.expect(!new_chat.state.disabled);
+    try h.click(new_chat.id);
     try std.testing.expectEqual(@as(usize, 0), Bridge.model().turns.len);
     try std.testing.expect(Bridge.model().phase == .idle);
     try std.testing.expect(h.hasText("Ask anything"));
@@ -599,7 +782,7 @@ fn recordSession(buffer: *JournalBuffer) !ChatSnapshot {
     const recorder = try std.heap.page_allocator.create(runtime_ns.SessionRecorder);
     defer std.heap.page_allocator.destroy(recorder);
     recorder.* = runtime_ns.SessionRecorder.init(buffer.sink());
-    recorder.begin(.{ .platform_name = "test", .app_name = "ai-chat-ts-e2e", .window_width = 760, .window_height = 640 });
+    recorder.begin(.{ .platform_name = "test", .app_name = "chatbot-e2e", .window_width = 760, .window_height = 640 });
 
     const h = try Harness.createConfigured(recorder, &configured_env);
     defer h.destroy();
@@ -633,6 +816,10 @@ fn replayWithEnv(journal_bytes: []const u8, env_values: []const Adapter.EnvValue
     });
     defer harness.destroy(std.testing.allocator);
     harness.null_platform.gpu_surfaces = true;
+    // Replay must expose the same shell geometry and native-scroll
+    // capabilities as recording; both affect the rendered checkpoint.
+    harness.null_platform.window_chrome = test_window_chrome;
+    harness.null_platform.gpu_surface_scroll_drivers = true;
     const app_state = try std.testing.allocator.create(App);
     defer std.testing.allocator.destroy(app_state);
     app_state.* = Adapter.init(std.heap.page_allocator, .{ .env_values = env_values }, appOptions());

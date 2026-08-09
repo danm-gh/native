@@ -397,6 +397,16 @@ fn emitWidgetDepthContent(builder: *Builder, widget: Widget, tokens: DesignToken
                         try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, clipped, .{});
                     }
                 }
+            } else if (paint_widget.spans.len > 0) {
+                if (tree_visible_bounds) |visible_bounds| {
+                    const clipped = geometry.RectF.intersection(
+                        paint_widget.frame.normalized(),
+                        visible_bounds.normalized(),
+                    );
+                    if (!clipped.isEmpty()) {
+                        try emitVisibleTextSpansWidget(builder, paint_widget, tokens, clipped);
+                    }
+                }
             } else {
                 try emitTextWidget(builder, paint_widget, tokens);
             }
@@ -782,6 +792,10 @@ fn emitWidgetLayoutNodeContent(
             if (isSyntaxCodeParagraph(paint_widget)) {
                 if (widgetLayoutNodeVisibleBounds(layout, node_index, paint_widget.frame)) |visible_bounds| {
                     try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, visible_bounds, .{});
+                }
+            } else if (paint_widget.spans.len > 0) {
+                if (widgetLayoutNodeVisibleBounds(layout, node_index, paint_widget.frame)) |visible_bounds| {
+                    try emitVisibleTextSpansWidget(builder, paint_widget, tokens, visible_bounds);
                 }
             } else {
                 try emitTextWidget(builder, paint_widget, tokens);
@@ -1389,112 +1403,194 @@ fn emitStaticTextSelectionBounded(
     }
 }
 
-/// Draw a span paragraph: one single-line text command per laid-out run
-/// plus thin fill rects for underline/strikethrough decorations. Runs and
-/// decorations get stable hashed command ids derived from the widget id
-/// and their ordinal, so retained diffing works across frames.
+/// Full-frame compatibility path for span-bearing composite leaves such
+/// as table cells. Ordinary `.text` nodes pass their real viewport below.
 fn emitTextSpansWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
+    return emitVisibleTextSpansWidget(builder, widget, tokens, widget.frame);
+}
+
+/// Draw the visible pages of an ordinary span paragraph: one single-line
+/// text command per laid-out run plus backgrounds and thin decoration
+/// rects. Layout keeps the full paragraph height, while painting pages the
+/// bounded run store through the current viewport. Without this split, a
+/// transcript longer than `max_text_span_lines_per_paragraph` reserved its
+/// real height but painted only its first page, leaving a blank tail after
+/// the scroll moved beyond line 128.
+fn emitVisibleTextSpansWidget(
+    builder: *Builder,
+    widget: Widget,
+    tokens: DesignTokens,
+    visible_bounds: geometry.RectF,
+) Error!void {
     const content = widget_metrics.widgetTextSpanContentFrame(widget, tokens);
     const layout_options = widget_metrics.widgetTextSpanLayoutOptions(
         widget,
         tokens,
         textWrapMaxWidth(tokens, content.width),
     );
-    var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
-    const layout = text_spans_model.layoutTextSpans(
-        widget.spans,
-        layout_options,
-        &runs,
-    );
+    const line_height = text_spans_model.textSpanLineHeight(widget.spans, layout_options);
+    if (line_height <= 0 or !std.math.isFinite(line_height)) return;
 
-    try emitCodeLineDecorations(builder, widget, widget.spans, tokens, content, widget.frame, layout_options, null, true);
-    // Span background highlights (intra-line diff emphasis): one
-    // full-line-height rect per run, the same geometry selection rects
-    // use, painted before selection and glyphs. Edge-snapped rects of
-    // adjacent runs share their boundary, so equal backgrounds abut
-    // without seams.
-    for (layout.runs, 0..) |run, ordinal| {
-        if (run.text.len == 0) continue;
-        const background = widget.spans[run.span_index].background orelse continue;
-        const bounds = text_spans_model.textSpanRunBounds(layout, run);
-        try builder.fillRect(.{
-            .id = textSpanBackgroundCommandId(widget.id, ordinal),
-            .rect = pixelSnapGeometryRect(tokens, geometry.RectF.init(
+    const first_visible_line: usize = if (std.math.isFinite(visible_bounds.y - content.y) and
+        visible_bounds.y > content.y)
+        @intFromFloat(@floor((visible_bounds.y - content.y) / line_height))
+    else
+        0;
+    const last_visible_line: usize = if (std.math.isFinite(visible_bounds.maxY() - content.y) and
+        visible_bounds.maxY() > content.y)
+        @intFromFloat(@floor((visible_bounds.maxY() - content.y) / line_height))
+    else
+        first_visible_line;
+    const lines_per_page = text_spans_model.max_text_span_lines_per_paragraph;
+    const first_page_line = (first_visible_line / lines_per_page) * lines_per_page;
+
+    var runs: [text_spans_model.max_text_span_runs_per_paragraph]text_spans_model.TextSpanRun = undefined;
+
+    // Backgrounds from every visible page stay behind the paragraph's
+    // selection layer and glyphs, preserving the original paint order.
+    var page_first_line = first_page_line;
+    while (true) {
+        const layout = text_spans_model.layoutTextSpansFromLine(
+            widget.spans,
+            layout_options,
+            page_first_line,
+            &runs,
+        );
+        const page_index = page_first_line / lines_per_page;
+        const ordinal_base = page_index *| text_spans_model.max_text_span_runs_per_paragraph;
+        for (layout.runs, 0..) |run, ordinal| {
+            if (run.text.len == 0) continue;
+            const background = widget.spans[run.span_index].background orelse continue;
+            const bounds = text_spans_model.textSpanRunBounds(layout, run);
+            const frame = geometry.RectF.init(
                 content.x + bounds.x,
                 content.y + bounds.y,
                 bounds.width,
                 bounds.height,
-            )),
-            .fill = colorFill(text_spans_model.textSpanColorValue(tokens.colors, background)),
-        });
+            );
+            if (!frame.intersects(visible_bounds)) continue;
+            try builder.fillRect(.{
+                // Page zero keeps the historical ids byte-for-byte; later
+                // pages occupy disjoint ordinal bands.
+                .id = textSpanBackgroundCommandId(widget.id, ordinal_base +| ordinal),
+                .rect = pixelSnapGeometryRect(tokens, frame),
+                .fill = colorFill(text_spans_model.textSpanColorValue(tokens.colors, background)),
+            });
+        }
+        const next_first_line = page_first_line +| lines_per_page;
+        if (next_first_line <= page_first_line or
+            next_first_line > last_visible_line or
+            next_first_line >= layout.line_count)
+        {
+            break;
+        }
+        page_first_line = next_first_line;
     }
 
     try emitStaticTextSelection(builder, widget, tokens);
 
-    var decoration_ordinal: usize = 0;
-    for (layout.runs, 0..) |run, ordinal| {
-        if (run.text.len == 0) continue;
-        const span = widget.spans[run.span_index];
-        const is_link = span.link.len > 0;
-        const color = if (span.color) |ref|
-            text_spans_model.textSpanColorValue(tokens.colors, ref)
-        else if (is_link)
-            widgetForegroundColor(widget, tokens, tokens.colors.accent)
-        else
-            widgetForegroundColor(widget, tokens, tokens.colors.text);
-        const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(content.x + run.x, content.y + run.baseline));
-        try builder.drawText(.{
-            .id = textSpanRunCommandId(widget.id, ordinal),
-            .font_id = run.font_id,
-            .size = run.size,
-            .origin = origin,
-            .color = color,
-            .text = run.text,
-            // Wrapping already happened at the span level (each run is one
-            // line segment), so the options carry no wrap work — they carry
-            // the measurement seam. Renderers that walk per-cluster
-            // advances (the reference renderer behind every automation
-            // screenshot) then advance with the same provider layout
-            // positioned the runs with; without it a provider-kerned prose
-            // run repainted at estimator advances overran the next span's
-            // x and visually swallowed the inter-span space
-            // ("remaining`experimental_`" -> "remainingexperimental_").
-            .text_layout = .{
-                .max_width = 0,
-                .line_height = layout.line_height,
-                .wrap = .none,
-                .alignment = .start,
-                .measure = tokens.text_measure,
-            },
-        });
+    page_first_line = first_page_line;
+    while (true) {
+        const layout = text_spans_model.layoutTextSpansFromLine(
+            widget.spans,
+            layout_options,
+            page_first_line,
+            &runs,
+        );
+        const page_index = page_first_line / lines_per_page;
+        const ordinal_base = page_index *| text_spans_model.max_text_span_runs_per_paragraph;
+        const decoration_base = page_index *| (text_spans_model.max_text_span_runs_per_paragraph * 2);
+        var decoration_ordinal: usize = 0;
+        for (layout.runs, 0..) |run, ordinal| {
+            if (run.text.len == 0) continue;
+            const span = widget.spans[run.span_index];
+            const is_link = span.link.len > 0;
+            const underline_ordinal: ?usize = if (span.underline or is_link) blk: {
+                const value = decoration_base +| decoration_ordinal;
+                decoration_ordinal += 1;
+                break :blk value;
+            } else null;
+            const strikethrough_ordinal: ?usize = if (span.strikethrough) blk: {
+                const value = decoration_base +| decoration_ordinal;
+                decoration_ordinal += 1;
+                break :blk value;
+            } else null;
+            const bounds = text_spans_model.textSpanRunBounds(layout, run);
+            const run_frame = geometry.RectF.init(
+                content.x + bounds.x,
+                content.y + bounds.y,
+                bounds.width,
+                bounds.height,
+            );
+            if (!run_frame.intersects(visible_bounds)) continue;
 
-        const thickness = @max(1, tokens.stroke.hairline);
-        if (span.underline or is_link) {
-            try builder.fillRect(.{
-                .id = textSpanDecorationCommandId(widget.id, decoration_ordinal),
-                .rect = pixelSnapGeometryRect(tokens, geometry.RectF.init(
-                    content.x + run.x,
-                    content.y + run.baseline + @max(1, run.size * 0.1),
-                    run.width,
-                    thickness,
-                )),
-                .fill = colorFill(color),
+            const color = if (span.color) |ref|
+                text_spans_model.textSpanColorValue(tokens.colors, ref)
+            else if (is_link)
+                widgetForegroundColor(widget, tokens, tokens.colors.accent)
+            else
+                widgetForegroundColor(widget, tokens, tokens.colors.text);
+            const origin = pixelSnapTextPoint(tokens, geometry.PointF.init(content.x + run.x, content.y + run.baseline));
+            try builder.drawText(.{
+                .id = textSpanRunCommandId(widget.id, ordinal_base +| ordinal),
+                .font_id = run.font_id,
+                .size = run.size,
+                .origin = origin,
+                .color = color,
+                .text = run.text,
+                // Wrapping already happened at the span level (each run is one
+                // line segment), so the options carry no wrap work — they carry
+                // the measurement seam. Renderers that walk per-cluster
+                // advances (the reference renderer behind every automation
+                // screenshot) then advance with the same provider layout
+                // positioned the runs with; without it a provider-kerned prose
+                // run repainted at estimator advances overran the next span's
+                // x and visually swallowed the inter-span space
+                // ("remaining`experimental_`" -> "remainingexperimental_").
+                .text_layout = .{
+                    .max_width = 0,
+                    .line_height = layout.line_height,
+                    .wrap = .none,
+                    .alignment = .start,
+                    .measure = tokens.text_measure,
+                },
             });
-            decoration_ordinal += 1;
+
+            const thickness = @max(1, tokens.stroke.hairline);
+            if (underline_ordinal) |decoration_id_ordinal| {
+                try builder.fillRect(.{
+                    .id = textSpanDecorationCommandId(widget.id, decoration_id_ordinal),
+                    .rect = pixelSnapGeometryRect(tokens, geometry.RectF.init(
+                        content.x + run.x,
+                        content.y + run.baseline + @max(1, run.size * 0.1),
+                        run.width,
+                        thickness,
+                    )),
+                    .fill = colorFill(color),
+                });
+            }
+            if (strikethrough_ordinal) |decoration_id_ordinal| {
+                try builder.fillRect(.{
+                    .id = textSpanDecorationCommandId(widget.id, decoration_id_ordinal),
+                    .rect = pixelSnapGeometryRect(tokens, geometry.RectF.init(
+                        content.x + run.x,
+                        content.y + run.baseline - run.size * 0.3,
+                        run.width,
+                        thickness,
+                    )),
+                    .fill = colorFill(color),
+                });
+            }
         }
-        if (span.strikethrough) {
-            try builder.fillRect(.{
-                .id = textSpanDecorationCommandId(widget.id, decoration_ordinal),
-                .rect = pixelSnapGeometryRect(tokens, geometry.RectF.init(
-                    content.x + run.x,
-                    content.y + run.baseline - run.size * 0.3,
-                    run.width,
-                    thickness,
-                )),
-                .fill = colorFill(color),
-            });
-            decoration_ordinal += 1;
+
+        const next_first_line = page_first_line +| lines_per_page;
+        if (next_first_line <= page_first_line or
+            next_first_line > last_visible_line or
+            next_first_line >= layout.line_count)
+        {
+            break;
         }
+        page_first_line = next_first_line;
     }
 }
 

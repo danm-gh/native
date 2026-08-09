@@ -985,6 +985,11 @@ pub const Widget = struct {
     /// view: a note editor that mounts with `autofocus` receives the
     /// keyboard the moment it appears.
     autofocus: bool = false,
+    /// Textarea Enter policy (`ElementOptions.submit_on_enter` / markup
+    /// `submit-on-enter`): plain Enter submits instead of editing, while
+    /// Shift+Enter remains a newline. False keeps the ordinary multiline
+    /// contract. Ignored by non-textarea kinds.
+    submit_on_enter: bool = false,
     command: []const u8 = "",
     image_id: ImageId = 0,
     image_src: ?geometry.RectF = null,

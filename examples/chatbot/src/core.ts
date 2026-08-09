@@ -1,10 +1,10 @@
-// ai-chat-ts core: a streaming chat client for the Vercel AI Gateway's
+// Chatbot core: a streaming chat client for the Vercel AI Gateway's
 // OpenAI-compatible chat-completions endpoint, authored entirely in the
 // TypeScript app-core subset. Zero Zig in this tree: the build transpiles
 // this module and src/api.ts,
 // src/app.native is the whole view, app.zon the manifest.
 //
-// The core is two modules plus one SDK library, all under src/:
+// The core is two modules plus two SDK libraries, all under src/:
 //
 //   core.ts  (this file) Model, Msg, update, the wiring channels, and
 //            every exported binding helper — the entry module is the
@@ -14,6 +14,8 @@
 //            error.message — exactly the fields the app reads)
 //   @native-sdk/core/text  the SDK's byte-splice text engine, transpiled
 //            in for the composer's caret/selection/IME fidelity
+//   @native-sdk/core/events  the scroll and hidden-titlebar geometry
+//            records used by the markup's controlled host channels
 //
 // The whole network surface is ONE streaming effect: `Cmd.fetch` on the
 // "chat" key. Every Gateway SSE line is a Msg, so visible assistant text
@@ -21,10 +23,12 @@
 // discipline is model-first: `phase === "sending"` blocks every re-send
 // in update, and the engine rejects a duplicate live streaming key.
 //
-// The Gateway endpoint is fixed and reviewable below. The model name and
-// `AI_GATEWAY_API_KEY` arrive through `envMsgs` as journaled Msgs at
-// install — the core never reads the environment (NS1005), which is why
-// a recorded conversation replays byte-identically without either value.
+// The Gateway endpoint and default model are fixed and reviewable below.
+// `NATIVE_SDK_CHAT_MODEL` can override that default, while
+// `AI_GATEWAY_API_KEY` arrives through `envMsgs`; both deliveries are
+// journaled Msgs at install. The core never reads the environment
+// (NS1005), which is why a recorded conversation replays byte-identically
+// without either value.
 
 import { Cmd, asciiBytes, type EnvMsg } from "@native-sdk/core";
 import {
@@ -36,7 +40,11 @@ import {
 } from "@native-sdk/core/text";
 // The SDK-provided scroll-state record (the shape markup's on-scroll
 // matches structurally - imported, so no in-file mirror can drift).
-import { type ScrollState } from "@native-sdk/core/events";
+import {
+  type ChromeButtons,
+  type ChromeInsets,
+  type ScrollState,
+} from "@native-sdk/core/events";
 import {
   bearerToken,
   concatAll,
@@ -48,8 +56,13 @@ import {
 
 /// Vercel AI Gateway's OpenAI-compatible Chat Completions REST endpoint.
 /// Keeping it fixed makes this example specifically a Gateway client;
-/// only the creator/model id and API key are launch configuration.
+/// only the optional creator/model override and API key are launch
+/// configuration.
 const AI_GATEWAY_ENDPOINT = asciiBytes("https://ai-gateway.vercel.sh/v1/chat/completions");
+
+/// The example works with only a Gateway API key. Apps can still select
+/// another Gateway creator/model id through `NATIVE_SDK_CHAT_MODEL`.
+const DEFAULT_MODEL = asciiBytes("openai/gpt-5.6-luna");
 
 /// The conversation's standing instruction, first in every request's
 /// message list. One constant, versioned with the app — not model state,
@@ -67,8 +80,13 @@ const MAX_DRAFT = 4096;
 /// the live request and retain the unanswered user turn for Retry.
 const MAX_REPLY = 262144;
 
+/// The app's own header is the tall hidden-inset titlebar. The host may
+/// report a larger top inset, so chrome_changed keeps this as a floor.
+const HEADER_NATURAL_HEIGHT = 52;
+
 /// Assigning the scroll binding a value past the content clamps to the
-/// bottom — how a new message keeps the latest turn in view.
+/// bottom. Alternating the two out-of-range values makes every token a
+/// source-side move even when no host scroll echo arrives between rebuilds.
 const SCROLL_BOTTOM = 1000000;
 
 // -------------------------------------------------------------- composer
@@ -156,15 +174,23 @@ export interface Model {
   /// without it is treated as a truncated protocol response.
   readonly streamDone: boolean;
   readonly draft: ComposerDraft;
-  /// The launch configuration (the envMsgs channel): a Gateway
-  /// creator/model id and API key. Both are empty until their variables
-  /// arrive; the app teaches setup until both are non-empty.
+  /// The Gateway creator/model id and API key. The model starts at the
+  /// example default and can be replaced by the optional env delivery;
+  /// the app teaches setup until the key arrives.
   readonly modelName: Bytes;
   readonly apiKey: Bytes;
   /// The conversation scroll offset, echoed from markup's `on-scroll`
   /// and pushed past the content on every new turn (the clamp lands it
   /// at the bottom) — the controlled-scroll shape.
   readonly chatScrollTop: number;
+  /// Alternates the two out-of-range tail requests so every streamed
+  /// delta remains a source-side scroll move even without a host echo.
+  readonly scrollPulse: boolean;
+  /// Hidden-titlebar geometry delivered before the first view build.
+  /// chromeLeading keeps controls clear of the macOS traffic lights;
+  /// headerHeight follows the host's titlebar band with a 52pt floor.
+  readonly chromeLeading: number;
+  readonly headerHeight: number;
 }
 
 export function initialModel(): Model {
@@ -176,9 +202,12 @@ export function initialModel(): Model {
     pendingReply: new Uint8Array(0),
     streamDone: false,
     draft: composerInit(),
-    modelName: new Uint8Array(0),
+    modelName: DEFAULT_MODEL,
     apiKey: new Uint8Array(0),
     chatScrollTop: 0,
+    scrollPulse: false,
+    chromeLeading: 0,
+    headerHeight: HEADER_NATURAL_HEIGHT,
   };
 }
 
@@ -200,18 +229,29 @@ export type Msg =
   /// The transport failure — the fetch err arm's machine-readable reason.
   | { readonly kind: "chat_failed"; readonly reason: Bytes }
   | { readonly kind: "chat_scrolled"; readonly scroll: ScrollState }
+  | {
+      readonly kind: "chrome_changed";
+      readonly insets: ChromeInsets;
+      readonly buttons: ChromeButtons;
+      readonly tabsProjected: boolean;
+    }
   | { readonly kind: "model_set"; readonly value: Bytes }
   | { readonly kind: "key_set"; readonly value: Bytes };
 
 // --------------------------------------------------- host-event channels
 
 /// The launch configuration channel: each variable present at launch
-/// dispatches one journaled Msg right after boot. The URL is the fixed
-/// Vercel AI Gateway endpoint above; no key exists in this tree.
+/// dispatches one journaled Msg right after boot. The URL and default
+/// model are fixed above; the model variable is an optional override,
+/// and no key exists in this tree.
 export const envMsgs: readonly EnvMsg<Msg>[] = [
   { env: "NATIVE_SDK_CHAT_MODEL", msg: "model_set" },
   { env: "AI_GATEWAY_API_KEY", msg: "key_set" },
 ];
+
+/// The tall hidden-inset titlebar geometry is delivered before the first
+/// view build and whenever the window chrome changes.
+export const chromeMsg = "chrome_changed";
 
 /// Update-only state: host-fired Msg arms and the fields markup reads
 /// through the exported derived helpers instead of directly.
@@ -219,6 +259,7 @@ export const viewUnbound = [
   "chat_line",
   "chat_done",
   "chat_failed",
+  "chrome_changed",
   "model_set",
   "key_set",
   "turns",
@@ -230,22 +271,19 @@ export const viewUnbound = [
   "draft",
   "modelName",
   "apiKey",
+  "scrollPulse",
 ] as const;
 
 // ---------------------------------------------------------------- derived
 
 function isConfigured(model: Model): boolean {
-  return model.modelName.length > 0 && model.apiKey.length > 0;
+  return model.apiKey.length > 0;
 }
 
-/// The teaching state: some launch variable is missing, so the app can
-/// only explain how to connect a model — and issues zero requests.
+/// The teaching state: the Gateway key is missing, so the app can only
+/// explain how to connect it — and issues zero requests.
 export function unconfigured(model: Model): boolean {
   return !isConfigured(model);
-}
-
-export function modelMissing(model: Model): boolean {
-  return model.modelName.length === 0;
 }
 
 export function keyMissing(model: Model): boolean {
@@ -280,17 +318,8 @@ export function emptyConversation(model: Model): boolean {
   return model.turns.length === 0;
 }
 
-/// The header's model badge: the configured name, or the gap it teaches.
-export function modelLabel(model: Model): Bytes {
-  return model.modelName.length > 0 ? model.modelName : asciiBytes("no model configured");
-}
-
 export function sendDisabled(model: Model): boolean {
   return model.phase === "sending" || !isConfigured(model);
-}
-
-export function clearDisabled(model: Model): boolean {
-  return model.phase === "sending" || model.turns.length === 0;
 }
 
 /// One conversation row for markup's `for each`: the role flag picks the
@@ -329,7 +358,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           pendingReply: new Uint8Array(0),
           streamDone: false,
           draft: composerInit(),
-          chatScrollTop: SCROLL_BOTTOM,
+          chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+          scrollPulse: !model.scrollPulse,
         },
         Cmd.fetch(
           {
@@ -363,6 +393,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           failReason: new Uint8Array(0),
           pendingReply: new Uint8Array(0),
           streamDone: false,
+          chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+          scrollPulse: !model.scrollPulse,
         },
         Cmd.fetch(
           {
@@ -382,8 +414,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       ];
     }
     case "clear": {
-      if (model.phase === "sending" || model.turns.length === 0) return [model, Cmd.none];
-      return [{
+      const next: Model = {
         ...model,
         turns: [],
         nextId: 1,
@@ -391,8 +422,15 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         failReason: new Uint8Array(0),
         pendingReply: new Uint8Array(0),
         streamDone: false,
+        draft: composerInit(),
         chatScrollTop: 0,
-      }, Cmd.none];
+        scrollPulse: false,
+      };
+      // Starting a new chat is always available. If a reply is live,
+      // close its keyed stream; the resulting cancelled terminal is
+      // stale once phase is idle and is deliberately ignored below.
+      if (model.phase === "sending") return [next, Cmd.cancel("chat")];
+      return [next, Cmd.none];
     }
     case "chat_line": {
       // The "chat" key carries exactly one live request and the sending
@@ -412,12 +450,15 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
               failReason: asciiBytes("the streamed reply exceeded 256 KiB"),
               pendingReply: new Uint8Array(0),
               streamDone: false,
+              chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+              scrollPulse: !model.scrollPulse,
             }, Cmd.cancel("chat")];
           }
           return [{
             ...model,
             pendingReply: concatAll([model.pendingReply, event.text]),
-            chatScrollTop: SCROLL_BOTTOM,
+            chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+            scrollPulse: !model.scrollPulse,
           }, Cmd.none];
         }
         case "done":
@@ -436,6 +477,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           phase: "failed",
           pendingReply: new Uint8Array(0),
           streamDone: false,
+          chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+          scrollPulse: !model.scrollPulse,
         }, Cmd.none];
       }
       if (msg.status < 200 || msg.status >= 300) {
@@ -445,6 +488,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           failReason: asciiBytes(`Vercel AI Gateway answered HTTP ${msg.status}`),
           pendingReply: new Uint8Array(0),
           streamDone: false,
+          chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+          scrollPulse: !model.scrollPulse,
         }, Cmd.none];
       }
       if (!model.streamDone) {
@@ -453,6 +498,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           phase: "failed",
           failReason: asciiBytes("the response stream ended before [DONE]"),
           pendingReply: new Uint8Array(0),
+          chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+          scrollPulse: !model.scrollPulse,
         }, Cmd.none];
       }
       if (model.pendingReply.length === 0) {
@@ -461,6 +508,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           phase: "failed",
           failReason: asciiBytes("the response stream produced no text"),
           streamDone: false,
+          chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+          scrollPulse: !model.scrollPulse,
         }, Cmd.none];
       }
       return [{
@@ -470,7 +519,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         phase: "idle",
         pendingReply: new Uint8Array(0),
         streamDone: false,
-        chatScrollTop: SCROLL_BOTTOM,
+        chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+        scrollPulse: !model.scrollPulse,
       }, Cmd.none];
     }
     case "chat_failed":
@@ -483,13 +533,24 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         failReason: msg.reason,
         pendingReply: new Uint8Array(0),
         streamDone: false,
+        chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+        scrollPulse: !model.scrollPulse,
       }, Cmd.none];
     case "chat_scrolled":
       // The controlled-scroll echo: the applied offset lands in the
       // model, so the next rebuild's `value` binding never fights the
       // runtime.
       return [{ ...model, chatScrollTop: msg.scroll.offsetY }, Cmd.none];
+    case "chrome_changed":
+      return [{
+        ...model,
+        chromeLeading: msg.insets.left,
+        headerHeight: Math.max(HEADER_NATURAL_HEIGHT, msg.insets.top),
+      }, Cmd.none];
     case "model_set":
+      // An explicitly empty optional override does not erase the
+      // built-in default.
+      if (msg.value.length === 0) return [model, Cmd.none];
       return [{ ...model, modelName: msg.value }, Cmd.none];
     case "key_set":
       return [{ ...model, apiKey: msg.value }, Cmd.none];

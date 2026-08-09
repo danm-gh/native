@@ -253,6 +253,68 @@ pub fn restoreCanvasWidgetLayoutScrollOffsets(
     }
 }
 
+/// Clamp a fresh or genuinely PROGRAMMATIC source offset before a native
+/// scroll driver adopts the layout. Native drivers otherwise keep their raw
+/// runtime offset so an Elm-style rebuild cannot interrupt rubber-band
+/// overscroll. A source value that exactly echoes the retained runtime value
+/// is the same user-driven state, not a programmatic move, and stays exempt.
+///
+/// This pass is what makes an intentionally out-of-range source value useful
+/// as "scroll to the end": descendants are first laid out at that source
+/// value, then translated back to the content-range clamp before either the
+/// retained tree or the native driver sees them.
+fn clampCanvasWidgetLayoutProgrammaticScrollOffsets(
+    nodes: []canvas.WidgetLayoutNode,
+    source: canvas.WidgetLayoutTree,
+    previous_runtime_offsets: []const CanvasWidgetSourceScrollEntry,
+    previous_source_offsets: []const CanvasWidgetSourceScrollEntry,
+) void {
+    for (nodes, 0..) |node, index| {
+        if (node.widget.kind != .scroll_view or node.widget.id == 0) continue;
+        if (node.widget.layout.virtualized and !canvas.widgetVirtualRuntimeScrolled(node.widget)) continue;
+
+        const source_node = source.findById(node.widget.id) orelse continue;
+        const previous_runtime = canvasWidgetSourceScrollEntryById(previous_runtime_offsets, node.widget.id);
+        const previous_source = canvasWidgetSourceScrollEntryById(previous_source_offsets, node.widget.id);
+        const fresh = previous_source == null;
+        const source_moved_y = fresh or source_node.widget.value != previous_source.?.value;
+        const source_moved_x = fresh or source_node.widget.value_x != previous_source.?.value_x;
+        const runtime_echo_y = previous_runtime != null and source_node.widget.value == previous_runtime.?.value;
+        const runtime_echo_x = previous_runtime != null and source_node.widget.value_x == previous_runtime.?.value_x;
+        const clamp_y = source_moved_y and !runtime_echo_y;
+        const clamp_x = source_moved_x and !runtime_echo_x;
+        if (!clamp_y and !clamp_x) continue;
+
+        const viewport = node.frame.inset(node.widget.layout.padding).normalized();
+        if (viewport.isEmpty()) continue;
+
+        const current_y = node.widget.value;
+        const current_x = node.widget.value_x;
+        const next_y = if (clamp_y)
+            if (canvas.widgetScrollsAxis(node.widget, .vertical))
+                std.math.clamp(@max(0, current_y), 0, @max(0, canvasWidgetLayoutScrollContentExtent(nodes, index, viewport) - viewport.height))
+            else
+                0
+        else
+            current_y;
+        const next_x = if (clamp_x)
+            if (canvas.widgetScrollsAxis(node.widget, .horizontal))
+                std.math.clamp(@max(0, current_x), 0, @max(0, canvasWidgetLayoutScrollContentExtentX(nodes, index, viewport) - viewport.width))
+            else
+                0
+        else
+            current_x;
+        if (next_y == current_y and next_x == current_x) continue;
+
+        nodes[index].widget.value = next_y;
+        nodes[index].widget.value_x = next_x;
+        translateCanvasWidgetLayoutScrollDescendants(nodes, index, .{
+            .dx = if (canvas.widgetScrollsAxis(node.widget, .horizontal)) -(next_x - current_x) else 0,
+            .dy = if (canvas.widgetScrollsAxis(node.widget, .vertical)) -(next_y - current_y) else 0,
+        });
+    }
+}
+
 fn previousLayoutHasSelectedTab(previous: canvas.WidgetLayoutTree, id: canvas.ObjectId) bool {
     for (previous.nodes) |node| {
         if (node.widget.id == id) return node.widget.semantics.role == .tab and node.widget.state.selected;
@@ -1036,6 +1098,12 @@ pub fn canvasWidgetLayoutTreeWithRuntimeReconcileState(
     // the caller AFTER native scroll drivers are stamped — a rebuild
     // mid-rubber-band must not clamp an offset the OS scroller owns.
     restoreCanvasWidgetLayoutScrollOffsets(staged_nodes, previous_runtime_offsets, previous_source_scroll_entries);
+    clampCanvasWidgetLayoutProgrammaticScrollOffsets(
+        staged_nodes,
+        next,
+        previous_runtime_offsets,
+        previous_source_scroll_entries,
+    );
     revealNewlySelectedTabs(previous, staged_nodes);
 
     const index_scratch = canvas_widget_reconcile_index_scratch.get();

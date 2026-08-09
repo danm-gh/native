@@ -1,6 +1,7 @@
-// ai-chat-ts core: a chat client for an OpenAI-compatible chat-completions
-// endpoint, authored entirely in the TypeScript app-core subset. Zero Zig
-// in this tree: the build transpiles this module and src/api.ts,
+// ai-chat-ts core: a streaming chat client for the Vercel AI Gateway's
+// OpenAI-compatible chat-completions endpoint, authored entirely in the
+// TypeScript app-core subset. Zero Zig in this tree: the build transpiles
+// this module and src/api.ts,
 // src/app.native is the whole view, app.zon the manifest.
 //
 // The core is two modules plus one SDK library, all under src/:
@@ -9,23 +10,21 @@
 //            every exported binding helper — the entry module is the
 //            app's public face (markup and node both see its exports)
 //   api.ts   the chat-completions wire format in pure bytes: request
-//            encoding, response parsing (choices[0].message.content and
+//            encoding and SSE parsing (choices[0].delta.content and
 //            error.message — exactly the fields the app reads)
 //   @native-sdk/core/text  the SDK's byte-splice text engine, transpiled
 //            in for the composer's caret/selection/IME fidelity
 //
-// The whole network surface is ONE effect: `Cmd.fetch` on the "chat" key.
-// This example chooses the buffered overload (the SDK also supports a
-// line-routed SSE/NDJSON stream). The in-flight discipline is
-// model-first: `phase === "sending"` blocks every re-send in update, so a
-// second request cannot exist while one is out — and the "chat" key backs
-// that up at the engine (a duplicate live key would be rejected, never
-// doubled).
+// The whole network surface is ONE streaming effect: `Cmd.fetch` on the
+// "chat" key. Every Gateway SSE line is a Msg, so visible assistant text
+// grows in committed Model state as tokens arrive. The in-flight
+// discipline is model-first: `phase === "sending"` blocks every re-send
+// in update, and the engine rejects a duplicate live streaming key.
 //
-// The endpoint, model name, and API key arrive through the `envMsgs`
-// channel as journaled Msgs at install — the core never reads the
-// environment (NS1005), which is exactly why a recorded conversation
-// replays byte-identically on a machine with none of the variables set.
+// The Gateway endpoint is fixed and reviewable below. The model name and
+// `AI_GATEWAY_API_KEY` arrive through `envMsgs` as journaled Msgs at
+// install — the core never reads the environment (NS1005), which is why
+// a recorded conversation replays byte-identically without either value.
 
 import { Cmd, asciiBytes, type EnvMsg } from "@native-sdk/core";
 import {
@@ -40,12 +39,17 @@ import {
 import { type ScrollState } from "@native-sdk/core/events";
 import {
   bearerToken,
+  concatAll,
   encodeChatRequest,
-  parseChatContent,
-  parseErrorMessage,
+  parseChatStreamLine,
   type Bytes,
   type Turn,
 } from "./api.ts";
+
+/// Vercel AI Gateway's OpenAI-compatible Chat Completions REST endpoint.
+/// Keeping it fixed makes this example specifically a Gateway client;
+/// only the creator/model id and API key are launch configuration.
+const AI_GATEWAY_ENDPOINT = asciiBytes("https://ai-gateway.vercel.sh/v1/chat/completions");
 
 /// The conversation's standing instruction, first in every request's
 /// message list. One constant, versioned with the app — not model state,
@@ -57,6 +61,11 @@ const SYSTEM_PROMPT = asciiBytes(
 /// The composer's byte capacity — comfortably under the engine's 64 KiB
 /// request-body bound with a long conversation around it.
 const MAX_DRAFT = 4096;
+
+/// Keep one in-progress answer no larger than the buffered fetch limit
+/// this example used before streaming. If a provider exceeds it, stop
+/// the live request and retain the unanswered user turn for Retry.
+const MAX_REPLY = 262144;
 
 /// Assigning the scroll binding a value past the content clamps to the
 /// bottom — how a new message keeps the latest turn in view.
@@ -137,15 +146,19 @@ export interface Model {
   /// reason until the next send.
   readonly phase: Phase;
   /// Why the last request failed: the transport reason (`timed_out`,
-  /// `connect_failed`, ...), the endpoint's own error.message, or the
+  /// `connect_failed`, ...), the Gateway's own error.message, or the
   /// HTTP status line — never empty in the failed phase.
   readonly failReason: Bytes;
+  /// The assistant text received so far for the live request. It is
+  /// rendered immediately but joins `turns` only after a clean terminal.
+  readonly pendingReply: Bytes;
+  /// The Gateway's explicit `data: [DONE]` marker. A clean HTTP EOF
+  /// without it is treated as a truncated protocol response.
+  readonly streamDone: boolean;
   readonly draft: ComposerDraft;
-  /// The launch configuration (the envMsgs channel): the full
-  /// chat-completions URL, the model name, and the API key. All three
-  /// empty until their variables arrive; the app teaches setup until
-  /// every one is non-empty.
-  readonly endpoint: Bytes;
+  /// The launch configuration (the envMsgs channel): a Gateway
+  /// creator/model id and API key. Both are empty until their variables
+  /// arrive; the app teaches setup until both are non-empty.
   readonly modelName: Bytes;
   readonly apiKey: Bytes;
   /// The conversation scroll offset, echoed from markup's `on-scroll`
@@ -160,8 +173,9 @@ export function initialModel(): Model {
     nextId: 1,
     phase: "idle",
     failReason: new Uint8Array(0),
+    pendingReply: new Uint8Array(0),
+    streamDone: false,
     draft: composerInit(),
-    endpoint: new Uint8Array(0),
     modelName: new Uint8Array(0),
     apiKey: new Uint8Array(0),
     chatScrollTop: 0,
@@ -179,41 +193,41 @@ export type Msg =
   /// unanswered user turn is already the last entry).
   | { readonly kind: "retry" }
   | { readonly kind: "clear" }
-  /// The delivered HTTP response, any status — the fetch ok arm.
-  | { readonly kind: "chat_response"; readonly status: number; readonly body: Bytes }
+  /// One complete SSE/body line from the Gateway.
+  | { readonly kind: "chat_line"; readonly line: Bytes }
+  /// The delivered streaming response's terminal HTTP status.
+  | { readonly kind: "chat_done"; readonly status: number }
   /// The transport failure — the fetch err arm's machine-readable reason.
   | { readonly kind: "chat_failed"; readonly reason: Bytes }
   | { readonly kind: "chat_scrolled"; readonly scroll: ScrollState }
-  | { readonly kind: "endpoint_set"; readonly value: Bytes }
   | { readonly kind: "model_set"; readonly value: Bytes }
   | { readonly kind: "key_set"; readonly value: Bytes };
 
 // --------------------------------------------------- host-event channels
 
 /// The launch configuration channel: each variable present at launch
-/// dispatches one journaled Msg right after boot. NO default endpoint
-/// and NO baked key exist anywhere in this tree — an unconfigured app
-/// says so on screen instead of dialing a stranger.
+/// dispatches one journaled Msg right after boot. The URL is the fixed
+/// Vercel AI Gateway endpoint above; no key exists in this tree.
 export const envMsgs: readonly EnvMsg<Msg>[] = [
-  { env: "NATIVE_SDK_CHAT_ENDPOINT", msg: "endpoint_set" },
   { env: "NATIVE_SDK_CHAT_MODEL", msg: "model_set" },
-  { env: "NATIVE_SDK_CHAT_API_KEY", msg: "key_set" },
+  { env: "AI_GATEWAY_API_KEY", msg: "key_set" },
 ];
 
 /// Update-only state: host-fired Msg arms and the fields markup reads
 /// through the exported derived helpers instead of directly.
 export const viewUnbound = [
-  "chat_response",
+  "chat_line",
+  "chat_done",
   "chat_failed",
-  "endpoint_set",
   "model_set",
   "key_set",
   "turns",
   "nextId",
   "phase",
   "failReason",
+  "pendingReply",
+  "streamDone",
   "draft",
-  "endpoint",
   "modelName",
   "apiKey",
 ] as const;
@@ -221,17 +235,13 @@ export const viewUnbound = [
 // ---------------------------------------------------------------- derived
 
 function isConfigured(model: Model): boolean {
-  return model.endpoint.length > 0 && model.modelName.length > 0 && model.apiKey.length > 0;
+  return model.modelName.length > 0 && model.apiKey.length > 0;
 }
 
 /// The teaching state: some launch variable is missing, so the app can
 /// only explain how to connect a model — and issues zero requests.
 export function unconfigured(model: Model): boolean {
   return !isConfigured(model);
-}
-
-export function endpointMissing(model: Model): boolean {
-  return model.endpoint.length === 0;
 }
 
 export function modelMissing(model: Model): boolean {
@@ -252,6 +262,14 @@ export function failed(model: Model): boolean {
 
 export function failReasonLabel(model: Model): Bytes {
   return model.failReason;
+}
+
+export function pendingReplyLabel(model: Model): Bytes {
+  return model.pendingReply;
+}
+
+export function waitingForFirstToken(model: Model): boolean {
+  return model.phase === "sending" && model.pendingReply.length === 0;
 }
 
 export function draftText(model: Model): Bytes {
@@ -308,20 +326,27 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           nextId: model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991,
           phase: "sending",
           failReason: new Uint8Array(0),
+          pendingReply: new Uint8Array(0),
+          streamDone: false,
           draft: composerInit(),
           chatScrollTop: SCROLL_BOTTOM,
         },
         Cmd.fetch(
           {
-            url: model.endpoint,
+            url: AI_GATEWAY_ENDPOINT,
             method: "POST",
             // The bearer token is a RUNTIME header value (built from the
             // launch-supplied key); header names stay compile-time.
-            headers: { authorization: bearerToken(model.apiKey), "content-type": "application/json" },
+            headers: {
+              accept: "text/event-stream",
+              authorization: bearerToken(model.apiKey),
+              "content-type": "application/json",
+            },
             body: encodeChatRequest(model.modelName, SYSTEM_PROMPT, turns),
             timeoutMs: 120000,
+            maxLineBytes: 65536,
           },
-          { key: "chat", ok: "chat_response", err: "chat_failed" },
+          { key: "chat", line: "chat_line", ok: "chat_done", err: "chat_failed" },
         ),
       ];
     }
@@ -332,16 +357,27 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       if (model.turns.length === 0) return [model, Cmd.none];
       if (model.turns[model.turns.length - 1].role !== "user") return [model, Cmd.none];
       return [
-        { ...model, phase: "sending", failReason: new Uint8Array(0) },
+        {
+          ...model,
+          phase: "sending",
+          failReason: new Uint8Array(0),
+          pendingReply: new Uint8Array(0),
+          streamDone: false,
+        },
         Cmd.fetch(
           {
-            url: model.endpoint,
+            url: AI_GATEWAY_ENDPOINT,
             method: "POST",
-            headers: { authorization: bearerToken(model.apiKey), "content-type": "application/json" },
+            headers: {
+              accept: "text/event-stream",
+              authorization: bearerToken(model.apiKey),
+              "content-type": "application/json",
+            },
             body: encodeChatRequest(model.modelName, SYSTEM_PROMPT, model.turns),
             timeoutMs: 120000,
+            maxLineBytes: 65536,
           },
-          { key: "chat", ok: "chat_response", err: "chat_failed" },
+          { key: "chat", line: "chat_line", ok: "chat_done", err: "chat_failed" },
         ),
       ];
     }
@@ -353,54 +389,106 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         nextId: 1,
         phase: "idle",
         failReason: new Uint8Array(0),
+        pendingReply: new Uint8Array(0),
+        streamDone: false,
         chatScrollTop: 0,
       }, Cmd.none];
     }
-    case "chat_response": {
+    case "chat_line": {
       // The "chat" key carries exactly one live request and the sending
-      // guard blocks re-sends, so a response outside the sending phase
+      // guard blocks re-sends, so a line outside the sending phase
       // can only be stale — drop it rather than corrupt the history.
       if (model.phase !== "sending") return [model, Cmd.none];
-      if (msg.status === 200) {
-        const content = parseChatContent(msg.body);
-        if (content === null) {
-          // A 200 whose body is not a chat completion is a failed
-          // request, never a half-parsed conversation.
+      if (model.streamDone) return [model, Cmd.none];
+      const event = parseChatStreamLine(msg.line);
+      switch (event.kind) {
+        case "ignore":
+          return [model, Cmd.none];
+        case "delta": {
+          if (model.pendingReply.length + event.text.length > MAX_REPLY) {
+            return [{
+              ...model,
+              phase: "failed",
+              failReason: asciiBytes("the streamed reply exceeded 256 KiB"),
+              pendingReply: new Uint8Array(0),
+              streamDone: false,
+            }, Cmd.cancel("chat")];
+          }
           return [{
             ...model,
-            phase: "failed",
-            failReason: asciiBytes("the response did not parse as a chat completion"),
+            pendingReply: concatAll([model.pendingReply, event.text]),
+            chatScrollTop: SCROLL_BOTTOM,
           }, Cmd.none];
         }
+        case "done":
+          return [{ ...model, streamDone: true }, Cmd.none];
+        case "error":
+          // Error bodies can be SSE data or plain JSON lines. Preserve
+          // the Gateway's own message for the terminal status handler.
+          return [{ ...model, failReason: event.message }, Cmd.none];
+      }
+    }
+    case "chat_done": {
+      if (model.phase !== "sending") return [model, Cmd.none];
+      if (model.failReason.length > 0) {
         return [{
           ...model,
-          turns: [...model.turns, { id: model.nextId, role: "assistant", text: content }],
-          nextId: model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991,
-          phase: "idle",
-          chatScrollTop: SCROLL_BOTTOM,
+          phase: "failed",
+          pendingReply: new Uint8Array(0),
+          streamDone: false,
         }, Cmd.none];
       }
-      // Any other status is a delivered response whose meaning is "the
-      // endpoint said no": surface its own error.message when the body
-      // carries one, the bare status line when it does not.
-      const message = parseErrorMessage(msg.body);
+      if (msg.status < 200 || msg.status >= 300) {
+        return [{
+          ...model,
+          phase: "failed",
+          failReason: asciiBytes(`Vercel AI Gateway answered HTTP ${msg.status}`),
+          pendingReply: new Uint8Array(0),
+          streamDone: false,
+        }, Cmd.none];
+      }
+      if (!model.streamDone) {
+        return [{
+          ...model,
+          phase: "failed",
+          failReason: asciiBytes("the response stream ended before [DONE]"),
+          pendingReply: new Uint8Array(0),
+        }, Cmd.none];
+      }
+      if (model.pendingReply.length === 0) {
+        return [{
+          ...model,
+          phase: "failed",
+          failReason: asciiBytes("the response stream produced no text"),
+          streamDone: false,
+        }, Cmd.none];
+      }
       return [{
         ...model,
-        phase: "failed",
-        failReason: message ?? asciiBytes(`the endpoint answered HTTP ${msg.status}`),
+        turns: [...model.turns, { id: model.nextId, role: "assistant", text: model.pendingReply }],
+        nextId: model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991,
+        phase: "idle",
+        pendingReply: new Uint8Array(0),
+        streamDone: false,
+        chatScrollTop: SCROLL_BOTTOM,
       }, Cmd.none];
     }
     case "chat_failed":
       // The transport reason is machine-readable (`timed_out`,
       // `connect_failed`, `truncated`, ...) — shown as-is, never silence.
-      return [{ ...model, phase: "failed", failReason: msg.reason }, Cmd.none];
+      if (model.phase !== "sending") return [model, Cmd.none];
+      return [{
+        ...model,
+        phase: "failed",
+        failReason: msg.reason,
+        pendingReply: new Uint8Array(0),
+        streamDone: false,
+      }, Cmd.none];
     case "chat_scrolled":
       // The controlled-scroll echo: the applied offset lands in the
       // model, so the next rebuild's `value` binding never fights the
       // runtime.
       return [{ ...model, chatScrollTop: msg.scroll.offsetY }, Cmd.none];
-    case "endpoint_set":
-      return [{ ...model, endpoint: msg.value }, Cmd.none];
     case "model_set":
       return [{ ...model, modelName: msg.value }, Cmd.none];
     case "key_set":

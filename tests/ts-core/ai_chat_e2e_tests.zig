@@ -1,30 +1,28 @@
 //! End-to-end proof battery for examples/ai-chat-ts — the "can I call an
-//! AI API?" answer as a real app: a chat client for an OpenAI-compatible
-//! chat-completions endpoint authored in TypeScript + Native markup with
+//! AI API?" answer as a real app: a streaming Vercel AI Gateway chat
+//! client authored in TypeScript + Native markup with
 //! ZERO hand-written Zig. The build compiles the example's REAL core through the external core compiler
 //! (examples/ai-chat-ts/src/core.ts + src/api.ts) and this suite drives
 //! it through `TsUiApp` with the example's SHIPPING markup (app.native,
 //! staged beside this file), so every pin here is the product path:
 //!
 //!   - the launch configuration rides the envMsgs channel, and the
-//!     teaching state holds (with ZERO fetches) until the endpoint, the
-//!     model name, AND the API key are all present;
+//!     teaching state holds (with ZERO fetches) until the model name and
+//!     API key are both present;
 //!   - a scripted two-turn conversation drives the whole loop through
 //!     the fake fetch feed: the composer's byte-splice text engine, the
-//!     Send press, the EXACT request bytes (method, the bare endpoint
-//!     url, the runtime-built `authorization: Bearer <key>` header plus
-//!     the content-type header, the JSON body — system prompt first,
-//!     history growing turn by turn), and the response parse into the
-//!     committed model;
+//!     Send press, the EXACT streaming request (the fixed Gateway URL,
+//!     runtime-built `authorization: Bearer <key>`, SSE accept header,
+//!     and JSON body — system prompt first, history growing turn by
+//!     turn), then asserts each SSE delta appears before the terminal;
 //!   - the in-flight guard: a second send while one request is out
 //!     issues nothing and loses nothing (the draft survives);
 //!   - every failure shape lands in the failed state with a reason and
-//!     KEEPS the history: a 500 with an error body (the endpoint's own
-//!     error.message surfaces), a 200 whose body does not parse, a bare
-//!     non-200, a transport failure — and Retry re-sends the same
-//!     conversation;
+//!     KEEPS the history: a 500 with an error line (the Gateway's own
+//!     error.message surfaces), a stream missing [DONE], a bare non-200,
+//!     a transport failure — and Retry re-sends the same conversation;
 //!   - a recorded conversation REPLAYS BYTE-IDENTICALLY with zero host
-//!     calls — no endpoint, no network in the room (the journaled fetch
+//!     calls — no network in the room (the journaled fetch
 //!     results feed the replayed requests), and with ZERO env reads:
 //!     the launch configuration is journaled (`.env` records) at record
 //!     time, so the replay launches with the variables UNSET and again
@@ -54,11 +52,11 @@ const CompiledAppView = canvas.CompiledMarkupView(core.Model, core.Msg, app_mark
 const canvas_label = "chat-canvas";
 
 /// The one fetch key's engine slot: the "chat" request is the first (and
-/// only) named engine op the core issues, so it takes bridge op slot 0,
+/// only) stream the core issues, so it takes stream-table slot 0,
 /// deterministically in issue order.
-const chat_fetch_key: u64 = runtime_ns.ts_core_effect_key_base + 0;
+const chat_fetch_key: u64 = runtime_ns.ts_core_spawn_key_base + 0;
 
-const test_endpoint = "http://chat.test/v1/chat/completions";
+const test_endpoint = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const test_model_name = "test-model";
 const test_api_key = "test-key";
 
@@ -105,7 +103,6 @@ fn appOptions() App.Options {
 
 /// The full launch configuration — every variable present.
 const configured_env = [_]Adapter.EnvValue{
-    .{ .msg = "endpoint_set", .value = test_endpoint },
     .{ .msg = "model_set", .value = test_model_name },
     .{ .msg = "key_set", .value = test_api_key },
 };
@@ -117,8 +114,8 @@ const Harness = struct {
     clock: native_sdk.TestClock,
 
     /// A configured app on the FAKE effects executor: fetch requests
-    /// park in fake slots for `feedResponse` answers instead of
-    /// reaching a network.
+    /// park in fake slots for scripted SSE lines and terminals instead
+    /// of reaching a network.
     fn create() !*Harness {
         return createConfigured(null, &configured_env);
     }
@@ -213,11 +210,26 @@ const Harness = struct {
         try self.click(self.findLabel("Send message").?);
     }
 
-    /// Answer the parked chat request with a scripted HTTP response and
-    /// drain the result into the core.
-    fn respond(self: *Harness, status: u16, body: []const u8) !void {
-        try self.app_state.effects.feedResponse(chat_fetch_key, status, body);
+    /// Deliver one complete response line and rebuild immediately —
+    /// this is the observable token-by-token path under test.
+    fn line(self: *Harness, bytes: []const u8) !void {
+        try self.app_state.effects.feedLine(chat_fetch_key, bytes);
         try self.wake();
+    }
+
+    /// Deliver the stream's terminal status (stream terminals have no
+    /// body) and rebuild.
+    fn finish(self: *Harness, status: u16) !void {
+        try self.app_state.effects.feedResponse(chat_fetch_key, status, "");
+        try self.wake();
+    }
+
+    /// Complete a normal one-delta Gateway response. Tests that assert
+    /// incremental rendering feed their own lines instead.
+    fn complete(self: *Harness, delta_line: []const u8) !void {
+        try self.line(delta_line);
+        try self.line("data: [DONE]");
+        try self.finish(200);
     }
 };
 
@@ -259,25 +271,24 @@ fn findWidgetByLabel(widget: canvas.Widget, label: []const u8) ?canvas.Widget {
 const first_request_body =
     "{\"model\":\"test-model\",\"messages\":[" ++
     "{\"role\":\"system\",\"content\":\"You are a helpful assistant inside a native desktop app. Answer concisely, in plain text.\"}," ++
-    "{\"role\":\"user\",\"content\":\"Say hi in two words\"}]}";
+    "{\"role\":\"user\",\"content\":\"Say hi in two words\"}],\"stream\":true}";
 const second_request_body =
     "{\"model\":\"test-model\",\"messages\":[" ++
     "{\"role\":\"system\",\"content\":\"You are a helpful assistant inside a native desktop app. Answer concisely, in plain text.\"}," ++
     "{\"role\":\"user\",\"content\":\"Say hi in two words\"}," ++
     "{\"role\":\"assistant\",\"content\":\"Hi there!\"}," ++
-    "{\"role\":\"user\",\"content\":\"Now say it in Zig \\\"strings\\\"\"}]}";
+    "{\"role\":\"user\",\"content\":\"Now say it in Zig \\\"strings\\\"\"}],\"stream\":true}";
 
 // ---------------------------------------------------- the teaching state
 
-test "the teaching state holds until every launch variable arrives - and issues zero fetches" {
-    // No variables at all: the setup panel teaches all three names.
+test "the teaching state holds until both launch variables arrive - and issues zero fetches" {
+    // No variables at all: the setup panel teaches both names.
     {
         const h = try Harness.createConfigured(null, &.{});
         defer h.destroy();
         try std.testing.expect(h.hasText("Connect a model"));
-        try std.testing.expect(h.hasText("NATIVE_SDK_CHAT_ENDPOINT"));
         try std.testing.expect(h.hasText("NATIVE_SDK_CHAT_MODEL"));
-        try std.testing.expect(h.hasText("NATIVE_SDK_CHAT_API_KEY"));
+        try std.testing.expect(h.hasText("AI_GATEWAY_API_KEY"));
         try std.testing.expect(h.hasText("no model configured"));
         // The composer does not exist in the teaching state, and even a
         // journaled send dispatch issues nothing.
@@ -286,19 +297,18 @@ test "the teaching state holds until every launch variable arrives - and issues 
         try std.testing.expectEqual(@as(usize, 0), h.app_state.effects.pendingFetchCount());
     }
 
-    // Endpoint and model present, the key EMPTY (the variable exists but
-    // holds nothing): still the teaching state, still zero fetches — an
-    // unkeyed app never dials the endpoint.
+    // Model present, the key EMPTY (the variable exists but holds
+    // nothing): still the teaching state, still zero fetches — an
+    // unkeyed app never dials the Gateway.
     {
         const partial_env = [_]Adapter.EnvValue{
-            .{ .msg = "endpoint_set", .value = test_endpoint },
             .{ .msg = "model_set", .value = test_model_name },
             .{ .msg = "key_set", .value = "" },
         };
         const h = try Harness.createConfigured(null, &partial_env);
         defer h.destroy();
         try std.testing.expect(h.hasText("Connect a model"));
-        // The two configured rows read "set"; the key row still teaches.
+        // The model row reads "set"; the key row still teaches.
         try std.testing.expect(h.hasText("set"));
         try std.testing.expect(h.hasText("missing"));
         try std.testing.expect(h.hasText(test_model_name));
@@ -348,7 +358,7 @@ fn collectTexts(widget: canvas.Widget, out: *std.ArrayListUnmanaged(u8), allocat
 
 // ------------------------------------------------------ the conversation
 
-test "a scripted conversation pins the exact request bytes, the parse, and the history growth" {
+test "a scripted conversation pins the Gateway request and renders each SSE delta before completion" {
     const h = try Harness.create();
     defer h.destroy();
     const fx = &h.app_state.effects;
@@ -359,21 +369,26 @@ test "a scripted conversation pins the exact request bytes, the parse, and the h
 
     // Type into the composer through the real text-input path (the
     // core's byte-splice engine) and send. The engine channel holds the
-    // request whole: POST, the bare configured endpoint, the
+    // request whole: POST, the fixed Vercel AI Gateway endpoint, the
     // runtime-built `authorization: Bearer <key>` header (header VALUES
-    // may be runtime bytes; the key never rides the URL) plus the JSON
-    // content-type header in name-sort order, and the byte-exact body.
+    // may be runtime bytes; the key never rides the URL), the SSE accept
+    // header and JSON content type in name-sort order, and the byte-exact
+    // body with `stream: true`.
     try h.say("Say hi in two words");
     try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
     const request = fx.pendingFetchAt(0).?;
     try std.testing.expectEqual(chat_fetch_key, request.key);
     try std.testing.expectEqual(std.http.Method.POST, request.method);
+    try std.testing.expectEqual(runtime_ns.FetchResponseMode.stream, request.response);
+    try std.testing.expectEqual(@as(usize, 65_536), request.max_line_bytes);
     try std.testing.expectEqualStrings(test_endpoint, request.url);
-    try std.testing.expectEqual(@as(usize, 2), request.headers.len);
-    try std.testing.expectEqualStrings("authorization", request.headers[0].name);
-    try std.testing.expectEqualStrings("Bearer " ++ test_api_key, request.headers[0].value);
-    try std.testing.expectEqualStrings("content-type", request.headers[1].name);
-    try std.testing.expectEqualStrings("application/json", request.headers[1].value);
+    try std.testing.expectEqual(@as(usize, 3), request.headers.len);
+    try std.testing.expectEqualStrings("accept", request.headers[0].name);
+    try std.testing.expectEqualStrings("text/event-stream", request.headers[0].value);
+    try std.testing.expectEqualStrings("authorization", request.headers[1].name);
+    try std.testing.expectEqualStrings("Bearer " ++ test_api_key, request.headers[1].value);
+    try std.testing.expectEqualStrings("content-type", request.headers[2].name);
+    try std.testing.expectEqualStrings("application/json", request.headers[2].value);
     try std.testing.expectEqualStrings(first_request_body, request.body);
 
     // The optimistic model: the user turn committed, the draft cleared,
@@ -387,11 +402,25 @@ test "a scripted conversation pins the exact request bytes, the parse, and the h
         defer draft_arena.deinit();
         try std.testing.expectEqual(@as(usize, 0), Bridge.model().draftText(draft_arena.allocator()).len);
     }
-    try std.testing.expect(h.hasText("waiting for the model"));
+    try std.testing.expect(h.hasText("streaming from Vercel AI Gateway"));
+    try std.testing.expect(h.hasText("…"));
 
-    // The endpoint answers; the reply parses out of choices[0] (escapes
-    // decoded) and joins the history as the assistant turn.
-    try h.respond(200, "{ \"id\": \"c-1\", \"object\": \"chat.completion\", \"choices\": [ { \"index\": 0, \"message\": { \"role\": \"assistant\", \"content\": \"Hi there!\" }, \"finish_reason\": \"stop\" } ], \"usage\": { \"total_tokens\": 7 } }");
+    // A role-only chunk is a valid no-op. Then each content delta lands
+    // in committed pendingReply and is visible BEFORE [DONE] or the HTTP
+    // terminal — this is the behavior an AI chat UI needs.
+    try h.line("data: {\"id\":\"c-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}");
+    try std.testing.expectEqualStrings("", Bridge.model().pendingReply);
+    try h.line("data: {\"id\":\"c-1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hi \"}}]}");
+    try std.testing.expect(Bridge.model().phase == .sending);
+    try std.testing.expectEqualStrings("Hi ", Bridge.model().pendingReply);
+    try std.testing.expect(h.hasText("Hi "));
+    try h.line("data:{\"choices\":[{\"delta\":{\"content\":\"there!\"},\"finish_reason\":\"stop\"}]}\r");
+    try std.testing.expectEqualStrings("Hi there!", Bridge.model().pendingReply);
+    try std.testing.expect(h.hasText("Hi there!"));
+    try h.line("data: [DONE]");
+    try std.testing.expect(Bridge.model().phase == .sending);
+    try std.testing.expect(Bridge.model().streamDone);
+    try h.finish(200);
     try std.testing.expect(Bridge.model().phase == .idle);
     try std.testing.expectEqual(@as(usize, 2), Bridge.model().turns.len);
     try std.testing.expect(Bridge.model().turns[1].role == .assistant);
@@ -404,9 +433,9 @@ test "a scripted conversation pins the exact request bytes, the parse, and the h
     try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
     try std.testing.expectEqualStrings(second_request_body, fx.pendingFetchAt(0).?.body);
 
-    // A reply whose content carries JSON escapes decodes into real
-    // bytes: the \n and the \" land in the committed turn.
-    try h.respond(200, "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"const hi =\\n    \\\"hi\\\";\"}}]}");
+    // Deltas whose content carries JSON escapes decode into real bytes:
+    // the \n and the \" land in the committed turn after [DONE].
+    try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"const hi =\\n    \\\"hi\\\";\"}}]}");
     try std.testing.expectEqual(@as(usize, 4), Bridge.model().turns.len);
     try std.testing.expectEqualStrings("const hi =\n    \"hi\";", Bridge.model().turns[3].text);
 }
@@ -439,11 +468,11 @@ test "the in-flight guard: a second send issues nothing and loses nothing" {
 
     // The reply lands and the guard lifts: the surviving draft sends
     // through the journaled command path.
-    try h.respond(200, "{\"choices\":[{\"message\":{\"content\":\"answer\"}}]}");
+    try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}");
     try std.testing.expectEqual(@as(usize, 2), Bridge.model().turns.len);
     try h.menu("chat.send");
     try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
-    try h.respond(200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}");
+    try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}");
     try std.testing.expectEqual(@as(usize, 4), Bridge.model().turns.len);
     try h.click(h.findLabel("Message").?);
     try h.textInput("   ");
@@ -459,10 +488,11 @@ test "every failure shape lands in the failed state with a reason and keeps the 
     defer h.destroy();
     const fx = &h.app_state.effects;
 
-    // A 500 with a chat-completions error body: the endpoint's own
+    // A 500 with a chat-completions error line: the Gateway's own
     // error.message surfaces, and the unanswered user turn stays.
     try h.say("hello?");
-    try h.respond(500, "{ \"error\": { \"message\": \"model overloaded\", \"type\": \"server_error\" } }");
+    try h.line("{ \"error\": { \"message\": \"model overloaded\", \"type\": \"server_error\" } }");
+    try h.finish(500);
     try std.testing.expect(Bridge.model().phase == .failed);
     try std.testing.expectEqualStrings("model overloaded", Bridge.model().failReason);
     try std.testing.expectEqual(@as(usize, 1), Bridge.model().turns.len);
@@ -476,23 +506,25 @@ test "every failure shape lands in the failed state with a reason and keeps the 
     try std.testing.expect(Bridge.model().phase == .sending);
     try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
     try std.testing.expectEqual(@as(usize, 1), Bridge.model().turns.len);
-    try h.respond(200, "{\"choices\":[{\"message\":{\"content\":\"hi\"}}]}");
+    try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}");
     try std.testing.expect(Bridge.model().phase == .idle);
     try std.testing.expectEqual(@as(usize, 2), Bridge.model().turns.len);
 
-    // A 200 whose body is not a chat completion is failed, never a
-    // half-parsed conversation.
+    // A 200 stream that ends without the protocol's [DONE] marker is
+    // failed, never a silently accepted partial conversation.
     try h.say("again");
-    try h.respond(200, "<html>gateway error</html>");
+    try h.line("<html>gateway error</html>");
+    try h.finish(200);
     try std.testing.expect(Bridge.model().phase == .failed);
-    try std.testing.expectEqualStrings("the response did not parse as a chat completion", Bridge.model().failReason);
+    try std.testing.expectEqualStrings("the response stream ended before [DONE]", Bridge.model().failReason);
     try std.testing.expectEqual(@as(usize, 3), Bridge.model().turns.len);
 
     // A non-200 without an error body reads as its status line.
     try h.click(h.findLabel("Retry request").?);
-    try h.respond(404, "not found");
+    try h.line("not found");
+    try h.finish(404);
     try std.testing.expect(Bridge.model().phase == .failed);
-    try std.testing.expectEqualStrings("the endpoint answered HTTP 404", Bridge.model().failReason);
+    try std.testing.expectEqualStrings("Vercel AI Gateway answered HTTP 404", Bridge.model().failReason);
 
     // A transport failure surfaces the engine's machine-readable reason.
     try h.click(h.findLabel("Retry request").?);
@@ -575,7 +607,7 @@ fn recordSession(buffer: *JournalBuffer) !ChatSnapshot {
     try h.harness.runtime.dispatchPlatformEvent(h.app, .frame_requested);
     try h.menu("chat.say.one");
     try h.menu("chat.send");
-    try h.respond(200, "{\"choices\":[{\"message\":{\"content\":\"Hi there!\"}}]}");
+    try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"Hi there!\"}}]}");
     try h.harness.runtime.dispatchPlatformEvent(h.app, .frame_requested);
 
     // A transport failure and its retry are part of the recorded truth.
@@ -584,7 +616,7 @@ fn recordSession(buffer: *JournalBuffer) !ChatSnapshot {
     try h.app_state.effects.feedResponseOutcome(chat_fetch_key, .timed_out, 0, "");
     try h.wake();
     try h.menu("chat.retry");
-    try h.respond(200, "{\"choices\":[{\"message\":{\"content\":\"Certainly.\"}}]}");
+    try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"Certainly.\"}}]}");
     try h.harness.runtime.dispatchPlatformEvent(h.app, .frame_requested);
 
     recorder.finish();
@@ -631,7 +663,7 @@ test "a recorded conversation replays byte-identically with zero host calls" {
 
     // Replay into a fresh app with the variables UNSET: the journaled
     // fetch results feed the re-issued (parked) requests in recorded
-    // order — no endpoint, no network, no host calls — and the launch
+    // order — no network and no host calls — and the launch
     // configuration feeds from the journal's `.env` records, so replay
     // performs ZERO env reads. A machine with none of the variables set
     // replays the recorded conversation byte-identically.
@@ -639,29 +671,27 @@ test "a recorded conversation replays byte-identically with zero host calls" {
         const report = try replayWithEnv(buffer.journalBytes(), &.{});
         try std.testing.expect(report.ok());
         try std.testing.expect(report.events_replayed > 0);
-        // The journaled effect results are the three fetch answers (two
-        // successes and the timeout) plus the three env deliveries.
-        try std.testing.expectEqual(@as(u64, 6), report.effects_fed);
+        // Each success is a delta line, [DONE], and terminal; add the
+        // timeout plus the two env deliveries.
+        try std.testing.expectEqual(@as(u64, 9), report.effects_fed);
         try std.testing.expectEqualDeep(recorded, ChatSnapshot.take());
     }
 
     // Replay again with the variables CHANGED at replay launch: the
-    // journaled values still win (the recorded endpoint/model/key drive
+    // journaled values still win (the recorded model/key drive
     // the replay, never the replay launch's environment) — the recorded
     // truth is immune to the machine it replays on.
     {
         const changed_env = [_]Adapter.EnvValue{
-            .{ .msg = "endpoint_set", .value = "http://other.test/v2/chat" },
             .{ .msg = "model_set", .value = "other-model" },
             .{ .msg = "key_set", .value = "other-key" },
         };
         const report = try replayWithEnv(buffer.journalBytes(), &changed_env);
         try std.testing.expect(report.ok());
-        try std.testing.expectEqual(@as(u64, 6), report.effects_fed);
+        try std.testing.expectEqual(@as(u64, 9), report.effects_fed);
         try std.testing.expectEqualDeep(recorded, ChatSnapshot.take());
         // The recorded configuration, not the changed launch's, is the
         // replayed model's.
         try std.testing.expectEqualStrings(test_model_name, Bridge.model().modelName);
-        try std.testing.expectEqualStrings(test_endpoint, Bridge.model().endpoint);
     }
 }

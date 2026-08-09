@@ -126,7 +126,7 @@ Cmd.fetch(
 
 `chat_event` carries one `Uint8Array` field for each complete SSE/NDJSON line; parse its `data:` payload and append the delta to the assistant message in the Model. `chat_done` carries one number field with the terminal HTTP status. Cancellation and transport failures reach `chat_failed` as reason bytes, including `cancelled`, so a partially displayed answer never ends silently.
 
-The flagship [`examples/ai-chat-ts`](https://github.com/vercel-labs/native/tree/main/examples/ai-chat-ts) keeps the buffered overload to demonstrate whole-response JSON parsing and single-result replay: conversation history in the Model, endpoint and credentials through the env channel, and a runtime-built `Authorization: Bearer` header, with an end-to-end suite that pins the request and replays it without network or launch variables. Streaming is an app-level choice, not a different core language or runtime.
+The flagship [`examples/ai-chat-ts`](https://github.com/vercel-labs/native/tree/main/examples/ai-chat-ts) uses that streaming shape against Vercel AI Gateway: the Gateway URL is fixed, the model and `AI_GATEWAY_API_KEY` arrive through the env channel, and every `choices[0].delta.content` extends the visible pending assistant reply before `[DONE]` and the terminal status commit it to history. Its end-to-end suite pins the request, observes partial UI updates, and replays every stream line without network or launch variables.
 
 ## Full npm ecosystem UIs
 

@@ -3,9 +3,10 @@
      bind verbatim). The
      header carries the model badge and Clear, the conversation is a
      controlled scroll of role bubbles (user right/accent, assistant
-     left/surface) with honest sending and failed rows, and the composer
+     left/surface) with an assistant bubble that grows as SSE deltas
+     arrive, honest sending and failed rows, and the composer
      is a text-field on the core's byte-splice engine — Enter and the
-     Send button dispatch the same `send` arm. Until the three launch
+     Send button dispatch the same `send` arm. Until the two launch
      variables arrive through the env channel, the teaching panel
      explains the setup and the app issues zero requests. -->
 <column background="background">
@@ -14,29 +15,19 @@
     <badge variant="secondary">{modelLabel}</badge>
     <spacer grow="1" />
     <if test="{sending}">
-      <text size="sm" foreground="text_muted">waiting for the model…</text>
+      <text size="sm" foreground="text_muted">streaming from Vercel AI Gateway…</text>
     </if>
     <button size="sm" variant="ghost" icon="trash" disabled="{clearDisabled}" on-press="clear" label="Clear conversation">Clear</button>
   </row>
   <separator />
   <if test="{unconfigured}">
-    <!-- The teaching state: no endpoint is baked in and no request ever
-         leaves an unconfigured app — the panel names exactly what is
-         missing. -->
+    <!-- The teaching state: no request ever leaves an unconfigured app
+         — the panel names exactly what is missing. -->
     <column grow="1" padding="24" main="center" cross="center" label="Setup">
       <panel padding="24" background="surface" radius="lg" width="520" label="Connect a model">
         <column gap="12">
           <text><span weight="bold">Connect a model</span></text>
-          <text size="sm" foreground="text_muted">This app talks to an OpenAI-compatible chat-completions endpoint. Set all three variables and relaunch — the core reads them once, at install, through the env channel.</text>
-          <row gap="8" cross="center">
-            <text size="sm" grow="1">NATIVE_SDK_CHAT_ENDPOINT</text>
-            <if test="{endpointMissing}">
-              <text size="sm" foreground="destructive">missing</text>
-            </if>
-            <else>
-              <text size="sm" foreground="success">set</text>
-            </else>
-          </row>
+          <text size="sm" foreground="text_muted">This app streams OpenAI-compatible chat completions from Vercel AI Gateway. Set both variables and relaunch — the core receives them once, at install, through the env channel.</text>
           <row gap="8" cross="center">
             <text size="sm" grow="1">NATIVE_SDK_CHAT_MODEL</text>
             <if test="{modelMissing}">
@@ -47,7 +38,7 @@
             </else>
           </row>
           <row gap="8" cross="center">
-            <text size="sm" grow="1">NATIVE_SDK_CHAT_API_KEY</text>
+            <text size="sm" grow="1">AI_GATEWAY_API_KEY</text>
             <if test="{keyMissing}">
               <text size="sm" foreground="destructive">missing</text>
             </if>
@@ -55,7 +46,7 @@
               <text size="sm" foreground="success">set</text>
             </else>
           </row>
-          <text size="sm" foreground="text_muted">The README shows the full setup, including local OpenAI-compatible runtimes.</text>
+          <text size="sm" foreground="text_muted">Use a creator/model id from the Gateway model catalog. The README shows the full setup.</text>
         </column>
       </panel>
     </column>
@@ -67,7 +58,7 @@
           <panel padding="24" background="surface" radius="lg" label="Empty conversation">
             <column gap="6">
               <text>Ask anything</text>
-              <text size="sm" foreground="text_muted">The reply arrives whole — responses are buffered in v1, not streamed.</text>
+              <text size="sm" foreground="text_muted">Replies stream token by token through Vercel AI Gateway.</text>
             </column>
           </panel>
         </if>
@@ -92,7 +83,12 @@
         <if test="{sending}">
           <row gap="8" label="Reply pending">
             <panel padding="12" background="surface" radius="lg">
-              <text foreground="text_muted">…</text>
+              <if test="{waitingForFirstToken}">
+                <text foreground="text_muted">…</text>
+              </if>
+              <else>
+                <text wrap="true">{pendingReplyLabel}</text>
+              </else>
             </panel>
             <spacer grow="1" min-width="64" />
           </row>

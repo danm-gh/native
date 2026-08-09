@@ -1,12 +1,10 @@
-// ai-chat-ts api module: the OpenAI-compatible chat-completions wire
-// format in pure subset TypeScript over bytes — request encoding on the
-// way out, response parsing on the way back. No JSON runtime exists in a
-// core (the binary carries no JS engine), and none is needed: the request
-// is a byte concatenation with one escape routine, and the response walk
-// reads exactly the two fields the app uses (`choices[0].message.content`
-// on success, `error.message` on failure) and refuses everything
-// malformed with `null` — a body that does not parse is a failed request,
-// never a half-parsed conversation.
+// ai-chat-ts api module: the Vercel AI Gateway's OpenAI-compatible
+// chat-completions wire format in pure subset TypeScript over bytes —
+// request encoding on the way out, SSE parsing on the way back. No JSON
+// runtime exists in a core (the binary carries no JS engine), and none is
+// needed: the request is byte concatenation with one escape routine, and
+// each response-line walk reads exactly the fields the app uses
+// (`choices[0].delta.content` or `error.message`).
 //
 // Everything here is deterministic byte math, which is what makes the
 // announcement trick work: the exact request bytes are pinned in the e2e
@@ -27,6 +25,15 @@ export interface Turn {
   readonly text: Bytes;
 }
 
+/// The only four meanings the chat UI needs from one response line.
+/// Role-only and finish-reason chunks are valid but carry no visible
+/// text, so they are deliberately `ignore` rather than parse failures.
+export type ChatStreamEvent =
+  | { readonly kind: "ignore" }
+  | { readonly kind: "delta"; readonly text: Bytes }
+  | { readonly kind: "done" }
+  | { readonly kind: "error"; readonly message: Bytes };
+
 /// How deep a response's nesting may go before the scanner refuses it —
 /// a bound on recursion, not on honest responses (a chat-completions
 /// body nests four levels).
@@ -35,8 +42,9 @@ const MAX_JSON_DEPTH = 64;
 // ------------------------------------------------------------- request
 
 /// The chat-completions request body:
-/// `{"model":…,"messages":[{"role":"system","content":…},…]}` with the
-/// system prompt first and every conversation turn after it, in order.
+/// `{"model":…,"messages":[{"role":"system","content":…},…],"stream":true}`
+/// with the system prompt first and every conversation turn after it, in
+/// order. `stream: true` selects the Gateway's SSE response.
 /// The caller supplies the model name from the launch environment; the
 /// turns are the Model's history including the just-appended user turn.
 /// Helpers RETURN their bytes and this one builder assembles them in a
@@ -51,7 +59,7 @@ export function encodeChatRequest(modelName: Bytes, systemPrompt: Bytes, turns: 
     jsonString(systemPrompt),
     asciiBytes("}"),
     ...turns.map((turn) => encodeTurn(turn)),
-    asciiBytes("]}"),
+    asciiBytes('],"stream":true}'),
   ]);
 }
 
@@ -149,11 +157,42 @@ export function bearerToken(apiKey: Bytes): Bytes {
 
 // ------------------------------------------------------------ response
 
-/// `choices[0].message.content` from a chat-completions success body, or
-/// null when the body is not that shape (malformed JSON, empty choices,
-/// a non-string content) — the caller turns null into the failed state.
-export function parseChatContent(body: Bytes): Bytes | null {
-  let at = skipWs(body, 0);
+/// Parse one complete response line from the Gateway. Successful
+/// chat-completions streams are SSE (`data: <json>` and `data: [DONE]`).
+/// A non-2xx response can instead arrive as a plain one-line JSON error,
+/// so the error parser also checks the raw line.
+export function parseChatStreamLine(line: Bytes): ChatStreamEvent {
+  const payload = sseData(line);
+  if (payload === null) {
+    const rawError = parseErrorMessage(line);
+    return rawError === null ? { kind: "ignore" } : { kind: "error", message: rawError };
+  }
+  if (bytesEqual(payload, asciiBytes("[DONE]"))) return { kind: "done" };
+  const error = parseErrorMessage(payload);
+  if (error !== null) return { kind: "error", message: error };
+  const delta = parseChatDelta(payload);
+  return delta === null ? { kind: "ignore" } : { kind: "delta", text: delta };
+}
+
+/// The bytes after an SSE `data:` field, with the optional one space and
+/// a trailing CR removed. Other SSE fields and blank separator lines are
+/// not chat payloads.
+function sseData(line: Bytes): Bytes | null {
+  if (line.length < 5) return null;
+  if (line[0] !== 0x64 || line[1] !== 0x61 || line[2] !== 0x74 || line[3] !== 0x61 || line[4] !== 0x3a) {
+    return null;
+  }
+  let start = 5;
+  if (start < line.length && line[start] === 0x20) start += 1;
+  let end = line.length;
+  if (end > start && line[end - 1] === 0x0d) end -= 1;
+  return line.slice(start, end);
+}
+
+/// `choices[0].delta.content` from one OpenAI-compatible stream event,
+/// or null when this chunk carries no visible content.
+function parseChatDelta(body: Bytes): Bytes | null {
+  const at = skipWs(body, 0);
   if (at >= body.length || body[at] !== 0x7b) return null; // {
   const choicesAt = memberValue(body, at, asciiBytes("choices"));
   if (choicesAt === -1) return null;
@@ -162,9 +201,9 @@ export function parseChatContent(body: Bytes): Bytes | null {
   cursor = skipWs(body, cursor + 1);
   if (cursor >= body.length || body[cursor] === 0x5d) return null; // empty choices
   if (body[cursor] !== 0x7b) return null;
-  const messageAt = memberValue(body, cursor, asciiBytes("message"));
-  if (messageAt === -1) return null;
-  cursor = skipWs(body, messageAt);
+  const deltaAt = memberValue(body, cursor, asciiBytes("delta"));
+  if (deltaAt === -1) return null;
+  cursor = skipWs(body, deltaAt);
   if (cursor >= body.length || body[cursor] !== 0x7b) return null;
   const contentAt = memberValue(body, cursor, asciiBytes("content"));
   if (contentAt === -1) return null;
@@ -226,6 +265,14 @@ function bytesEqualRange(b: Bytes, start: number, end: number, key: Bytes): bool
   if (end - start !== key.length) return false;
   for (let i = 0; i < key.length; i++) {
     if (b[start + i] !== key[i]) return false;
+  }
+  return true;
+}
+
+function bytesEqual(left: Bytes, right: Bytes): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
   }
   return true;
 }

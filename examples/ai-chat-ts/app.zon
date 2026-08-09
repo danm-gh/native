@@ -2,12 +2,12 @@
     .id = "dev.native_sdk.ai_chat_ts",
     .name = "ai-chat-ts",
     .display_name = "AI Chat TS",
-    .description = "A chat client for an OpenAI-compatible endpoint, authored entirely in TypeScript + Native markup.",
+    .description = "A streaming Vercel AI Gateway chat client, authored entirely in TypeScript + Native markup.",
     .version = "0.1.0",
     .platforms = .{"macos"},
     // The network permission covers the one effect the app performs:
-    // the `Cmd.fetch` exchange with the configured chat-completions
-    // endpoint. Nothing else leaves the process.
+    // the streaming `Cmd.fetch` exchange with Vercel AI Gateway's fixed
+    // chat-completions endpoint. Nothing else leaves the process.
     .permissions = .{ "view", "network" },
     .capabilities = .{ "native_views", "gpu_surfaces" },
     // The stock theme pack, composed with the live system appearance —

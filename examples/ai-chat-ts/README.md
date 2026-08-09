@@ -1,33 +1,31 @@
 # Native SDK ai-chat-ts example
 
-A chat client for an OpenAI-compatible chat-completions endpoint, authored entirely in **TypeScript + Native markup**. Zero Zig: the logic tier is the app-core subset under `src/`, compiled to native code at build time; `src/app.native` is the whole view tier and `app.zon` the manifest. The build detects `src/core.ts` in the tree and stages the wiring itself; no JS runtime ships in the binary.
+A streaming chat client for [Vercel AI Gateway](https://vercel.com/docs/ai-gateway), authored entirely in **TypeScript + Native markup**. Zero Zig: the logic tier is the app-core subset under `src/`, compiled to native code at build time; `src/app.native` is the whole view tier and `app.zon` the manifest. The build detects `src/core.ts` in the tree and stages the wiring itself; no JS runtime ships in the binary.
 
-This is the reference answer to "can a TypeScript core call an AI API?": the network surface is one `Cmd.fetch` with a real `Authorization: Bearer <key>` header built at runtime from the launch environment, the JSON wire format is pure byte math in the subset, and because the whole exchange is effect data, a recorded conversation **replays byte-identically with zero network and zero env reads** — the e2e suite pins the exact request bytes and replays a two-turn conversation, transport failure and retry included, with no endpoint in the room and none of the launch variables set.
+This is the reference answer to "can a TypeScript core stream an AI API?": the network surface is one line-routed `Cmd.fetch` to `https://ai-gateway.vercel.sh/v1/chat/completions`, with `stream: true`, `Accept: text/event-stream`, and a real `Authorization: Bearer <key>` header built at runtime. Each SSE `data:` line is an ordinary Msg; `choices[0].delta.content` is appended to committed Model state and repaints the assistant bubble immediately. The JSON/SSE wire format is pure byte math in the subset, and because the whole exchange is effect data, a recorded conversation **replays byte-identically with zero network and zero env reads** — including every partial reply.
 
 The core is two modules plus one SDK library:
 
-- `src/core.ts` — the entry module: Model (the conversation, the composer, the request phase, the launch configuration), Msg, update, the env channel, and every exported binding helper.
-- `src/api.ts` — the chat-completions wire format over bytes: request encoding (JSON escaping included) and response parsing (`choices[0].message.content` on success, `error.message` on failure; anything malformed is `null`, never a half-parsed conversation).
+- `src/core.ts` — the entry module: Model (completed history, the in-progress assistant reply, the composer, the request phase, and launch configuration), Msg, update, the env channel, and every exported binding helper.
+- `src/api.ts` — the Gateway chat-completions wire format over bytes: request encoding (JSON escaping included) and SSE parsing (`choices[0].delta.content`, `[DONE]`, and `error.message`).
 - `@native-sdk/core/text` — the SDK's byte-splice text engine, compiled in for the composer's caret/selection/IME fidelity.
 
 ```sh
-NATIVE_SDK_CHAT_ENDPOINT="http://127.0.0.1:11434/v1/chat/completions" \
-NATIVE_SDK_CHAT_MODEL="<your model name>" \
-NATIVE_SDK_CHAT_API_KEY="local" \
+NATIVE_SDK_CHAT_MODEL="<creator/model>" \
+AI_GATEWAY_API_KEY="<your Vercel AI Gateway key>" \
 native dev                                    # run the real app
 native dev --core --script dev-script.ndjson  # the core-logic loop under node - no renderer, no network
 native check                                  # subset-check the core's import graph + markup + app.zon
 ```
 
-The end-to-end proof battery lives in the SDK repo (`tests/ts-core/ai_chat_e2e_tests.zig`, run by `zig build test-ts-core-e2e`): it drives this example's real core and shipping markup headlessly through the teaching state (zero fetches without configuration), a scripted conversation with the request bytes pinned (`Authorization` header included), the in-flight guard, every failure shape, and record→replay with the launch variables unset and changed.
+The end-to-end proof battery lives in the SDK repo (`tests/ts-core/ai_chat_e2e_tests.zig`, run by `zig build test-ts-core-e2e`): it drives this example's real core and shipping markup headlessly through the teaching state (zero fetches without configuration), a scripted conversation with the Gateway request bytes pinned, partial text asserted before the terminal, the in-flight guard, every failure shape, and record→replay with the launch variables unset and changed.
 
 ## Configuration: the env channel
 
-The endpoint, model, and key arrive through the core's `envMsgs` channel — one journaled Msg per variable at install. The core never reads the environment (that would break determinism), **no endpoint is baked in, and no key exists anywhere in this tree**: until all three variables are present and non-empty, the app shows a setup panel naming exactly what is missing and issues zero requests.
+The model and key arrive through the core's `envMsgs` channel — one journaled Msg per variable at install. The core never reads the environment (that would break determinism). The Vercel AI Gateway Chat Completions endpoint is intentionally fixed and reviewable in `src/core.ts`; **no key exists anywhere in this tree**. Until both variables are present and non-empty, the app shows a setup panel and issues zero requests.
 
-- **`NATIVE_SDK_CHAT_ENDPOINT`** — the full chat-completions URL (for a local runtime, typically `http://127.0.0.1:<port>/v1/chat/completions`).
-- **`NATIVE_SDK_CHAT_MODEL`** — the model name the endpoint expects in the request body.
-- **`NATIVE_SDK_CHAT_API_KEY`** — the bearer token, sent as a standard `Authorization: Bearer <key>` header. Local OpenAI-compatible runtimes ignore auth; any placeholder satisfies the guard.
+- **`NATIVE_SDK_CHAT_MODEL`** — a Gateway `creator/model` id from the [model catalog](https://vercel.com/ai-gateway/models).
+- **`AI_GATEWAY_API_KEY`** — a Vercel AI Gateway API key, sent as the standard `Authorization: Bearer <key>` header.
 
 Record/replay journals these deliveries: a session recorded with the variables set replays byte-identically on a machine where they are unset or different — the recorded values feed from the journal, and replay never reads the environment.
 
@@ -35,10 +33,11 @@ Record/replay journals these deliveries: a session recorded with the variables s
 
 Every line below is a decided posture, listed on purpose:
 
-- **This example chooses a whole reply.** `Cmd.fetch` supports both buffered `{ status, body }` results and line-streamed SSE/NDJSON through `{ line, ok, err }` routing. This example deliberately uses the buffered overload to exercise whole-response JSON parsing and one-result replay; an AI chat UI that wants token-by-token updates can route each SSE line into a Msg and append its delta to the pending assistant message.
-- **A failed request keeps the conversation.** Every failure shape — a non-200 status (the endpoint's own `error.message` surfaces when the body carries one), a 200 whose body does not parse, a transport failure with its machine-readable reason — lands in one failed state with the history intact and a Retry that re-sends the same conversation.
+- **Replies really stream.** `Cmd.fetch` routes every complete SSE line through `chat_line`; the core decodes `choices[0].delta.content`, appends it to `pendingReply`, and the markup displays that field while the request is live. `[DONE]` plus a 2xx terminal commits the completed assistant turn.
+- **A failed request keeps the conversation.** Every failure shape — a non-2xx status (the Gateway's own `error.message` surfaces when a response line carries one), a 2xx stream missing `[DONE]`, a textless completion, or a transport failure — lands in one failed state. Partial assistant text is discarded; the unanswered user turn stays, and Retry re-sends the same history.
 - **One request in flight, by construction.** `phase === "sending"` guards every send path in update (the Send button binds the same guard), and the `"chat"` effect key would reject a duplicate at the engine even if update misbehaved. A send blocked by the guard loses nothing — the draft survives.
 - **Long conversations eventually hit the request bound.** The engine's fetch body bound is 64 KiB; a conversation that outgrows it is rejected by the engine at runtime and lands in the failed state with a reason. Clear starts fresh. (History trimming/summarizing is app policy, deliberately not built in here.)
+- **One streamed reply is capped at 256 KiB.** Crossing the cap cancels the live request, reports the failure, and keeps the unanswered user turn. Individual protocol lines use a 64 KiB bound.
 - **The conversation is not persisted.** The Model is the session; `Cmd.writeFile` + a boot-time `Cmd.readFile` is the standard persistence pattern when an app wants history across launches.
 - **Desktop only.** TypeScript cores build desktop apps today.
 - **The encoder's helpers return byte arrays instead of appending to a shared buffer.** Local mutation ends at the first escape — an array passed to another function is no longer yours to mutate (the NS1051 "mutates after the array escaped" rule) — so `encodeChatRequest` assembles the request from values its helpers return, in one literal, rather than handing a parts buffer around between pushes.

@@ -55,6 +55,7 @@ export type Msg =
   | { readonly kind: "start_recording" }
   | { readonly kind: "stop_recording" }
   | { readonly kind: "retry_save" }
+  | { readonly kind: "save_stamp"; readonly savedAtMs: number }
   | { readonly kind: "saved" }
   | { readonly kind: "save_failed"; readonly reason: Uint8Array }
   | { readonly kind: "play_memo"; readonly memoId: number }
@@ -87,6 +88,7 @@ export const viewUnbound = [
   "data_dir_set",
   "capture_event",
   "audio_event",
+  "save_stamp",
   "saved",
   "save_failed",
   "chunks",
@@ -138,8 +140,8 @@ export function initialModel(): Model {
   };
 }
 
-function memoPath(dataDir: Uint8Array, id: number): Uint8Array {
-  const suffix = asciiBytes(`/recordings/voice-memo-${id}.wav`);
+function memoPath(dataDir: Uint8Array, savedAtMs: number, id: number): Uint8Array {
+  const suffix = asciiBytes(`/recordings/voice-memo-${savedAtMs}-${id}.wav`);
   const out = new Uint8Array(dataDir.length + suffix.length);
   out.set(dataDir, 0);
   out.set(suffix, dataDir.length);
@@ -247,6 +249,7 @@ export function elapsedLabel(model: Model): Uint8Array {
 }
 
 export function phaseLabel(model: Model): Uint8Array {
+  if (model.starting && model.captureSource === "system") return asciiBytes("Opening system audio...");
   if (model.starting) return asciiBytes("Opening microphone...");
   if (model.recording) return asciiBytes("Recording");
   if (model.stopping) return asciiBytes("Finishing audio...");
@@ -466,11 +469,36 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           failed: true,
         }, Cmd.none];
       }
-      const id = model.nextMemoId;
       if (model.dataDir.length === 0) {
         return [{ ...model, stopping: false, failed: true }, Cmd.none];
       }
-      const path = memoPath(model.dataDir, id);
+      return [
+        {
+          ...model,
+          starting: false,
+          recording: false,
+          stopping: false,
+          saving: true,
+          saved: false,
+          failed: false,
+          pendingSave: null,
+        },
+        // A journaled wall-clock stamp makes the durable filename unique
+        // across launches even though the in-memory display counter resets.
+        Cmd.now("save_stamp"),
+      ];
+    }
+
+    case "save_stamp": {
+      if (!model.saving || model.pendingSave !== null || model.dataBytes === 0) {
+        return [model, Cmd.none];
+      }
+      const id = model.nextMemoId;
+      if (!(msg.savedAtMs >= 0 && msg.savedAtMs <= 9007199254740991)) {
+        return [{ ...model, saving: false, failed: true }, Cmd.none];
+      }
+      const savedAtMs = Math.trunc(msg.savedAtMs);
+      const path = memoPath(model.dataDir, savedAtMs, id);
       const pending: Memo = {
         id,
         title: model.captureSource === "system"
@@ -482,12 +510,6 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       };
       const saving: Model = {
         ...model,
-        starting: false,
-        recording: false,
-        stopping: false,
-        saving: true,
-        saved: false,
-        failed: false,
         pendingSave: pending,
       };
       return [

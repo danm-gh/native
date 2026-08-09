@@ -1665,6 +1665,10 @@ fn audioCaptureStart(context: ?*anyopaque, source: platform_mod.AudioCaptureSour
     const self: *WindowsPlatform = @ptrCast(@alignCast(context.?));
     if (self.web_engine != .system) return error.UnsupportedService;
     const stored = &self.audio_capture_sinks[@intFromEnum(source)];
+    // The native stop is a synchronous callback fence. Quiesce the old
+    // producer before replacing the memory its callback context points at;
+    // otherwise a final old-source callback can be delivered to the new sink.
+    _ = native_sdk_windows_audio_capture_stop(self.host, @intFromEnum(source));
     stored.* = sink;
     if (native_sdk_windows_audio_capture_start(self.host, @intFromEnum(source), format.sample_rate, format.channels, nativeSdkAudioCapturePush, stored) == 0) {
         stored.* = .{};

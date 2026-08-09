@@ -7269,7 +7269,13 @@ static BOOL NativeSdkScrollDriverCanConsumeHorizontally(NativeSdkScrollDriverVie
  * and ScreenCaptureKit normally hand us planar float PCM; the converter also
  * accepts interleaved float and signed-16 input, remixes mono/stereo, performs
  * linear sample-rate conversion, and emits <=20 ms signed-16 LE chunks. */
-@interface NativeSdkAudioCaptureTarget : NSObject
+@interface NativeSdkAudioCaptureTarget : NSObject {
+    double _resamplePosition;
+    double _resampleInputRate;
+    uint32_t _resampleInputChannels;
+    BOOL _resampleHasPrevious;
+    float _resamplePrevious[2];
+}
 @property(nonatomic, assign) int source;
 @property(nonatomic, assign) uint32_t sampleRate;
 @property(nonatomic, assign) uint8_t channels;
@@ -7304,6 +7310,18 @@ static float NativeSdkCaptureReadSample(const AudioBufferList *buffers, const Au
         return (float)((const int16_t *)buffer->mData)[sampleIndex] / 32768.0f;
     }
     return 0.0f;
+}
+
+static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, const AudioStreamBasicDescription *format, uint32_t frame, uint8_t outputChannels, uint32_t outputChannel) {
+    const uint32_t inputChannels = MAX(1u, format->mChannelsPerFrame);
+    if (outputChannels == 1) {
+        float sample = 0.0f;
+        for (uint32_t inputChannel = 0; inputChannel < inputChannels; inputChannel += 1) {
+            sample += NativeSdkCaptureReadSample(buffers, format, frame, inputChannel);
+        }
+        return sample / (float)inputChannels;
+    }
+    return NativeSdkCaptureReadSample(buffers, format, frame, MIN(outputChannel, inputChannels - 1));
 }
 
 @implementation NativeSdkAudioCaptureTarget
@@ -7359,44 +7377,72 @@ static float NativeSdkCaptureReadSample(const AudioBufferList *buffers, const Au
 - (void)consumeBufferList:(const AudioBufferList *)buffers format:(const AudioStreamBasicDescription *)format frames:(uint32_t)frames timestampNs:(uint64_t)timestampNs {
     if (!buffers || !format || frames == 0 || format->mSampleRate <= 0 || ![self beginPush]) return;
     const uint32_t inputChannels = MAX(1u, format->mChannelsPerFrame);
-    const uint32_t outputFrames = (uint32_t)MAX(1.0, floor((double)frames * (double)self.sampleRate / format->mSampleRate));
+    if (_resampleInputRate != format->mSampleRate || _resampleInputChannels != inputChannels) {
+        _resamplePosition = 0.0;
+        _resampleInputRate = format->mSampleRate;
+        _resampleInputChannels = inputChannels;
+        _resampleHasPrevious = NO;
+    }
+    const double step = format->mSampleRate / (double)self.sampleRate;
     const uint32_t chunkLimit = MAX(1u, self.sampleRate / 50u);
     int16_t output[1920];
-    uint32_t base = 0;
-    while (base < outputFrames) {
-        const uint32_t chunk = MIN(chunkLimit, outputFrames - base);
-        for (uint32_t outFrame = 0; outFrame < chunk; outFrame += 1) {
-            const double inputPosition = (double)(base + outFrame) * format->mSampleRate / (double)self.sampleRate;
-            uint32_t inputFrame = (uint32_t)floor(inputPosition);
-            if (inputFrame >= frames) inputFrame = frames - 1;
-            const uint32_t nextInputFrame = MIN(inputFrame + 1, frames - 1);
-            const float fraction = (float)(inputPosition - floor(inputPosition));
-            for (uint32_t outChannel = 0; outChannel < self.channels; outChannel += 1) {
-                float sample = 0.0f;
-                if (self.channels == 1) {
-                    for (uint32_t inputChannel = 0; inputChannel < inputChannels; inputChannel += 1) {
-                        const float first = NativeSdkCaptureReadSample(buffers, format, inputFrame, inputChannel);
-                        const float second = NativeSdkCaptureReadSample(buffers, format, nextInputFrame, inputChannel);
-                        sample += first + (second - first) * fraction;
-                    }
-                    sample /= (float)inputChannels;
-                } else {
-                    const uint32_t inputChannel = MIN(outChannel, inputChannels - 1);
-                    const float first = NativeSdkCaptureReadSample(buffers, format, inputFrame, inputChannel);
-                    const float second = NativeSdkCaptureReadSample(buffers, format, nextInputFrame, inputChannel);
-                    sample = first + (second - first) * fraction;
-                }
-                sample = fmaxf(-1.0f, fminf(1.0f, sample));
-                output[outFrame * self.channels + outChannel] = (int16_t)lrintf(sample * 32767.0f);
+    uint32_t chunkFrames = 0;
+    uint64_t emittedFrames = 0;
+    BOOL closed = NO;
+    while (_resamplePosition <= (double)frames - 1.0) {
+        const double flooredPosition = floor(_resamplePosition);
+        const int64_t inputFrame = (int64_t)flooredPosition;
+        const float fraction = (float)(_resamplePosition - flooredPosition);
+        if (inputFrame < 0 && !_resampleHasPrevious) {
+            _resamplePosition = 0.0;
+            continue;
+        }
+        // A fractional sample at the end needs the next callback's first
+        // frame. Defer it instead of repeating the current buffer's tail.
+        if (inputFrame >= 0 && inputFrame + 1 >= frames && fraction > 0.0000001f) break;
+
+        for (uint32_t outChannel = 0; outChannel < self.channels; outChannel += 1) {
+            const float first = inputFrame < 0
+                ? _resamplePrevious[outChannel]
+                : NativeSdkCaptureReadRemixedSample(buffers, format, (uint32_t)inputFrame, self.channels, outChannel);
+            const float second = inputFrame < 0
+                ? NativeSdkCaptureReadRemixedSample(buffers, format, 0, self.channels, outChannel)
+                : (inputFrame + 1 < frames
+                    ? NativeSdkCaptureReadRemixedSample(buffers, format, (uint32_t)(inputFrame + 1), self.channels, outChannel)
+                    : first);
+            float sample = first + (second - first) * fraction;
+            sample = fmaxf(-1.0f, fminf(1.0f, sample));
+            output[chunkFrames * self.channels + outChannel] = (int16_t)lrintf(sample * 32767.0f);
+        }
+        chunkFrames += 1;
+        _resamplePosition += step;
+
+        if (chunkFrames == chunkLimit) {
+            const size_t byteLen = (size_t)chunkFrames * self.channels * sizeof(int16_t);
+            const int result = self.pushFn ? self.pushFn(self.pushContext, 1, self.source,
+                self.sampleRate, self.channels, timestampNs + emittedFrames * NSEC_PER_SEC / self.sampleRate, chunkFrames,
+                (const uint8_t *)output, byteLen) : 1;
+            emittedFrames += chunkFrames;
+            chunkFrames = 0;
+            if (result == 1) {
+                [self markInactive];
+                closed = YES;
+                break;
             }
         }
-        const size_t byteLen = (size_t)chunk * self.channels * sizeof(int16_t);
-        const int result = self.pushFn ? self.pushFn(self.pushContext, 1, self.source,
-            self.sampleRate, self.channels, timestampNs + (uint64_t)base * NSEC_PER_SEC / self.sampleRate, chunk,
-            (const uint8_t *)output, byteLen) : 1;
-        if (result == 1) { [self markInactive]; break; }
-        base += chunk;
     }
+    if (!closed && chunkFrames > 0) {
+        const size_t byteLen = (size_t)chunkFrames * self.channels * sizeof(int16_t);
+        const int result = self.pushFn ? self.pushFn(self.pushContext, 1, self.source,
+            self.sampleRate, self.channels, timestampNs + emittedFrames * NSEC_PER_SEC / self.sampleRate, chunkFrames,
+            (const uint8_t *)output, byteLen) : 1;
+        if (result == 1) [self markInactive];
+    }
+    _resamplePosition -= frames;
+    for (uint32_t outChannel = 0; outChannel < self.channels; outChannel += 1) {
+        _resamplePrevious[outChannel] = NativeSdkCaptureReadRemixedSample(buffers, format, frames - 1, self.channels, outChannel);
+    }
+    _resampleHasPrevious = YES;
     [self endPush];
 }
 @end

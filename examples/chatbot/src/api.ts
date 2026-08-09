@@ -41,6 +41,13 @@ const MAX_JSON_DEPTH = 64;
 
 // ------------------------------------------------------------- request
 
+const REQUEST_MODEL_OPEN = asciiBytes('{"model":');
+const REQUEST_MESSAGES_OPEN = asciiBytes(',"messages":[{"role":"system","content":');
+const MESSAGE_CLOSE = asciiBytes("}");
+const USER_TURN_OPEN = asciiBytes(',{"role":"user","content":');
+const ASSISTANT_TURN_OPEN = asciiBytes(',{"role":"assistant","content":');
+const REQUEST_CLOSE = asciiBytes('],"stream":true}');
+
 /// The chat-completions request body:
 /// `{"model":…,"messages":[{"role":"system","content":…},…],"stream":true}`
 /// with the system prompt first and every conversation turn after it, in
@@ -53,25 +60,68 @@ const MAX_JSON_DEPTH = 64;
 /// each turn arrives pre-concatenated from `encodeTurn` instead.
 export function encodeChatRequest(modelName: Bytes, systemPrompt: Bytes, turns: readonly Turn[]): Bytes {
   return concatAll([
-    asciiBytes('{"model":'),
+    REQUEST_MODEL_OPEN,
     jsonString(modelName),
-    asciiBytes(',"messages":[{"role":"system","content":'),
+    REQUEST_MESSAGES_OPEN,
     jsonString(systemPrompt),
-    asciiBytes("}"),
+    MESSAGE_CLOSE,
     ...turns.map((turn) => encodeTurn(turn)),
-    asciiBytes('],"stream":true}'),
+    REQUEST_CLOSE,
   ]);
+}
+
+/// Encode the newest contiguous, user-led suffix that fits `maxBytes`.
+/// The Model keeps every turn; only the provider context is pruned. The
+/// exact JSON-escaped size is measured first, so this never constructs a
+/// complete oversized request just to discover that the engine rejects it.
+/// An empty result means even the fixed envelope and newest user turn do
+/// not fit, which lets the caller fail locally instead of issuing a fetch.
+export function encodeChatRequestWithinLimit(
+  modelName: Bytes,
+  systemPrompt: Bytes,
+  turns: readonly Turn[],
+  maxBytes: number,
+): Bytes {
+  let total =
+    REQUEST_MODEL_OPEN.length +
+    jsonStringLength(modelName) +
+    REQUEST_MESSAGES_OPEN.length +
+    jsonStringLength(systemPrompt) +
+    MESSAGE_CLOSE.length +
+    REQUEST_CLOSE.length;
+  if (total > maxBytes) return new Uint8Array(0);
+
+  let start = turns.length;
+  while (start > 0) {
+    const candidate = start - 1;
+    const turnLength = encodedTurnLength(turns[candidate]);
+    if (total + turnLength > maxBytes) break;
+    total += turnLength;
+    start = candidate;
+  }
+
+  // A request with history must include its newest user turn. If that
+  // turn did not fit, there is no useful smaller suffix to send.
+  if (turns.length > 0 && start === turns.length) return new Uint8Array(0);
+
+  // Truncation can land just before an assistant response. Drop that
+  // orphaned response so the retained context always begins with a user.
+  while (start < turns.length && turns[start].role !== "user") start += 1;
+  if (turns.length > 0 && start === turns.length) return new Uint8Array(0);
+  return encodeChatRequest(modelName, systemPrompt, turns.slice(start));
 }
 
 /// One conversation turn as its complete message-object bytes:
 /// `,{"role":…,"content":…}` — comma included, since every turn follows
 /// the system message.
 function encodeTurn(turn: Turn): Bytes {
-  const open =
-    turn.role === "user"
-      ? asciiBytes(',{"role":"user","content":')
-      : asciiBytes(',{"role":"assistant","content":');
-  return concatAll([open, jsonString(turn.text), asciiBytes("}")]);
+  const open = turn.role === "user" ? USER_TURN_OPEN : ASSISTANT_TURN_OPEN;
+  return concatAll([open, jsonString(turn.text), MESSAGE_CLOSE]);
+}
+
+function encodedTurnLength(turn: Turn): number {
+  const openLength = turn.role === "user" ? USER_TURN_OPEN.length : ASSISTANT_TURN_OPEN.length;
+  return openLength + jsonStringLength(turn.text) + MESSAGE_CLOSE.length;
 }
 
 /// A JSON string literal (quotes included) from UTF-8 text bytes. Two
@@ -80,17 +130,7 @@ function encodeTurn(turn: Turn): Bytes {
 /// helper would have escaped and become immutable), so every escape is
 /// written inline. Non-ASCII UTF-8 bytes pass through raw (valid JSON).
 export function jsonString(text: Bytes): Bytes {
-  let len = 2;
-  for (let i = 0; i < text.length; i++) {
-    const b = text[i];
-    if (b === 0x22 || b === 0x5c || b === 0x08 || b === 0x09 || b === 0x0a || b === 0x0c || b === 0x0d) {
-      len += 2;
-    } else if (b < 0x20) {
-      len += 6; // \u00XX
-    } else {
-      len += 1;
-    }
-  }
+  const len = jsonStringLength(text);
   const out = new Uint8Array(len);
   out[0] = 0x22;
   let at = 1;
@@ -119,6 +159,21 @@ export function jsonString(text: Bytes): Bytes {
   }
   out[at] = 0x22;
   return out;
+}
+
+function jsonStringLength(text: Bytes): number {
+  let len = 2;
+  for (let i = 0; i < text.length; i++) {
+    const b = text[i];
+    if (b === 0x22 || b === 0x5c || b === 0x08 || b === 0x09 || b === 0x0a || b === 0x0c || b === 0x0d) {
+      len += 2;
+    } else if (b < 0x20) {
+      len += 6; // \u00XX
+    } else {
+      len += 1;
+    }
+  }
+  return len;
 }
 
 /// The letter of a two-byte JSON escape: \b \t \n \f \r.

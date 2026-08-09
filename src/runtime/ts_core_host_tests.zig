@@ -322,6 +322,17 @@ const mini_core = struct {
         stream_done: i64, // 88: terminal HTTP status
         stop_stream, // 89: cancel "events" (loud -> failed "cancelled")
         dup_stream, // 90: a second live "events" stream is rejected
+        stream_over_get, // 91: streaming fetch collides with buffered fetch "get"
+        get_over_stream, // 92: buffered fetch collides with streaming fetch "events"
+        fill_streams, // 93: seventeen distinct streams exceed the bridge table
+    };
+
+    const stream_fill_keys = [_][]const u8{
+        "fill-00", "fill-01", "fill-02", "fill-03",
+        "fill-04", "fill-05", "fill-06", "fill-07",
+        "fill-08", "fill-09", "fill-10", "fill-11",
+        "fill-12", "fill-13", "fill-14", "fill-15",
+        "fill-16",
     };
 
     pub const InitResult = struct { model: *const Model, cmd: []const u8 };
@@ -540,6 +551,54 @@ const mini_core = struct {
                 &.{},
                 "",
             ) },
+            .stream_over_get => return .{ .model = model, .cmd = cmdFetchStream(
+                "get",
+                @intFromEnum(@as(std.meta.Tag(Msg), .stream_line)),
+                @intFromEnum(@as(std.meta.Tag(Msg), .stream_done)),
+                @intFromEnum(@as(std.meta.Tag(Msg), .failed)),
+                0,
+                0,
+                0,
+                "https://status.test/collision",
+                &.{},
+                "",
+            ) },
+            .get_over_stream => return .{ .model = model, .cmd = cmdFetch(
+                "events",
+                @intFromEnum(@as(std.meta.Tag(Msg), .fetched)),
+                @intFromEnum(@as(std.meta.Tag(Msg), .failed)),
+                0,
+                0,
+                "https://status.test/collision",
+                &.{},
+                "",
+            ) },
+            .fill_streams => {
+                var commands: [stream_fill_keys.len][]const u8 = undefined;
+                var total: usize = 0;
+                for (&commands, stream_fill_keys) |*command, key| {
+                    command.* = cmdFetchStream(
+                        key,
+                        @intFromEnum(@as(std.meta.Tag(Msg), .stream_line)),
+                        @intFromEnum(@as(std.meta.Tag(Msg), .stream_done)),
+                        @intFromEnum(@as(std.meta.Tag(Msg), .failed)),
+                        0,
+                        0,
+                        0,
+                        "https://status.test/fill",
+                        &.{},
+                        "",
+                    );
+                    total += command.len;
+                }
+                const out = rt.frameAlloc(u8, total);
+                var off: usize = 0;
+                for (commands) |command| {
+                    @memcpy(out[off..][0..command.len], command);
+                    off += command.len;
+                }
+                return .{ .model = model, .cmd = out };
+            },
             .run_lines => return .{ .model = model, .cmd = cmdSpawn("job", 25, 26, 8, 0, &.{ "/bin/probe", "--fast" }, "feed me") },
             .run_quiet => return .{ .model = model, .cmd = cmdSpawn("job", 0xFF, 26, 8, 0, &.{"/bin/quiet"}, "") },
             .run_collect => return .{ .model = model, .cmd = cmdSpawn("job", 0xFF, 27, 8, 1, &.{ "/bin/ps", "-axo" }, "") },
@@ -1780,6 +1839,56 @@ test "a duplicate live streaming fetch key is rejected without replacing the str
     try std.testing.expectEqual(@as(i64, 1), Host.model().line_count);
     try std.testing.expectEqualStrings("original still live", Host.model().last_line);
     try std.testing.expectEqual(@as(i64, 204), Host.model().code);
+}
+
+test "buffered and streaming fetch modes cannot share a live public key" {
+    const fx = freshChannel();
+    defer fx.deinit();
+    Host.init(fx);
+
+    // A buffered fetch owns "get", so a streaming fetch cannot make
+    // cancel ambiguous by claiming the same public key beside it.
+    Host.dispatch(fx, .get);
+    Host.dispatch(fx, .stream_over_get);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
+    try std.testing.expectEqual(@as(i64, 1), Host.model().errs);
+    try std.testing.expectEqualStrings("rejected", Host.model().last_err);
+
+    Host.dispatch(fx, .drop_get);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
+
+    // The same shared namespace applies in the opposite order. The
+    // rejected buffered fetch must not hide the live stream from cancel.
+    Host.dispatch(fx, .stream_get);
+    Host.dispatch(fx, .get_over_stream);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
+    try std.testing.expectEqual(@as(i64, 2), Host.model().errs);
+    try std.testing.expectEqualStrings("rejected", Host.model().last_err);
+
+    Host.dispatch(fx, .stop_stream);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
+    try std.testing.expectEqual(@as(i64, 3), Host.model().errs);
+    try std.testing.expectEqualStrings("cancelled", Host.model().last_err);
+}
+
+test "a seventeenth live stream is rejected instead of panicking" {
+    const fx = freshChannel();
+    defer fx.deinit();
+    Host.init(fx);
+    // Retire init's host request so all sixteen shared engine effect
+    // slots are available to the streams this test is isolating.
+    try fx.feedHostResult(boot_request_key, true, "ready");
+    Host.drain(fx);
+
+    Host.dispatch(fx, .fill_streams);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(usize, 16), fx.pendingFetchCount());
+    try std.testing.expectEqual(@as(i64, 1), Host.model().errs);
+    try std.testing.expectEqualStrings("rejected", Host.model().last_err);
 }
 
 // ------------------------------------------------------ spawn streams

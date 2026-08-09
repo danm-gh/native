@@ -686,6 +686,40 @@ test "a streamed reply paints its visible tail beyond the paragraph page cap" {
     try std.testing.expectApproxEqAbs(prompt.y, tail_padding.maxY(), 0.01);
 }
 
+test "long visible history sends a recent suffix within the fetch body bound" {
+    const h = try Harness.create();
+    defer h.destroy();
+
+    // Each wire pair decodes to one quote. Two individually valid SSE
+    // lines build a 40 KiB visible assistant turn which needs more than
+    // 80 KiB when JSON escaping puts it into the next request.
+    const escaped_quotes = "\\\"" ** (20 * 1024);
+    const quote_event =
+        "data: {\"choices\":[{\"delta\":{\"content\":\"" ++
+        escaped_quotes ++
+        "\"}}]}";
+
+    try h.say("quote something");
+    try h.line(quote_event);
+    try h.line(quote_event);
+    try h.line("data: [DONE]");
+    try h.finish(200);
+    try std.testing.expectEqual(@as(usize, 2), Bridge.model().turns.len);
+    try std.testing.expectEqual(@as(usize, 40 * 1024), Bridge.model().turns[1].text.len);
+
+    // Full history remains committed and visible, while only the newest
+    // user-led suffix rides the bounded provider request.
+    try h.say("follow up");
+    try std.testing.expectEqual(@as(usize, 3), Bridge.model().turns.len);
+    try std.testing.expectEqual(@as(usize, 1), h.app_state.effects.pendingFetchCount());
+    const request = h.app_state.effects.pendingFetchAt(0).?;
+    try std.testing.expect(request.body.len <= 64 * 1024);
+    try std.testing.expect(std.mem.indexOf(u8, request.body, "follow up") != null);
+    try std.testing.expect(std.mem.indexOf(u8, request.body, "quote something") == null);
+
+    try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"still here\"}}]}");
+}
+
 test "the in-flight guard: a second send issues nothing and loses nothing" {
     const h = try Harness.create();
     defer h.destroy();

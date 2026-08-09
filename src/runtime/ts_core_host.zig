@@ -976,17 +976,27 @@ pub fn TsCoreHost(comptime core: type) type {
                             headers[i] = .{ .name = name, .value = value };
                         }
                         const body = takeLongBytes(cmd, &at);
-                        fx.fetch(.{
-                            .key = effect_key_base + allocEffectEntry(fx, head),
-                            .method = method,
-                            .url = url,
-                            .headers = headers[0..header_count],
-                            .body = if (body.len > 0) body else null,
-                            // Wire 0 = "the engine's default" — the record
-                            // never bakes the default in.
-                            .timeout_ms = if (timeout_ms == 0) runtime_effects.default_effect_fetch_timeout_ms else timeout_ms,
-                            .on_response = fetchResultMsg,
-                        });
+                        // Both Cmd.fetch overloads occupy one public key
+                        // space. A buffered fetch must not start beside a
+                        // live line stream under the same key: cancel would
+                        // otherwise find this named op first and leave the
+                        // stream running. The live stream owns the key, so
+                        // reject the newcomer through its own err arm.
+                        if (head.key.len > 0 and findStream(head.key) != null) {
+                            fx.stageLoopMsg(msgFromTagStaticBytes(head.err_tag, "rejected"));
+                        } else {
+                            fx.fetch(.{
+                                .key = effect_key_base + allocEffectEntry(fx, head),
+                                .method = method,
+                                .url = url,
+                                .headers = headers[0..header_count],
+                                .body = if (body.len > 0) body else null,
+                                // Wire 0 = "the engine's default" — the record
+                                // never bakes the default in.
+                                .timeout_ms = if (timeout_ms == 0) runtime_effects.default_effect_fetch_timeout_ms else timeout_ms,
+                                .on_response = fetchResultMsg,
+                            });
+                        }
                     },
                     // clip_write [op][bytes_len u32 LE][bytes]
                     0x0A => {
@@ -1459,8 +1469,14 @@ pub fn TsCoreHost(comptime core: type) type {
                 fx.stageLoopMsg(msgFromTagStaticBytes(head.err_tag, "rejected"));
                 return;
             }
-            const index = freeStreamIndex() orelse
-                @panic("ts core host: more than 16 spawn streams in flight - the stream table mirrors the engine's max_effects slots");
+            const index = freeStreamIndex() orelse {
+                // Resource refusal is an ordinary stream terminal. The
+                // engine would report the same rejection if it owned one
+                // more routing slot; the bridge table must not turn that
+                // public outcome into a process panic.
+                fx.stageLoopMsg(msgFromTagStaticBytes(head.err_tag, "rejected"));
+                return;
+            };
             const entry = &streams[index];
             entry.used = true;
             entry.key_len = head.key.len;
@@ -1493,12 +1509,16 @@ pub fn TsCoreHost(comptime core: type) type {
         /// replacing a source that has already delivered lines would splice
         /// two HTTP responses into one app-owned stream.
         fn issueFetchStream(fx: *Fx, head: SpawnHead, options: FetchStreamOptions) void {
-            if (head.key.len > 0 and findStream(head.key) != null) {
+            if (head.key.len > 0 and
+                (findStream(head.key) != null or findEffect(head.key) != null))
+            {
                 fx.stageLoopMsg(msgFromTagStaticBytes(head.err_tag, "rejected"));
                 return;
             }
-            const index = freeStreamIndex() orelse
-                @panic("ts core host: more than 16 spawn/fetch streams in flight - the stream table mirrors the engine's max_effects slots");
+            const index = freeStreamIndex() orelse {
+                fx.stageLoopMsg(msgFromTagStaticBytes(head.err_tag, "rejected"));
+                return;
+            };
             const entry = &streams[index];
             entry.used = true;
             entry.key_len = head.key.len;

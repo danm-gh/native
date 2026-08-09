@@ -49,7 +49,7 @@ import {
 import {
   bearerToken,
   concatAll,
-  encodeChatRequest,
+  encodeChatRequestWithinLimit,
   parseChatStreamLine,
   type Bytes,
   type Turn,
@@ -77,9 +77,14 @@ const SYSTEM_PROMPT = asciiBytes(
   "You are a helpful assistant inside a native desktop app. Answer concisely, in plain text.",
 );
 
-/// The composer's byte capacity — comfortably under the engine's 64 KiB
-/// request-body bound with a long conversation around it.
+/// The composer's byte capacity. Outbound encoding always retains this
+/// newest prompt and prunes older provider context to the fetch bound.
 const MAX_DRAFT = 4096;
+
+/// The engine accepts at most 64 KiB of fetch body. The visible Model
+/// keeps full history; request encoding sends its newest user-led suffix.
+const MAX_REQUEST_BODY = 64 * 1024;
+const REQUEST_TOO_LARGE = asciiBytes("the request is too large");
 
 /// Keep one in-progress answer no larger than the buffered fetch limit
 /// this example used before streaming. If a provider exceeds it, stop
@@ -412,21 +417,26 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       const text = trimAsciiSpaces(model.draft.bytes);
       if (text.length === 0) return [model, Cmd.none];
       const turns: readonly Turn[] = [...model.turns, { id: model.nextId, role: "user", text: text }];
+      const body = encodeChatRequestWithinLimit(model.modelName, SYSTEM_PROMPT, turns, MAX_REQUEST_BODY);
+      const next: Model = {
+        ...model,
+        turns: turns,
+        nextId: model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991,
+        phase: "sending",
+        failReason: new Uint8Array(0),
+        pendingReply: new Uint8Array(0),
+        streamDone: false,
+        draft: composerInit(),
+        modelPickerOpen: false,
+        promptAutofocus: false,
+        chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+        scrollPulse: !model.scrollPulse,
+      };
+      if (body.length === 0) {
+        return [{ ...next, phase: "failed", failReason: REQUEST_TOO_LARGE }, Cmd.none];
+      }
       return [
-        {
-          ...model,
-          turns: turns,
-          nextId: model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991,
-          phase: "sending",
-          failReason: new Uint8Array(0),
-          pendingReply: new Uint8Array(0),
-          streamDone: false,
-          draft: composerInit(),
-          modelPickerOpen: false,
-          promptAutofocus: false,
-          chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
-          scrollPulse: !model.scrollPulse,
-        },
+        next,
         Cmd.fetch(
           {
             url: AI_GATEWAY_ENDPOINT,
@@ -438,7 +448,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
               authorization: bearerToken(model.apiKey),
               "content-type": "application/json",
             },
-            body: encodeChatRequest(model.modelName, SYSTEM_PROMPT, turns),
+            body: body,
             timeoutMs: 120000,
             maxLineBytes: 65536,
           },
@@ -452,6 +462,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       if (model.phase !== "failed" || !isConfigured(model)) return [model, Cmd.none];
       if (model.turns.length === 0) return [model, Cmd.none];
       if (model.turns[model.turns.length - 1].role !== "user") return [model, Cmd.none];
+      const body = encodeChatRequestWithinLimit(model.modelName, SYSTEM_PROMPT, model.turns, MAX_REQUEST_BODY);
+      if (body.length === 0) return [{ ...model, failReason: REQUEST_TOO_LARGE }, Cmd.none];
       return [
         {
           ...model,
@@ -472,7 +484,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
               authorization: bearerToken(model.apiKey),
               "content-type": "application/json",
             },
-            body: encodeChatRequest(model.modelName, SYSTEM_PROMPT, model.turns),
+            body: body,
             timeoutMs: 120000,
             maxLineBytes: 65536,
           },

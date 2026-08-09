@@ -7476,6 +7476,7 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
 @property(nonatomic, strong) NativeSdkAudioCaptureTarget *target;
 @property(nonatomic, strong) SCStream *stream;
 @property(nonatomic, strong) dispatch_queue_t queue;
+@property(nonatomic, strong) NSLock *lifecycleLock;
 - (instancetype)initWithTarget:(NativeSdkAudioCaptureTarget *)target;
 - (void)start;
 - (void)stopAndWait;
@@ -7487,6 +7488,7 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
     if (!self) return nil;
     self.target = target;
     self.queue = dispatch_queue_create("dev.native-sdk.system-audio", DISPATCH_QUEUE_SERIAL);
+    self.lifecycleLock = [[NSLock alloc] init];
     return self;
 }
 - (void)start {
@@ -7523,11 +7525,21 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
                 [strongSelf.target emitKind:2];
                 return;
             }
+            /* Publish and start under the same lock stop uses to detach the
+             * current stream. The shareable-content lookup is asynchronous:
+             * without this final activity check, stop can observe stream=nil,
+             * return, and then have this completion start an orphan capture. */
+            [strongSelf.lifecycleLock lock];
+            if (![strongSelf.target isCaptureActive]) {
+                [strongSelf.lifecycleLock unlock];
+                return;
+            }
             strongSelf.stream = stream;
             [stream startCaptureWithCompletionHandler:^(NSError *startError) {
                 if (startError) [strongSelf.target emitKind:2];
                 else [strongSelf.target emitStarted];
             }];
+            [strongSelf.lifecycleLock unlock];
         }];
     } else {
         [self.target emitKind:2];
@@ -7563,14 +7575,19 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
 - (void)stopAndWait {
     [self.target deactivateAndWait];
     if (@available(macOS 13.0, *)) {
+        /* Detach under the startup lock. Once this unlocks, an in-flight
+         * shareable-content completion either published its stream here (and
+         * we stop it below), or sees the inactive target and cannot start. */
+        [self.lifecycleLock lock];
         SCStream *stream = self.stream;
+        self.stream = nil;
+        [self.lifecycleLock unlock];
         if (stream) {
             dispatch_semaphore_t done = dispatch_semaphore_create(0);
             [stream stopCaptureWithCompletionHandler:^(NSError *error) { (void)error; dispatch_semaphore_signal(done); }];
             dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
         }
     }
-    self.stream = nil;
 }
 @end
 

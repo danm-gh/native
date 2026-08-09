@@ -783,6 +783,11 @@ pub fn build(b: *std.Build) void {
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "NSAccessibilityProgressIndicatorRole" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "view.accessibilityRole = NativeSdkAccessibilityRoleForNativeViewKind(kind)" },
     });
+    addFileContainsCheckStep(b, file_contains_checker, test_step, "test-appkit-audio-capture-start-stop-serialized", "Verify asynchronous ScreenCaptureKit startup cannot publish a stream after stop returns", &.{
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "@property(nonatomic, strong) NSLock *lifecycleLock;" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "[strongSelf.lifecycleLock lock];\n            if (![strongSelf.target isCaptureActive]) {\n                [strongSelf.lifecycleLock unlock];\n                return;\n            }\n            strongSelf.stream = stream;" },
+        .{ .path = "src/platform/macos/appkit_host.m", .pattern = "[self.lifecycleLock lock];\n        SCStream *stream = self.stream;\n        self.stream = nil;\n        [self.lifecycleLock unlock];" },
+    });
     addFileContainsCheckStep(b, file_contains_checker, test_step, "test-appkit-gpu-input-repaints-retained-canvas", "Verify GPU input wakes retained canvas frames", &.{
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "- (void)requestRetainedCanvasFrame" },
         .{ .path = "src/platform/macos/appkit_host.m", .pattern = "[self requestRetainedCanvasFrame];" },

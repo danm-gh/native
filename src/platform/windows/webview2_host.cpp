@@ -4333,8 +4333,9 @@ static void audioCaptureThread(std::shared_ptr<AudioCaptureShared> shared) {
         bool terminal_error = false;
         while (!shared->stop.load(std::memory_order_relaxed)) {
             const DWORD wait_result = WaitForSingleObject(ready, 50);
-            if (wait_result == WAIT_TIMEOUT) continue;
-            if (wait_result != WAIT_OBJECT_0) {
+            /* A timeout is also a polling fallback for loopback endpoints
+             * whose event notification is late or absent. */
+            if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_TIMEOUT) {
                 terminal_error = true;
                 break;
             }

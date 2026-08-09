@@ -93,6 +93,40 @@ test "audio capture refuses a key owned by the other source without corrupting i
     _ = try takeCapture(&fx, .stopped);
 }
 
+test "a refused same-source replacement leaves the current capture running" {
+    var fx = Fx.init(testing.allocator);
+    defer fx.deinit();
+    fx.executor = .fake;
+
+    fx.startAudioCapture(.{ .key = 35, .source = .microphone, .on_event = Fx.audioCaptureMsg(.capture) });
+    _ = try takeCapture(&fx, .started);
+
+    const occupied = fx.openChannel(.{ .key = 36, .on_event = Fx.channelMsg(.channel) });
+    try testing.expect(occupied.live());
+
+    // The replacement cannot claim key 36. Refusing it must not stop key 35.
+    fx.startAudioCapture(.{ .key = 36, .source = .microphone, .on_event = Fx.audioCaptureMsg(.capture) });
+    try testing.expectEqual(@as(u64, 36), (try takeCapture(&fx, .rejected)).key);
+
+    const pcm = [_]u8{ 1, 0 };
+    try fx.feedAudioCapture(35, 1_000_000, &pcm);
+    try testing.expectEqual(@as(u64, 35), (try takeCapture(&fx, .data)).key);
+    try testing.expect(occupied.live());
+
+    // A same-key duplicate is a refusal too, never an implicit stop.
+    fx.startAudioCapture(.{ .key = 35, .source = .microphone, .on_event = Fx.audioCaptureMsg(.capture) });
+    try testing.expectEqual(@as(u64, 35), (try takeCapture(&fx, .rejected)).key);
+    try fx.feedAudioCapture(35, 2_000_000, &pcm);
+    try testing.expectEqual(@as(u64, 35), (try takeCapture(&fx, .data)).key);
+
+    fx.stopAudioCapture(35);
+    _ = try takeCapture(&fx, .stopped);
+    fx.closeChannel(36);
+    const closed = fx.takeMsg() orelse return error.TestExpectedMsg;
+    try testing.expect(closed == .channel);
+    try testing.expectEqual(effects_mod.EffectChannelEventKind.closed, closed.channel.kind);
+}
+
 test "stopping an unknown audio key leaves an ordinary channel open" {
     var fx = Fx.init(testing.allocator);
     defer fx.deinit();

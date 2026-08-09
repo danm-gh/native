@@ -6544,13 +6544,13 @@ pub fn Effects(comptime Msg: type) type {
             }
             const capture_index: usize = @intFromEnum(options.source);
             const capture = &self.audio_capture_slots[capture_index];
-            if (capture.active) self.closeChannel(capture.key);
 
-            // Refuse before `openChannel` so a key owned by the OTHER
-            // capture source cannot be mistaken for the slot this start
-            // just opened. A same-key restart also waits for its prior
-            // `.stopped` terminal to retire the occupancy before the key
-            // can be used again, the channel key-lifetime rule.
+            // Admit the replacement BEFORE stopping the source it would
+            // supersede. A duplicate/occupied key, a full channel table, or
+            // an executor allocation failure must reject the new request
+            // without destroying a healthy recording. A same-key restart is
+            // therefore only a rejection; the existing stream keeps running
+            // until its owner explicitly stops it and receives `.stopped`.
             if (self.keyOccupiedUntilDelivery(options.key)) {
                 self.rejectChannel(options.key, options.on_event, true);
                 return;
@@ -6565,6 +6565,7 @@ pub fn Effects(comptime Msg: type) type {
             // returns an inert handle; retain the tiny mirror so the replayed
             // stop verb closes that parked occupancy without touching a host.
             if (self.findChannelSlot(options.key) == null) return;
+            if (capture.active) self.closeChannel(capture.key);
             capture.* = .{
                 .active = true,
                 .platform_started = false,

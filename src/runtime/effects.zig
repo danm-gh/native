@@ -4609,6 +4609,18 @@ pub fn Effects(comptime Msg: type) type {
                 }
                 timer_slot.* = .{};
             }
+            // Quiesce every native capture BEFORE the channel sweep closes
+            // its posting target and frees its staging. The platform stop
+            // contract fences callbacks synchronously, so after this loop no capture
+            // source can still enter its channel while teardown dismantles
+            // staging below. Fake/replay occupancies have no platform source
+            // to stop, but their mirrors are cleared by the same sweep.
+            for (&self.audio_capture_slots) |*capture| {
+                if (capture.active and capture.platform_started) {
+                    if (self.services) |services| services.audioCaptureStop(capture.source) catch {};
+                }
+                capture.* = .{};
+            }
             // Silence the platform audio player (best effort) and clear
             // the channel.
             if (self.audio.active and !self.audio.fake) {

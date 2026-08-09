@@ -6,7 +6,7 @@
     .version = "0.1.0",
     .icons = .{"assets/icon.png"},
     .platforms = .{ "macos", "windows" },
-    .permissions = .{ "view", "filesystem", "microphone" },
+    .permissions = .{ "view", "filesystem", "microphone", "system_audio" },
     .capabilities = .{ "native_views", "gpu_surfaces" },
     .theme = "geist",
     .theme_accent = "#e5484d",

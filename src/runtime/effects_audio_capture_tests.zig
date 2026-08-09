@@ -156,3 +156,38 @@ test "audio capture real-executor path binds and quiesces platform services" {
     try testing.expect(!capture.active);
     try testing.expectEqual(@as(usize, 1), capture.stop_count);
 }
+
+test "audio capture teardown quiesces every platform source exactly once" {
+    var host = platform.NullPlatform.init(.{});
+    defer host.deinit();
+    var host_platform = host.platform();
+    var fx = Fx.init(testing.allocator);
+    defer fx.deinit();
+    fx.bindServices(&host_platform.services);
+
+    fx.startAudioCapture(.{
+        .key = 51,
+        .source = .microphone,
+        .on_event = Fx.audioCaptureMsg(.capture),
+    });
+    fx.startAudioCapture(.{
+        .key = 52,
+        .source = .system,
+        .on_event = Fx.audioCaptureMsg(.capture),
+    });
+    try testing.expect(host.audio_captures[@intFromEnum(platform.AudioCaptureSource.microphone)].active);
+    try testing.expect(host.audio_captures[@intFromEnum(platform.AudioCaptureSource.system)].active);
+
+    fx.deinit();
+    for (&host.audio_captures) |*capture| {
+        try testing.expect(!capture.active);
+        try testing.expectEqual(@as(usize, 1), capture.stop_count);
+    }
+
+    // Effects teardown is idempotent: the post-platform owner defer must
+    // never call back into services or stop either source a second time.
+    fx.deinit();
+    for (&host.audio_captures) |*capture| {
+        try testing.expectEqual(@as(usize, 1), capture.stop_count);
+    }
+}

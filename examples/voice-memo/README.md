@@ -22,9 +22,10 @@ cd examples/voice-memo
 native dev
 ```
 
-The first recording may prompt for microphone access. The manifest declares
-both `microphone` and `filesystem` permissions. The example targets macOS and
-Windows; Linux capture is not currently available.
+The first microphone or system-audio recording may prompt for the matching
+access. The manifest declares `microphone`, `system_audio`, and `filesystem`
+permissions. The example targets macOS and Windows; Linux capture is not
+currently available.
 
 Useful checks:
 

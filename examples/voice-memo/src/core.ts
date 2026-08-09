@@ -360,11 +360,17 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       };
       return [
         startingModel,
-        Cmd.audioCaptureStart(
-          CAPTURE_KEY,
-          { source: model.captureSource, sampleRate: SAMPLE_RATE, channels: CHANNELS },
-          { event: "capture_event" },
-        ),
+        Cmd.batch([
+          // One native player is shared by the app. Stop it even when the
+          // model believes it is idle so capture can never record a stale
+          // playback stream or leave playback running without a Stop row.
+          Cmd.audioStop(PLAYER_KEY),
+          Cmd.audioCaptureStart(
+            CAPTURE_KEY,
+            { source: model.captureSource, sampleRate: SAMPLE_RATE, channels: CHANNELS },
+            { event: "capture_event" },
+          ),
+        ]),
       ];
     }
 

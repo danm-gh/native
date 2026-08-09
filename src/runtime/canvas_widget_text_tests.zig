@@ -2333,6 +2333,82 @@ test "plain Enter inserts a newline in a canvas textarea; chorded Enter never ed
     try std.testing.expectEqualStrings("Prompt\n", retained.nodes[1].widget.text);
 }
 
+test "focused textarea keeps a visible caret when controlled source clears after submit" {
+    const TestApp = struct {
+        fn app(self: *@This()) App {
+            return .{ .context = self, .name = "gpu-widget-textarea-submit-clear", .source = platform.WebViewSource.html("<h1>Hello</h1>") };
+        }
+    };
+
+    const harness = try TestHarness().create(std.testing.allocator, .{});
+    defer harness.destroy(std.testing.allocator);
+    harness.null_platform.gpu_surfaces = true;
+    var app_state: TestApp = .{};
+    const app = app_state.app();
+    try harness.start(app);
+
+    _ = try harness.runtime.createView(.{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .gpu_surface,
+        .frame = geometry.RectF.init(0, 0, 260, 160),
+    });
+
+    const prompt = canvas.Widget{
+        .id = 2,
+        .kind = .textarea,
+        .frame = geometry.RectF.init(12, 16, 180, 84),
+        .text = "Prompt",
+        .submit_on_enter = true,
+        .semantics = .{ .label = "Message" },
+    };
+    var prompt_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const prompt_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{prompt} }, geometry.RectF.init(0, 0, 260, 160), &prompt_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", prompt_layout);
+    _ = try harness.runtime.emitCanvasWidgetDisplayList(1, "canvas", .{});
+
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .pointer_down,
+        .x = 100,
+        .y = 30,
+    } });
+    try harness.runtime.dispatchPlatformEvent(app, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = "canvas",
+        .kind = .key_down,
+        .key = "enter",
+    } });
+
+    var cleared_prompt = prompt;
+    cleared_prompt.text = "";
+    var cleared_nodes: [2]canvas.WidgetLayoutNode = undefined;
+    const cleared_layout = try canvas.layoutWidgetTree(.{ .kind = .stack, .children = &.{cleared_prompt} }, geometry.RectF.init(0, 0, 260, 160), &cleared_nodes);
+    _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", cleared_layout);
+
+    const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_focused_id);
+    try std.testing.expectEqual(@as(canvas.ObjectId, 2), harness.runtime.views[0].canvas_widget_focus_visible_id);
+    try std.testing.expectEqualStrings("", retained.nodes[1].widget.text);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(0), retained.nodes[1].widget.text_selection.?);
+    try std.testing.expectEqualDeep(canvas.TextRange.init(0, 0), runtimeViewWidgetSemantics(&harness.runtime.views[0])[0].text_selection.?);
+
+    _ = try harness.runtime.emitCanvasWidgetDisplayList(1, "canvas", .{});
+    const display_list = try harness.runtime.canvasDisplayList(1, "canvas");
+    var saw_caret = false;
+    for (display_list.commands) |command| {
+        switch (command) {
+            .fill_rect => |fill| {
+                if (fill.id == testCanvasWidgetPartId(2, 6)) saw_caret = true;
+            },
+            else => {},
+        }
+    }
+    try std.testing.expect(saw_caret);
+    try std.testing.expectEqual(testCanvasWidgetPartId(2, 6), harness.runtime.views[0].canvas_widget_caret_blink_id);
+}
+
 test "Enter in a single-line input never inserts, even when the host stuffs a newline into the key event" {
     const TestApp = struct {
         fn app(self: *@This()) App {

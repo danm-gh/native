@@ -185,6 +185,11 @@ pub fn RuntimeCanvasWidgetState(comptime Runtime: type) type {
             try self.views[index].copyCanvasWidgetSourceText(layout);
             self.views[index].copyCanvasWidgetSourceScroll(layout);
             self.views[index].copyCanvasWidgetSourceControls(layout);
+            // A controlled text replacement (the common submit-and-clear
+            // composer flow) drops stale selection state while retaining
+            // logical focus. Re-establish the insertion point before this
+            // rebuild emits so the caret never disappears until typing.
+            _ = try self.views[index].ensureCanvasWidgetFocusedTextCaret();
             // Push the reconciled regions (frames, content extents,
             // diverged offsets) to the native scroll drivers.
             ScrollDriverMethods(Runtime).syncCanvasWidgetScrollDriversForView(self, index);

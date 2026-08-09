@@ -6,7 +6,8 @@
 //! it through `TsUiApp` with the example's SHIPPING markup (app.native,
 //! staged beside this file), so every pin here is the product path:
 //!
-//!   - the API key and optional model override ride the envMsgs channel,
+//!   - the API key and optional initial model override ride the envMsgs
+//!     channel, the prompt-group picker lists Luna, Terra, then Sol,
 //!     while the teaching state holds (with ZERO fetches) until the API
 //!     key is present;
 //!   - a scripted two-turn conversation drives the whole loop through
@@ -57,7 +58,11 @@ const canvas_label = "chat-canvas";
 const chat_fetch_key: u64 = runtime_ns.ts_core_spawn_key_base + 0;
 
 const test_endpoint = "https://ai-gateway.vercel.sh/v1/chat/completions";
+const sol_model_name = "openai/gpt-5.6-sol";
 const default_model_name = "openai/gpt-5.6-luna";
+const default_model_label = "GPT-5.6 Luna";
+const terra_model_label = "GPT-5.6 Terra";
+const sol_model_label = "GPT-5.6 Sol";
 const test_model_name = "test-model";
 const test_api_key = "test-key";
 
@@ -258,6 +263,14 @@ fn findKindText(widget: canvas.Widget, kind: canvas.WidgetKind, text: []const u8
     return null;
 }
 
+fn findWidgetKindText(widget: canvas.Widget, kind: canvas.WidgetKind, text: []const u8) ?canvas.Widget {
+    if (widget.kind == kind and std.mem.eql(u8, widget.text, text)) return widget;
+    for (widget.children) |child| {
+        if (findWidgetKindText(child, kind, text)) |found| return found;
+    }
+    return null;
+}
+
 fn findTextIn(widget: canvas.Widget, text: []const u8) bool {
     if (std.mem.indexOf(u8, widget.text, text) != null) return true;
     for (widget.children) |child| {
@@ -299,6 +312,10 @@ const default_request_body =
     "{\"model\":\"openai/gpt-5.6-luna\",\"messages\":[" ++
     "{\"role\":\"system\",\"content\":\"You are a helpful assistant inside a native desktop app. Answer concisely, in plain text.\"}," ++
     "{\"role\":\"user\",\"content\":\"Use the default\"}],\"stream\":true}";
+const sol_request_body =
+    "{\"model\":\"openai/gpt-5.6-sol\",\"messages\":[" ++
+    "{\"role\":\"system\",\"content\":\"You are a helpful assistant inside a native desktop app. Answer concisely, in plain text.\"}," ++
+    "{\"role\":\"user\",\"content\":\"Use Sol\"}],\"stream\":true}";
 
 // ---------------------------------------------------- the teaching state
 
@@ -330,8 +347,8 @@ test "the teaching state only requires the Gateway key and the model has a worki
         const h = try Harness.createConfigured(null, &partial_env);
         defer h.destroy();
         try std.testing.expect(h.hasText("Connect a model"));
-        // The optional override landed in the model; the key row still
-        // teaches. The titlebar intentionally renders no model text.
+        // The optional override landed in the model; the prompt group is
+        // absent until configured, and the key row still teaches.
         try std.testing.expect(h.hasText("missing"));
         try std.testing.expectEqualStrings(test_model_name, Bridge.model().modelName);
         try std.testing.expect(!h.hasText(test_model_name));
@@ -350,12 +367,55 @@ test "the teaching state only requires the Gateway key and the model has a worki
         defer h.destroy();
         try std.testing.expect(!h.hasText("Connect a model"));
         try std.testing.expectEqualStrings(default_model_name, Bridge.model().modelName);
-        try std.testing.expect(!h.hasText(default_model_name));
+        try std.testing.expect(h.hasText(default_model_label));
         try std.testing.expect(!Bridge.model().unconfigured());
         try h.say("Use the default");
         try std.testing.expectEqual(@as(usize, 1), h.app_state.effects.pendingFetchCount());
         try std.testing.expectEqualStrings(default_request_body, h.app_state.effects.pendingFetchAt(0).?.body);
     }
+}
+
+test "the prompt-group model selector changes the model used by the next request" {
+    const key_only_env = [_]Adapter.EnvValue{
+        .{ .msg = "key_set", .value = test_api_key },
+    };
+    const h = try Harness.createConfigured(null, &key_only_env);
+    defer h.destroy();
+
+    const prompt = findWidgetByLabel(h.app_state.tree.?.root, "Prompt composer").?;
+    const selector = findWidgetByLabel(prompt, "Model selector").?;
+    try std.testing.expectEqual(canvas.WidgetKind.select, selector.kind);
+    try std.testing.expect(!selector.state.disabled);
+    try std.testing.expectEqualStrings(default_model_label, selector.text);
+    try h.click(selector.id);
+    try std.testing.expect(Bridge.model().modelPickerOpen);
+
+    const models = findWidgetByLabel(h.app_state.tree.?.root, "Models").?;
+    try std.testing.expectEqual(@as(usize, 3), models.children.len);
+    try std.testing.expectEqualStrings(default_model_label, models.children[0].text);
+    try std.testing.expectEqualStrings(terra_model_label, models.children[1].text);
+    try std.testing.expectEqualStrings(sol_model_label, models.children[2].text);
+    const luna = findWidgetKindText(models, .menu_item, default_model_label).?;
+    const terra = findWidgetKindText(models, .menu_item, terra_model_label).?;
+    const sol = findWidgetKindText(models, .menu_item, sol_model_label).?;
+    try std.testing.expect(!sol.state.selected);
+    try std.testing.expect(luna.state.selected);
+    try std.testing.expect(!terra.state.selected);
+    const picker_layout = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const selector_frame = picker_layout.findById(selector.id).?.frame.normalized();
+    const models_frame = picker_layout.findById(models.id).?.frame.normalized();
+    try std.testing.expectEqual(@as(f32, 148), selector_frame.width);
+    try std.testing.expectEqual(@as(f32, 148), models_frame.width);
+
+    try h.click(sol.id);
+    try std.testing.expect(!Bridge.model().modelPickerOpen);
+    try std.testing.expectEqualStrings(sol_model_name, Bridge.model().modelName);
+    try std.testing.expect(h.findId(.menu_item, sol_model_label) == null);
+    try std.testing.expectEqual(h.findLabel("Message").?, h.focusedWidgetId());
+
+    try h.say("Use Sol");
+    try std.testing.expectEqual(@as(usize, 1), h.app_state.effects.pendingFetchCount());
+    try std.testing.expectEqualStrings(sol_request_body, h.app_state.effects.pendingFetchAt(0).?.body);
 }
 
 test "the runtime markup interpreter builds the emitted model exactly like the compiled engine" {
@@ -385,7 +445,7 @@ test "the runtime markup interpreter builds the emitted model exactly like the c
     try collectTexts(interpreted.root, &interpreted_texts, std.testing.allocator);
     try collectTexts(compiled.root, &compiled_texts, std.testing.allocator);
     try std.testing.expectEqualStrings(interpreted_texts.items, compiled_texts.items);
-    try std.testing.expect(std.mem.indexOf(u8, compiled_texts.items, "Ask anything") != null);
+    try std.testing.expect(std.mem.indexOf(u8, compiled_texts.items, "What can I help with?") != null);
 }
 
 fn collectTexts(widget: canvas.Widget, out: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) !void {
@@ -439,14 +499,19 @@ test "a scripted conversation pins the Gateway request and renders each SSE delt
     const new_chat = findWidgetByLabel(h.app_state.tree.?.root, "New chat").?;
     try std.testing.expect(!new_chat.state.disabled);
     try std.testing.expect(!h.hasText("Chatbot"));
-    try std.testing.expect(!h.hasText(test_model_name));
-    try std.testing.expect(h.hasText("Ask anything"));
+    try std.testing.expect(h.hasText(test_model_name));
+    try std.testing.expect(h.hasText("What can I help with?"));
+    try std.testing.expect(h.hasText("Ask a question, write code, or explore ideas."));
+    const empty_state = findWidgetByLabel(h.app_state.tree.?.root, "Empty conversation").?;
+    try std.testing.expectEqual(canvas.WidgetMainAlignment.center, empty_state.layout.main_alignment);
+    try std.testing.expectEqual(canvas.WidgetCrossAlignment.center, empty_state.layout.cross_alignment);
 
-    // The prompt is one grouped field: a multiline entry first and an
-    // icon-only arrow submit action inside the shared border.
+    // The prompt is one grouped field: a multiline entry first, then the
+    // model selector and icon-only arrow submit action inside its border.
     const prompt = findWidgetByLabel(h.app_state.tree.?.root, "Prompt composer").?;
     try std.testing.expectEqual(canvas.WidgetKind.input_group, prompt.kind);
     try std.testing.expectEqual(@as(usize, 2), prompt.children.len);
+    try std.testing.expect(findWidgetByLabel(prompt, "Model selector") != null);
     const message_entry = findWidgetByLabel(prompt, "Message").?;
     try std.testing.expectEqual(canvas.WidgetKind.textarea, message_entry.kind);
     try std.testing.expect(message_entry.submit_on_enter);
@@ -495,11 +560,18 @@ test "a scripted conversation pins the Gateway request and renders each SSE delt
         defer draft_arena.deinit();
         try std.testing.expectEqual(@as(usize, 0), Bridge.model().draftText(draft_arena.allocator()).len);
     }
+    try std.testing.expectEqual(composer_id, h.focusedWidgetId());
+    const submitted_layout = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    try std.testing.expectEqualDeep(canvas.TextSelection.collapsed(0), submitted_layout.findById(composer_id).?.widget.text_selection.?);
     try std.testing.expect(h.hasText("…"));
     {
         const layout = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
         const conversation = layout.findById(h.findLabel("Conversation").?).?;
+        const history = findWidgetByLabel(h.app_state.tree.?.root, "Conversation history").?;
+        const prompt_frame = layout.findById(h.findLabel("Prompt composer").?).?.frame.normalized();
         const user_turn = layout.findById(h.findLabel("You said").?).?;
+        try std.testing.expectEqual(@as(f32, 24), history.layout.padding.bottom);
+        try std.testing.expectApproxEqAbs(conversation.frame.normalized().maxY(), prompt_frame.y, 0.01);
         try std.testing.expect(conversation.frame.intersects(user_turn.frame));
     }
 
@@ -604,6 +676,14 @@ test "a streamed reply paints its visible tail beyond the paragraph page cap" {
 
     try h.line("data: [DONE]");
     try h.finish(200);
+
+    const finished_layout = try h.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    const finished_reply = finished_layout.findById(h.findLabel("The model said").?).?.frame.normalized();
+    const tail_padding = finished_layout.findById(h.findLabel("Conversation tail padding").?).?.frame.normalized();
+    const prompt = finished_layout.findById(h.findLabel("Prompt composer").?).?.frame.normalized();
+    try std.testing.expectEqual(@as(f32, 24), tail_padding.height);
+    try std.testing.expect(finished_reply.maxY() <= tail_padding.y);
+    try std.testing.expectApproxEqAbs(prompt.y, tail_padding.maxY(), 0.01);
 }
 
 test "the in-flight guard: a second send issues nothing and loses nothing" {
@@ -615,14 +695,30 @@ test "the in-flight guard: a second send issues nothing and loses nothing" {
     try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
     try std.testing.expectEqual(@as(usize, 1), Bridge.model().turns.len);
 
-    // Type a follow-up while the request is out: the Send button is
-    // DISABLED (the markup binds the same guard update enforces — a
-    // click is impossible), and even the journaled command path issues
-    // nothing — no second fetch, no phantom turn, and the draft
-    // SURVIVES (a blocked send loses nothing).
+    // Model choice stays live while this request streams. The already
+    // issued request keeps its captured model; the new choice is state
+    // for the next prompt only.
+    const selector = findWidgetByLabel(h.app_state.tree.?.root, "Model selector").?;
+    try std.testing.expect(!selector.state.disabled);
+    try h.click(selector.id);
+    const models = findWidgetByLabel(h.app_state.tree.?.root, "Models").?;
+    const sol = findWidgetKindText(models, .menu_item, sol_model_label).?;
+    try h.click(sol.id);
+    try std.testing.expectEqualStrings(sol_model_name, Bridge.model().modelName);
+    const in_flight = fx.pendingFetchAt(0).?;
+    try std.testing.expect(std.mem.indexOf(u8, in_flight.body, "\"model\":\"test-model\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, in_flight.body, sol_model_name) == null);
+
+    // Type a follow-up while the request is out: the Send action has
+    // become an enabled Stop action, while the update guard still makes
+    // even a journaled send a no-op — no second fetch, no phantom turn,
+    // and the draft SURVIVES (a blocked send loses nothing).
     try h.click(h.findLabel("Message").?);
     try h.textInput("eager follow-up");
-    try std.testing.expect(findWidgetByLabel(h.app_state.tree.?.root, "Send message").?.state.disabled);
+    try std.testing.expect(findWidgetByLabel(h.app_state.tree.?.root, "Send message") == null);
+    const stop_button = findWidgetByLabel(h.app_state.tree.?.root, "Stop generating").?;
+    try std.testing.expect(!stop_button.state.disabled);
+    try std.testing.expectEqualStrings("x", stop_button.icon);
     try h.menu("chat.send");
     try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
     try std.testing.expectEqual(@as(usize, 1), Bridge.model().turns.len);
@@ -638,6 +734,7 @@ test "the in-flight guard: a second send issues nothing and loses nothing" {
     try std.testing.expectEqual(@as(usize, 2), Bridge.model().turns.len);
     try h.menu("chat.send");
     try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
+    try std.testing.expect(std.mem.indexOf(u8, fx.pendingFetchAt(0).?.body, "\"model\":\"openai/gpt-5.6-sol\"") != null);
     try h.complete("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}");
     try std.testing.expectEqual(@as(usize, 4), Bridge.model().turns.len);
     try h.click(h.findLabel("Message").?);
@@ -659,6 +756,32 @@ test "the in-flight guard: a second send issues nothing and loses nothing" {
         defer draft_arena.deinit();
         try std.testing.expectEqualStrings("", Bridge.model().draftText(draft_arena.allocator()));
     }
+}
+
+test "Stop cancels the live stream immediately and keeps its partial response" {
+    const h = try Harness.create();
+    defer h.destroy();
+    const fx = &h.app_state.effects;
+
+    try h.say("write a long answer");
+    try h.line("data: {\"choices\":[{\"delta\":{\"content\":\"A partial answer\"}}]}");
+    try std.testing.expectEqual(@as(usize, 1), fx.pendingFetchCount());
+    try std.testing.expectEqualStrings("A partial answer", Bridge.model().pendingReply);
+
+    const stop_button = findWidgetByLabel(h.app_state.tree.?.root, "Stop generating").?;
+    try h.click(stop_button.id);
+
+    try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
+    try std.testing.expect(Bridge.model().phase == .idle);
+    try std.testing.expectEqual(@as(usize, 2), Bridge.model().turns.len);
+    try std.testing.expect(Bridge.model().turns[0].role == .user);
+    try std.testing.expect(Bridge.model().turns[1].role == .assistant);
+    try std.testing.expectEqualStrings("A partial answer", Bridge.model().turns[1].text);
+    try std.testing.expectEqual(@as(usize, 0), Bridge.model().pendingReply.len);
+    try std.testing.expect(h.hasText("A partial answer"));
+    try std.testing.expect(findWidgetByLabel(h.app_state.tree.?.root, "Stop generating") == null);
+    try std.testing.expect(!findWidgetByLabel(h.app_state.tree.?.root, "Send message").?.state.disabled);
+    try std.testing.expectEqual(h.findLabel("Message").?, h.focusedWidgetId());
 }
 
 // ---------------------------------------------------------- failure paths
@@ -722,7 +845,7 @@ test "every failure shape lands in the failed state with a reason and keeps the 
     try h.click(new_chat.id);
     try std.testing.expectEqual(@as(usize, 0), Bridge.model().turns.len);
     try std.testing.expect(Bridge.model().phase == .idle);
-    try std.testing.expect(h.hasText("Ask anything"));
+    try std.testing.expect(h.hasText("What can I help with?"));
 }
 
 // -------------------------------------------------------- record / replay

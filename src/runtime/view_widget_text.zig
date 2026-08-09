@@ -961,6 +961,23 @@ pub fn RuntimeViewCanvasWidgetText(comptime RuntimeView: type) type {
             return canvasWidgetEditableTextKind(widget.kind) and !widget.state.disabled;
         }
 
+        /// A controlled source replacement intentionally discards stale
+        /// selection state, but logical focus survives that rebuild. Give
+        /// the focused editor a fresh insertion point so an app clearing a
+        /// submitted composer never leaves a focused-but-caretless field.
+        /// Explicit source selections are left untouched.
+        pub fn ensureCanvasWidgetFocusedTextCaret(self: *RuntimeView) anyerror!bool {
+            const focused_id = self.canvas_widget_focused_id;
+            if (focused_id == 0 or !self.canEditCanvasWidgetText(focused_id)) return false;
+            const index = self.canvasWidgetNodeIndexById(focused_id) orelse return false;
+            const widget = &self.widget_layout_nodes[index].widget;
+            if (widget.text_selection != null) return false;
+            widget.text_selection = canvas.TextSelection.collapsed(widget.text.len);
+            try self.refreshCanvasWidgetSemantics();
+            self.widget_revision += 1;
+            return true;
+        }
+
         pub fn applyCanvasWidgetTextPointer(
             self: *RuntimeView,
             target_id: canvas.ObjectId,

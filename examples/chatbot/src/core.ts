@@ -23,8 +23,9 @@
 // discipline is model-first: `phase === "sending"` blocks every re-send
 // in update, and the engine rejects a duplicate live streaming key.
 //
-// The Gateway endpoint and default model are fixed and reviewable below.
-// `NATIVE_SDK_CHAT_MODEL` can override that default, while
+// The Gateway endpoint and three composer model choices are fixed and
+// reviewable below. `NATIVE_SDK_CHAT_MODEL` can override the initial
+// choice, while
 // `AI_GATEWAY_API_KEY` arrives through `envMsgs`; both deliveries are
 // journaled Msgs at install. The core never reads the environment
 // (NS1005), which is why a recorded conversation replays byte-identically
@@ -60,9 +61,14 @@ import {
 /// configuration.
 const AI_GATEWAY_ENDPOINT = asciiBytes("https://ai-gateway.vercel.sh/v1/chat/completions");
 
-/// The example works with only a Gateway API key. Apps can still select
-/// another Gateway creator/model id through `NATIVE_SDK_CHAT_MODEL`.
+/// The example works with only a Gateway API key. Luna is the initial
+/// composer selection; Terra and Sol are the other built-in choices.
 const DEFAULT_MODEL = asciiBytes("openai/gpt-5.6-luna");
+const MODEL_TERRA = asciiBytes("openai/gpt-5.6-terra");
+const MODEL_SOL = asciiBytes("openai/gpt-5.6-sol");
+const MODEL_LABEL_LUNA = asciiBytes("GPT-5.6 Luna");
+const MODEL_LABEL_TERRA = asciiBytes("GPT-5.6 Terra");
+const MODEL_LABEL_SOL = asciiBytes("GPT-5.6 Sol");
 
 /// The conversation's standing instruction, first in every request's
 /// message list. One constant, versioned with the app — not model state,
@@ -178,6 +184,12 @@ export interface Model {
   /// example default and can be replaced by the optional env delivery;
   /// the app teaches setup until the key arrives.
   readonly modelName: Bytes;
+  /// The prompt group's model picker is ordinary model-owned UI state. It is
+  /// closed on selection and when a request starts.
+  readonly modelPickerOpen: boolean;
+  /// Autofocus is edge-triggered. Opening the picker lowers this bit;
+  /// choosing a model raises it again so focus returns to the textarea.
+  readonly promptAutofocus: boolean;
   readonly apiKey: Bytes;
   /// The conversation scroll offset, echoed from markup's `on-scroll`
   /// and pushed past the content on every new turn (the clamp lands it
@@ -203,6 +215,8 @@ export function initialModel(): Model {
     streamDone: false,
     draft: composerInit(),
     modelName: DEFAULT_MODEL,
+    modelPickerOpen: false,
+    promptAutofocus: true,
     apiKey: new Uint8Array(0),
     chatScrollTop: 0,
     scrollPulse: false,
@@ -218,10 +232,18 @@ export type Msg =
   /// The send gesture: the composer's Enter (markup `on-submit`) and the
   /// Send button dispatch the same arm.
   | { readonly kind: "send" }
+  /// Cancel the live keyed request, keeping any assistant text that has
+  /// already arrived as the stopped response.
+  | { readonly kind: "stop" }
   /// Re-issue the failed request over the history as it stands (the
   /// unanswered user turn is already the last entry).
   | { readonly kind: "retry" }
   | { readonly kind: "clear" }
+  | { readonly kind: "toggle_model_picker" }
+  | { readonly kind: "close_model_picker" }
+  | { readonly kind: "pick_model_sol" }
+  | { readonly kind: "pick_model_luna" }
+  | { readonly kind: "pick_model_terra" }
   /// One complete SSE/body line from the Gateway.
   | { readonly kind: "chat_line"; readonly line: Bytes }
   /// The delivered streaming response's terminal HTTP status.
@@ -319,11 +341,38 @@ export function emptyConversation(model: Model): boolean {
 }
 
 export function sendDisabled(model: Model): boolean {
-  return model.phase === "sending" || !isConfigured(model);
+  return !isConfigured(model);
+}
+
+export function modelNameLabel(model: Model): Bytes {
+  if (sameBytes(model.modelName, DEFAULT_MODEL)) return MODEL_LABEL_LUNA;
+  if (sameBytes(model.modelName, MODEL_TERRA)) return MODEL_LABEL_TERRA;
+  if (sameBytes(model.modelName, MODEL_SOL)) return MODEL_LABEL_SOL;
+  return model.modelName;
+}
+
+function sameBytes(left: Bytes, right: Bytes): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+export function modelIsSol(model: Model): boolean {
+  return sameBytes(model.modelName, MODEL_SOL);
+}
+
+export function modelIsLuna(model: Model): boolean {
+  return sameBytes(model.modelName, DEFAULT_MODEL);
+}
+
+export function modelIsTerra(model: Model): boolean {
+  return sameBytes(model.modelName, MODEL_TERRA);
 }
 
 /// One conversation row for markup's `for each`: the role flag picks the
-/// bubble side and colors.
+/// user-bubble or plain-assistant-text presentation.
 export interface TurnRow {
   readonly id: number;
   readonly user: boolean;
@@ -340,6 +389,21 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
   switch (msg.kind) {
     case "draft_edit":
       return [{ ...model, draft: composerApply(model.draft, msg.edit) }, Cmd.none];
+    case "toggle_model_picker":
+      return [{
+        ...model,
+        modelPickerOpen: !model.modelPickerOpen,
+        promptAutofocus: model.modelPickerOpen ? model.promptAutofocus : false,
+      }, Cmd.none];
+    case "close_model_picker":
+      if (!model.modelPickerOpen) return [model, Cmd.none];
+      return [{ ...model, modelPickerOpen: false }, Cmd.none];
+    case "pick_model_sol":
+      return [{ ...model, modelName: MODEL_SOL, modelPickerOpen: false, promptAutofocus: true }, Cmd.none];
+    case "pick_model_luna":
+      return [{ ...model, modelName: DEFAULT_MODEL, modelPickerOpen: false, promptAutofocus: true }, Cmd.none];
+    case "pick_model_terra":
+      return [{ ...model, modelName: MODEL_TERRA, modelPickerOpen: false, promptAutofocus: true }, Cmd.none];
     case "send": {
       // The in-flight guard: one request at a time, by model state — a
       // second send while one is out is a no-op, so the "chat" key can
@@ -358,6 +422,8 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           pendingReply: new Uint8Array(0),
           streamDone: false,
           draft: composerInit(),
+          modelPickerOpen: false,
+          promptAutofocus: false,
           chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
           scrollPulse: !model.scrollPulse,
         },
@@ -393,6 +459,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
           failReason: new Uint8Array(0),
           pendingReply: new Uint8Array(0),
           streamDone: false,
+          promptAutofocus: false,
           chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
           scrollPulse: !model.scrollPulse,
         },
@@ -413,6 +480,33 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         ),
       ];
     }
+    case "stop": {
+      if (model.phase !== "sending") return [model, Cmd.none];
+      if (model.pendingReply.length === 0) {
+        return [{
+          ...model,
+          phase: "idle",
+          failReason: new Uint8Array(0),
+          pendingReply: new Uint8Array(0),
+          streamDone: false,
+          promptAutofocus: true,
+          chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+          scrollPulse: !model.scrollPulse,
+        }, Cmd.cancel("chat")];
+      }
+      return [{
+        ...model,
+        turns: [...model.turns, { id: model.nextId, role: "assistant", text: model.pendingReply }],
+        nextId: model.nextId < 9007199254740991 ? model.nextId + 1 : 9007199254740991,
+        phase: "idle",
+        failReason: new Uint8Array(0),
+        pendingReply: new Uint8Array(0),
+        streamDone: false,
+        promptAutofocus: true,
+        chatScrollTop: model.scrollPulse ? SCROLL_BOTTOM - 1 : SCROLL_BOTTOM,
+        scrollPulse: !model.scrollPulse,
+      }, Cmd.cancel("chat")];
+    }
     case "clear": {
       const next: Model = {
         ...model,
@@ -423,6 +517,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
         pendingReply: new Uint8Array(0),
         streamDone: false,
         draft: composerInit(),
+        modelPickerOpen: false,
         chatScrollTop: 0,
         scrollPulse: false,
       };

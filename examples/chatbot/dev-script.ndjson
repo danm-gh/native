@@ -18,7 +18,7 @@
 {"kind":"draft_edit","edit":{"kind":"insert_text","text":{"$bytes":"Say hi in two words"}}}
 {"kind":"send"}
 
-# Two Gateway deltas grow the pending assistant bubble immediately. The
+# Two Gateway deltas grow the pending assistant response immediately. The
 # explicit [DONE] marker and HTTP terminal then commit the whole turn.
 {"kind":"chat_line","line":{"$bytes":"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\\n\"}}]}"}}
 {"kind":"chat_line","line":{"$bytes":"data: {\"choices\":[{\"delta\":{\"content\":\"there!\"}}]}"}}

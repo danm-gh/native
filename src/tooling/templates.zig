@@ -1731,6 +1731,8 @@ fn buildZig(allocator: std.mem.Allocator, names: TemplateNames, framework_path: 
         \\        }
         \\        app_mod.linkFramework("AppKit", .{});
         \\        app_mod.linkFramework("AVFoundation", .{});
+        \\        app_mod.linkFramework("CoreMedia", .{});
+        \\        app_mod.linkFramework("ScreenCaptureKit", .{ .weak = true });
         \\        app_mod.linkFramework("CoreVideo", .{});
         \\        app_mod.linkFramework("MediaToolbox", .{});
         \\        app_mod.linkFramework("Accelerate", .{});
@@ -1846,6 +1848,10 @@ fn buildZig(allocator: std.mem.Allocator, names: TemplateNames, framework_path: 
         \\        app_mod.linkSystemLibrary("ole32", .{});
         \\        app_mod.linkSystemLibrary("oleacc", .{});
         \\        app_mod.linkSystemLibrary("shell32", .{});
+        \\        // TypeScript cores link ScriptC's host runtime, whose network-interface
+        \\        // helpers use GetAdaptersAddresses and Winsock address conversion.
+        \\        app_mod.linkSystemLibrary("iphlpapi", .{});
+        \\        app_mod.linkSystemLibrary("ws2_32", .{});
         \\        // The audio backend: Media Foundation (session + source resolver
         \\        // + streaming audio renderer) and WinHTTP (the cache fill).
         \\        app_mod.linkSystemLibrary("mf", .{});

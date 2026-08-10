@@ -2,9 +2,10 @@
 // v2 effect record — an init-command request, keyed replace and cancel,
 // a fire-and-forget bytes command, Cmd.now, a model-gated timer
 // subscription, the named engine ops (readFile/writeFile/fetch/
-// clipboard) plus the one-shot delay, and the streaming ops (a real
-// subprocess spawn with line/exit routing and mid-stream cancel, and
-// the audio and video event streams with their control verbs).
+// clipboard) plus the one-shot delay, and the streaming ops (a line-
+// streamed fetch, a real subprocess spawn with line/exit routing and
+// mid-stream cancel, and the audio and video event streams with their
+// control verbs).
 // Transpiled at build time by the repo's own transpiler (never committed
 // as Zig) and driven through the real runtime by
 // tests/ts-core/host_e2e_tests.zig.
@@ -103,6 +104,9 @@ export type Msg =
   | { readonly kind: "wrote" }
   | { readonly kind: "get" }
   | { readonly kind: "fetched"; readonly status: number; readonly body: Uint8Array }
+  | { readonly kind: "stream" }
+  | { readonly kind: "streamed"; readonly status: number }
+  | { readonly kind: "cancel_stream" }
   | { readonly kind: "share" }
   | { readonly kind: "paste" }
   | { readonly kind: "later" }
@@ -234,6 +238,18 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       ];
     case "fetched":
       return [{ ...model, code: msg.status, status: msg.body }, Cmd.none];
+    case "stream":
+      return [
+        model,
+        Cmd.fetch(
+          { url: asciiBytes("https://status.test/events"), method: "POST", headers: { accept: "text/event-stream" }, body: model.status, timeoutMs: 60000, maxLineBytes: 65536 },
+          { key: "events", line: "lined", ok: "streamed", err: "failed" },
+        ),
+      ];
+    case "streamed":
+      return [{ ...model, code: msg.status }, Cmd.none];
+    case "cancel_stream":
+      return [model, Cmd.cancel("events")];
     case "share":
       return [model, Cmd.clipboardWrite(model.status)];
     case "paste":

@@ -35,7 +35,7 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
             for (self.widget_layout_nodes[0..self.widget_layout_node_count], 0..) |node, index| {
                 if (node.widget.kind != .scroll_view or canvasWidgetModelDrivenVirtual(node.widget)) continue;
                 // Native drivers own momentum + rubber-band recovery.
-                if (node.widget.native_scroll) continue;
+                if (node.widget.runtime_flags.native_scroll) continue;
                 const viewport = node.frame.inset(node.widget.layout.padding).normalized();
                 if (viewport.isEmpty()) continue;
                 const physics = canvas.widgetScrollPhysics(node.widget, self.widget_tokens.scroll);
@@ -215,7 +215,7 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
             // an engine overscroll here would have no kinetic step to
             // pull it back.
             const physics = canvas.widgetScrollPhysics(scroll_node.widget, self.widget_tokens.scroll);
-            const rubberband = allow_rubberband and !scroll_node.widget.native_scroll;
+            const rubberband = allow_rubberband and !scroll_node.widget.runtime_flags.native_scroll;
             const next = switch (source) {
                 .wheel => if (rubberband)
                     current.applyWheel(delta, physics)
@@ -387,7 +387,7 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
             for (self.widget_layout_nodes[0..self.widget_layout_node_count], 0..) |scroll_node, scroll_index| {
                 if (scroll_node.widget.kind != .scroll_view or canvasWidgetModelDrivenVirtual(scroll_node.widget)) continue;
                 // Native drivers own momentum + rubber-band recovery.
-                if (scroll_node.widget.native_scroll) continue;
+                if (scroll_node.widget.runtime_flags.native_scroll) continue;
 
                 const viewport = scroll_node.frame.inset(scroll_node.widget.layout.padding).normalized();
                 if (viewport.isEmpty()) {
@@ -473,7 +473,7 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
             if (scroll_index < self.widget_layout_node_count) {
                 const widget = self.widget_layout_nodes[scroll_index].widget;
                 if (widget.kind == .textarea) {
-                    return if (widget.code_editor)
+                    return if (widget.runtime_flags.code_editor)
                         @max(viewport.width, canvas.textInputContentWidthForWidget(widget, self.widget_tokens))
                     else
                         viewport.width;
@@ -524,7 +524,7 @@ pub fn RuntimeViewCanvasWidgetScroll(comptime RuntimeView: type) type {
             }
             if (widget.kind != .textarea) return;
 
-            if (widget.code_editor and widget.text_no_wrap) {
+            if (widget.runtime_flags.code_editor and widget.text_no_wrap) {
                 const next_x = canvas.textInputCaretVisibleScrollOffsetForWidget(widget, self.widget_tokens, widget.value_x);
                 if (next_x != widget.value_x) {
                     widget.value_x = next_x;

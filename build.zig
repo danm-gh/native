@@ -3171,18 +3171,18 @@ fn tsCoreE2eArtifact(
     const scaffold_ide_mod = module(b, target, optimize, "tests/ts-core/scaffold_ide_e2e_tests.zig");
     scaffold_ide_mod.addImport("tooling", tooling_mod);
 
-    // The ai-chat-ts example's core and markup, tested the same way:
+    // The Chatbot example's core and markup, tested the same way:
     // the chat client for an OpenAI-compatible endpoint, driven through
     // the fake fetch feed (no network) with its shipping markup.
     const ai_chat_fixture = externalCoreFixtureModule(b, target, optimize, node, corewire_exe, .{
-        .entry = "examples/ai-chat-ts/src/core.ts",
-        .src_dir = b.path("examples/ai-chat-ts/src"),
+        .entry = "examples/chatbot/src/core.ts",
+        .src_dir = b.path("examples/chatbot/src"),
         .name = "ai_chat_core",
     });
     const ai_chat_core_mod = ai_chat_fixture.module;
     const ai_chat_stage = b.addWriteFiles();
     const ai_chat_root = ai_chat_stage.addCopyFile(b.path("tests/ts-core/ai_chat_e2e_tests.zig"), "ai_chat_e2e_tests.zig");
-    _ = ai_chat_stage.addCopyFile(b.path("examples/ai-chat-ts/src/app.native"), "app.native");
+    _ = ai_chat_stage.addCopyFile(b.path("examples/chatbot/src/app.native"), "app.native");
     const ai_chat_mod = b.createModule(.{
         .root_source_file = ai_chat_root,
         .target = target,

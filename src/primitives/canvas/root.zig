@@ -426,6 +426,7 @@ pub const DesignTokens = token_model.DesignTokens;
 pub const WidgetKind = widget_model.WidgetKind;
 pub const WidgetCursor = widget_model.WidgetCursor;
 pub const WidgetState = widget_model.WidgetState;
+pub const WidgetRuntimeFlags = widget_model.WidgetRuntimeFlags;
 pub const WidgetLayoutMotion = widget_model.WidgetLayoutMotion;
 pub const WidgetRenderState = widget_model.WidgetRenderState;
 pub const WidgetMainAlignment = widget_model.WidgetMainAlignment;

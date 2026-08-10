@@ -2862,7 +2862,7 @@ fn canvasWidgetTerminalOwnsTabInput(layout: canvas.WidgetLayoutTree, target: can
 fn canvasWidgetCodeEditorOwnsTabInput(layout: canvas.WidgetLayoutTree, target: canvas.WidgetFocusTarget) bool {
     if (target.kind != .textarea or target.index >= layout.nodes.len) return false;
     const widget = layout.nodes[target.index].widget;
-    return widget.code_editor and !widget.state.disabled;
+    return widget.runtime_flags.code_editor and !widget.state.disabled;
 }
 
 fn canvasDirtyRegionForView(view_frame: geometry.RectF, local_dirty: geometry.RectF) ?geometry.RectF {

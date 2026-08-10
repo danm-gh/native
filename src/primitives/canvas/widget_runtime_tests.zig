@@ -2796,6 +2796,83 @@ test "drag landing layout motion escapes its scroll lane clip" {
     try std.testing.expect(saw_landing_motion);
 }
 
+test "rich text remains visible in floating drag and landing passes" {
+    const source = "Lifted rich text";
+    const spans = [_]canvas.TextSpan{.{ .text = source }};
+    const root_frame = geometry.RectF.init(0, 0, 320, 140);
+    const scroll_frame = geometry.RectF.init(10, 10, 140, 60);
+    const card_frame = geometry.RectF.init(12, 80, 120, 36);
+    const text_frame = geometry.RectF.init(18, 86, 108, 24);
+    const nodes = [_]WidgetLayoutNode{
+        .{
+            .widget = .{ .id = 1, .kind = .panel, .frame = root_frame },
+            .frame = root_frame,
+            .depth = 0,
+        },
+        .{
+            .widget = .{ .id = 2, .kind = .scroll_view, .frame = scroll_frame },
+            .frame = scroll_frame,
+            .depth = 1,
+            .parent_index = 0,
+        },
+        .{
+            .widget = .{
+                .id = 3,
+                .kind = .row,
+                .frame = card_frame,
+                .style = .{ .background = Color.rgb8(240, 240, 240), .radius = 6 },
+            },
+            .frame = card_frame,
+            .depth = 2,
+            .parent_index = 1,
+        },
+        .{
+            .widget = .{
+                .id = 4,
+                .kind = .text,
+                .frame = text_frame,
+                .text = source,
+                .spans = &spans,
+            },
+            .frame = text_frame,
+            .depth = 3,
+            .parent_index = 2,
+        },
+    };
+    const layout = WidgetLayoutTree{ .nodes = &nodes };
+
+    var preview_commands: [64]CanvasCommand = undefined;
+    var preview_builder = Builder.init(&preview_commands);
+    try layout.emitDisplayListWithState(&preview_builder, .{}, .{
+        .drag_preview_id = 3,
+        .drag_preview_origin = geometry.PointF.init(card_frame.x, card_frame.y),
+        .drag_preview_offset = geometry.OffsetF.init(0, -60),
+    });
+
+    var preview_has_text = false;
+    for (preview_builder.displayList().commands) |command| switch (command) {
+        .draw_text => |draw| preview_has_text = preview_has_text or std.mem.eql(u8, source, draw.text),
+        else => {},
+    };
+    try std.testing.expect(preview_has_text);
+
+    const layout_motions = [_]WidgetLayoutMotion{.{
+        .id = 3,
+        .offset = geometry.OffsetF.init(0, -60),
+        .escape_ancestor_clips = true,
+    }};
+    var landing_commands: [64]CanvasCommand = undefined;
+    var landing_builder = Builder.init(&landing_commands);
+    try layout.emitDisplayListWithState(&landing_builder, .{}, .{ .layout_motions = &layout_motions });
+
+    var landing_has_text = false;
+    for (landing_builder.displayList().commands) |command| switch (command) {
+        .draw_text => |draw| landing_has_text = landing_has_text or std.mem.eql(u8, source, draw.text),
+        else => {},
+    };
+    try std.testing.expect(landing_has_text);
+}
+
 test "input-group wears the focus ring for its focused descendant" {
     const tokens = DesignTokens{};
     const group_children = [_]Widget{

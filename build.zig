@@ -2903,19 +2903,28 @@ pub fn build(b: *std.Build) void {
     const notarize_step = b.step("notarize", "Package, sign with identity, and notarize for macOS distribution");
     notarize_step.dependOn(&notarize_run.step);
 
-    const dmg_script = b.addSystemCommand(&.{
-        "sh", "-c",
-        b.fmt(
-            \\APP="zig-out/package/native-sdk-{s}-macos-{s}.app"
-            \\DMG="zig-out/package/native-sdk-{s}-macos-{s}.dmg"
-            \\test -d "$APP" || {{ echo "run 'zig build package' first" >&2; exit 1; }}
-            \\hdiutil create -volname "native-sdk" -srcfolder "$APP" -ov -format UDZO "$DMG"
-            \\echo "created $DMG"
-        , .{ package_version, optimize_name, package_version, optimize_name }),
+    // Run the same styled archive path app developers get from
+    // `native package --archive`: generated/custom background, Applications
+    // alias, Finder geometry, then compressed UDZO output. Keeping this as a
+    // CLI invocation means the repository helper cannot drift into producing
+    // a plainer image than the product surface it documents.
+    const dmg_run = b.addRunArtifact(host_cli_exe);
+    dmg_run.addArgs(&.{
+        "package",
+        "--target",
+        "macos",
+        "--output",
+        b.fmt("zig-out/package/native-sdk-{s}-macos-{s}.app", .{ package_version, optimize_name }),
+        "--binary",
     });
-    dmg_script.step.dependOn(&package_run.step);
-    const dmg_step = b.step("dmg", "Create macOS .dmg disk image from the packaged .app");
-    dmg_step.dependOn(&dmg_script.step);
+    dmg_run.addFileArg(embed_lib.getEmittedBin());
+    dmg_run.addArgs(&.{ "--manifest", "app.zon", "--assets", "assets", "--optimize", optimize_name, "--signing", @tagName(signing_mode), "--web-engine", @tagName(web_engine), "--cef-dir", cef_dir, "--archive" });
+    if (cef_auto_install) dmg_run.addArg("--cef-auto-install");
+    dmg_run.step.dependOn(&embed_lib.step);
+    dmg_run.step.dependOn(&bundle_run.step);
+    dmg_run.has_side_effects = true;
+    const dmg_step = b.step("dmg", "Create a styled macOS .dmg with a drag-to-Applications layout");
+    dmg_step.dependOn(&dmg_run.step);
 
     const cef_bundle_script = b.addSystemCommand(&.{
         "sh", "-c",

@@ -185,7 +185,7 @@ Customize the presentation in `app.zon`:
 },
 ```
 
-The window dimensions are the usable background canvas, excluding Finder's title bar. Positions are icon centers measured from the canvas's top-left corner. The background must be a project-relative PNG, JPEG, or TIFF at the configured window size; Finder displays it at its natural size. For Retina artwork, put a double-sized sibling next to it using the `@2x` convention—for example, `dmg-background.png` at 720×440 and `dmg-background@2x.png` at 1440×880. Native discovers the pair and packages both representations. A prebuilt multi-resolution TIFF also works.
+The window dimensions are the usable background canvas, excluding Finder's title bar. Positions are icon centers measured from the canvas's top-left corner. The background must be a project-relative PNG, JPEG, or TIFF at the configured window size; Finder displays it at its natural size. `native validate` and packaging reject malformed images or dimensions that do not match the configured canvas. For Retina artwork, put a double-sized sibling next to it using the `@2x` convention—for example, `dmg-background.png` at 720×440 and `dmg-background@2x.png` at 1440×880. Native discovers the pair, verifies that the sibling is exactly double-sized, and packages both representations. A prebuilt multi-resolution TIFF also works.
 
 Omitting `background` keeps Native's generated Retina-aware gradient and draws the arrow between the configured app and Applications positions. Set `applications_link = false` only for a disk image that is not meant to use the conventional drag-to-install flow.
 

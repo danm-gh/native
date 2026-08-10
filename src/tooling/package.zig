@@ -166,10 +166,14 @@ pub fn createPackage(allocator: std.mem.Allocator, io: std.Io, options: PackageO
     };
     try validateWebEngineTarget(options.target, options.web_engine);
     if (options.target == .macos and options.archive) {
-        manifest_tool.validateDmgSettings(options.metadata.dmg) catch |err| {
+        manifest_tool.validateDmgPackageSettings(options.metadata) catch |err| {
             std.debug.print("error: app.zon dmg settings are invalid ({s})\n", .{@errorName(err)});
             return err;
         };
+        if (try manifest_tool.checkDmgSources(allocator, io, options.project_dir, options.metadata.dmg)) |message| {
+            std.debug.print("error: {s}\n", .{message});
+            return error.InvalidDmgSource;
+        }
     }
     var stats = switch (options.target) {
         .macos => try createMacosApp(allocator, io, options),
@@ -2177,9 +2181,7 @@ fn stageDmgItems(
 
 fn dmgRetinaBackgroundSourceAlloc(allocator: std.mem.Allocator, io: std.Io, project_dir: []const u8, background: ?[]const u8) !?[]const u8 {
     const path = background orelse return null;
-    if (app_icon_tool.pathHasExtension(path, ".tif") or app_icon_tool.pathHasExtension(path, ".tiff")) return null;
-    const extension = std.fs.path.extension(path);
-    const retina_relative = try std.fmt.allocPrint(allocator, "{s}@2x{s}", .{ path[0 .. path.len - extension.len], extension });
+    const retina_relative = (try manifest_tool.dmgRetinaRelativePathAlloc(allocator, path)) orelse return null;
     defer allocator.free(retina_relative);
     const retina_source = try std.fs.path.join(allocator, &.{ project_dir, retina_relative });
     errdefer allocator.free(retina_source);
@@ -2664,6 +2666,30 @@ test "DMG background discovers an adjacent retina source" {
     const background_name = try dmgBackgroundNameAlloc(std.testing.allocator, "art/installer.png", true);
     defer std.testing.allocator.free(background_name);
     try std.testing.expectEqualStrings("background.tiff", background_name);
+}
+
+test "macOS archive rejects an invalid DMG background before staging the app" {
+    var cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/test-package-dmg-invalid-background";
+    try cwd.deleteTree(std.testing.io, root);
+    defer cwd.deleteTree(std.testing.io, root) catch {};
+    try cwd.createDirPath(std.testing.io, root ++ "/art");
+    try cwd.writeFile(std.testing.io, .{ .sub_path = root ++ "/art/installer.png", .data = "not a png" });
+
+    try std.testing.expectError(error.InvalidDmgSource, createPackage(std.testing.allocator, std.testing.io, .{
+        .metadata = .{
+            .id = "dev.example.demo",
+            .name = "demo",
+            .display_name = "Demo",
+            .version = "1.0.0",
+            .dmg = .{ .background = "art/installer.png" },
+        },
+        .target = .macos,
+        .output_path = root ++ "/Demo.app",
+        .project_dir = root,
+        .archive = true,
+    }));
+    try std.testing.expectError(error.FileNotFound, cwd.openDir(std.testing.io, root ++ "/Demo.app", .{}));
 }
 
 test "DMG app bundle uses the display name or explicit item override" {

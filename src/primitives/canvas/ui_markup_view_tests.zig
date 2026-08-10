@@ -2025,7 +2025,7 @@ test "code markup builds the reusable component with opt-in numbers and horizont
     var editable_ui = CodeUi.init(arena);
     const editable_tree = try editable_ui.finalize(try view.build(&editable_ui, &editable_model));
     try testing.expectEqual(canvas.WidgetKind.textarea, editable_tree.root.kind);
-    try testing.expect(editable_tree.root.code_editor);
+    try testing.expect(editable_tree.root.runtime_flags.code_editor);
     try testing.expectEqual(@as(usize, 1), editable_tree.root.spans.len);
     try testing.expectEqual(code_model.Language.tsx, editable_tree.root.code_language);
     try testing.expect(editable_tree.root.text_no_wrap);

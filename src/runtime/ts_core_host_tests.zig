@@ -1821,6 +1821,41 @@ test "streaming fetch failures and cancellation are loud terminals" {
     try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
 }
 
+test "a lossy streaming fetch terminates as truncated instead of success" {
+    const fx = freshChannel();
+    defer fx.deinit();
+    Host.init(fx);
+
+    // A later delivered line reports earlier queue loss. The line still
+    // routes, but even a normal HTTP terminal cannot certify the response as
+    // complete afterward.
+    Host.dispatch(fx, .stream_get);
+    try fx.feedLineWithMetadata(event_fetch_key, "data: [DONE]", false, 2);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 1), Host.model().line_count);
+    try fx.feedResponse(event_fetch_key, 200, "");
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 1), Host.model().errs);
+    try std.testing.expectEqualStrings("truncated", Host.model().last_err);
+    try std.testing.expectEqual(@as(i64, -1), Host.model().code);
+
+    // Loss with no later line rides the response terminal itself. Cover both
+    // terminal metadata fields: either one must suppress the ok arm.
+    Host.dispatch(fx, .stream_get);
+    try fx.feedResponseOutcomeWithMetadata(event_fetch_key, .ok, 204, "", true, 0);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 2), Host.model().errs);
+    try std.testing.expectEqualStrings("truncated", Host.model().last_err);
+    try std.testing.expectEqual(@as(i64, -1), Host.model().code);
+
+    Host.dispatch(fx, .stream_get);
+    try fx.feedResponseOutcomeWithMetadata(event_fetch_key, .ok, 206, "", false, 3);
+    Host.drain(fx);
+    try std.testing.expectEqual(@as(i64, 3), Host.model().errs);
+    try std.testing.expectEqualStrings("truncated", Host.model().last_err);
+    try std.testing.expectEqual(@as(i64, -1), Host.model().code);
+}
+
 test "a duplicate live streaming fetch key is rejected without replacing the stream" {
     const fx = freshChannel();
     defer fx.deinit();

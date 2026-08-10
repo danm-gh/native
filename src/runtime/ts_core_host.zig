@@ -538,6 +538,11 @@ pub fn TsCoreHost(comptime core: type) type {
             exit_tag: u8 = 0,
             err_tag: u8 = 0,
             collect: bool = false,
+            /// Fetch lines are data records, so a cut or dropped line makes
+            /// the eventual success terminal unusable. Spawn line mode keeps
+            /// its existing best-effort contract.
+            fetch: bool = false,
+            damaged: bool = false,
 
             fn wireKey(entry: *const StreamEntry) []const u8 {
                 return entry.key[0..entry.key_len];
@@ -1485,6 +1490,8 @@ pub fn TsCoreHost(comptime core: type) type {
             entry.exit_tag = head.exit_tag;
             entry.err_tag = head.err_tag;
             entry.collect = collect;
+            entry.fetch = false;
+            entry.damaged = false;
             fx.spawn(.{
                 .key = spawn_key_base + index,
                 .argv = argv,
@@ -1527,6 +1534,8 @@ pub fn TsCoreHost(comptime core: type) type {
             entry.exit_tag = head.exit_tag;
             entry.err_tag = head.err_tag;
             entry.collect = false;
+            entry.fetch = true;
+            entry.damaged = false;
             fx.fetch(.{
                 .key = spawn_key_base + index,
                 .method = options.method,
@@ -1569,10 +1578,16 @@ pub fn TsCoreHost(comptime core: type) type {
             return &streams[index];
         }
 
-        /// Shared `LineMsgFn` for spawn and fetch streams: every complete
+        /// Shared `LineMsgFn` for spawn and fetch streams: every delivered
         /// source line routes the entry's line arm; the entry stays live.
+        /// Fetch streams additionally remember any cut line or preceding
+        /// queue loss so their terminal cannot later claim the response was
+        /// complete.
         fn streamLineMsg(line: runtime_effects.EffectLine) Msg {
             const entry = streamAt(line.key);
+            if (entry.fetch and (line.truncated or line.dropped_before != 0)) {
+                entry.damaged = true;
+            }
             return msgFromTagBytes(entry.line_tag, line.line);
         }
 
@@ -1598,15 +1613,18 @@ pub fn TsCoreHost(comptime core: type) type {
             return msgFromTagBytes(entry.err_tag, reason);
         }
 
-        /// The streamed fetch's ONE terminal. A delivered response — any HTTP
-        /// status, including non-2xx — routes the status through the ok arm;
-        /// transport failure, timeout, rejection, and cancellation route the
+        /// The streamed fetch's ONE terminal. A delivered, lossless response
+        /// — any HTTP status, including non-2xx — routes the status through
+        /// the ok arm. A cut/dropped line routes `truncated`; transport
+        /// failure, timeout, rejection, and cancellation route their
         /// machine-readable outcome through err. The terminal retires the
         /// shared stream entry, so no later line can route for the key.
         fn fetchStreamResultMsg(response: runtime_effects.EffectResponse) Msg {
             const entry = streamAt(response.key);
+            const damaged = entry.damaged or response.truncated or response.dropped_before != 0;
             entry.used = false;
             if (response.outcome == .ok) {
+                if (damaged) return msgFromTagStaticBytes(entry.err_tag, "truncated");
                 return msgFromTagNumber(entry.exit_tag, @floatFromInt(response.status));
             }
             return msgFromTagBytes(entry.err_tag, @tagName(response.outcome));

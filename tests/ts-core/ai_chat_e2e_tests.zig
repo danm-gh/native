@@ -224,6 +224,16 @@ const Harness = struct {
         } });
     }
 
+    fn keyDownShift(self: *Harness, key: []const u8) !void {
+        try self.harness.runtime.dispatchPlatformEvent(self.app, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = .key_down,
+            .key = key,
+            .modifiers = .{ .shift = true },
+        } });
+    }
+
     /// Focus the composer, type the message, and press Send — the whole
     /// user gesture through the real input path.
     fn say(self: *Harness, text: []const u8) !void {
@@ -773,6 +783,19 @@ test "the in-flight guard: a second send issues nothing and loses nothing" {
     try std.testing.expectEqual(@as(usize, 4), Bridge.model().turns.len);
     try h.click(h.findLabel("Message").?);
     try h.textInput("   ");
+    try h.click(h.findLabel("Send message").?);
+    try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
+    try std.testing.expectEqual(@as(usize, 4), Bridge.model().turns.len);
+
+    // Shift+Enter inserts a real LF in the textarea. General whitespace
+    // trimming must still reject the draft instead of issuing a blank turn.
+    try h.click(h.findLabel("Message").?);
+    try h.keyDownShift("enter");
+    {
+        var draft_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer draft_arena.deinit();
+        try std.testing.expectEqualStrings("   \n", Bridge.model().draftText(draft_arena.allocator()));
+    }
     try h.click(h.findLabel("Send message").?);
     try std.testing.expectEqual(@as(usize, 0), fx.pendingFetchCount());
     try std.testing.expectEqual(@as(usize, 4), Bridge.model().turns.len);

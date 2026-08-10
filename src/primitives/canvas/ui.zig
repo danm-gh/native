@@ -2467,7 +2467,7 @@ pub fn Ui(comptime Msg: type) type {
                 else
                     0;
                 if (diff_lines) |lines| editor.widget.setCodeDiffLines(lines);
-                editor.widget.code_editor = true;
+                editor.widget.runtime_flags.code_editor = true;
                 editor.widget.code_language = options.language;
                 editor.widget.layout.clip_content = true;
                 return editor;

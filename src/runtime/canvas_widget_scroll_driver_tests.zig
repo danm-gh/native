@@ -93,7 +93,7 @@ test "layout install publishes native scroll drivers and suppresses engine scrol
     // The retained scroll node is marked natively driven and the engine
     // scrollbar (widget part slots 2 and 3) is not emitted.
     const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expect(retained.nodes[0].widget.native_scroll);
+    try std.testing.expect(retained.nodes[0].widget.runtime_flags.native_scroll);
     _ = try harness.runtime.emitCanvasWidgetDisplayList(1, "canvas", .{});
     const display_list = try harness.runtime.canvasDisplayList(1, "canvas");
     for (display_list.commands) |command| {
@@ -452,7 +452,7 @@ test "scroll drivers stay unpublished without platform support" {
 
     try std.testing.expectEqual(@as(usize, 0), harness.null_platform.scroll_driver_set_count);
     const retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expect(!retained.nodes[0].widget.native_scroll);
+    try std.testing.expect(!retained.nodes[0].widget.runtime_flags.native_scroll);
 
     // Engine scrollbar still draws for engine-owned scrolling.
     _ = try harness.runtime.emitCanvasWidgetDisplayList(1, "canvas", .{});
@@ -526,7 +526,7 @@ test "windowed virtual lists ride the native scroll driver with the full virtual
     // The retained region is natively driven: engine scrollbar and
     // engine physics stand down.
     var retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expect(retained.nodes[0].widget.native_scroll);
+    try std.testing.expect(retained.nodes[0].widget.runtime_flags.native_scroll);
 
     // A driver-reported offset scrolls the window (the optimistic echo
     // translates the built rows; the app's rebuild re-windows).
@@ -548,7 +548,7 @@ test "windowed virtual lists ride the native scroll driver with the full virtual
     _ = try harness.runtime.setCanvasWidgetLayout(1, "canvas", legacy_layout);
     try std.testing.expectEqual(@as(usize, 0), harness.null_platform.scrollDrivers().len);
     retained = try harness.runtime.canvasWidgetLayout(1, "canvas");
-    try std.testing.expect(!retained.nodes[0].widget.native_scroll);
+    try std.testing.expect(!retained.nodes[0].widget.runtime_flags.native_scroll);
 }
 
 test "a rebuild mid-overscroll keeps the driver's offset and pushes nothing" {

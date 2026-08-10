@@ -35,7 +35,6 @@ import { Cmd, asciiBytes, type EnvMsg } from "@native-sdk/core";
 import {
   applyTextInputEvent,
   clampedInsertEvent,
-  trimAsciiSpaces,
   type TextEditState,
   type TextInputEvent,
 } from "@native-sdk/core/text";
@@ -307,6 +306,20 @@ function isConfigured(model: Model): boolean {
   return model.apiKey.length > 0;
 }
 
+/// Composer whitespace includes LF, unlike the line-parser helper: a
+/// Shift+Enter-only draft must not issue a blank request.
+function trimComposerWhitespace(text: Bytes): Bytes {
+  let start = 0;
+  let end = text.length;
+  while (start < end && isAsciiWhitespace(text[start])) start += 1;
+  while (end > start && isAsciiWhitespace(text[end - 1])) end -= 1;
+  return text.subarray(start, end);
+}
+
+function isAsciiWhitespace(byte: number): boolean {
+  return byte === 0x20 || (byte >= 0x09 && byte <= 0x0d);
+}
+
 /// The teaching state: the Gateway key is missing, so the app can only
 /// explain how to connect it — and issues zero requests.
 export function unconfigured(model: Model): boolean {
@@ -414,7 +427,7 @@ export function update(model: Model, msg: Msg): [Model, Cmd<Msg>] {
       // second send while one is out is a no-op, so the "chat" key can
       // never collide at the engine.
       if (!isConfigured(model) || model.phase === "sending") return [model, Cmd.none];
-      const text = trimAsciiSpaces(model.draft.bytes);
+      const text = trimComposerWhitespace(model.draft.bytes);
       if (text.length === 0) return [model, Cmd.none];
       const turns: readonly Turn[] = [...model.turns, { id: model.nextId, role: "user", text: text }];
       const body = encodeChatRequestWithinLimit(model.modelName, SYSTEM_PROMPT, turns, MAX_REQUEST_BODY);

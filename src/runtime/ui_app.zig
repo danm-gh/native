@@ -1428,13 +1428,20 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             switch (control) {
                 .arm => self.effects.armReplay(),
                 .feed => |record| switch (record.kind) {
-                    .line => try self.effects.feedLine(record.key, record.payload),
+                    .line => try self.effects.feedLineWithMetadata(record.key, record.payload, record.truncated, record.dropped),
                     .exit => {
                         if (record.payload.len > 0) try self.effects.feedOutput(record.key, record.payload);
                         if (record.stderr_tail.len > 0) try self.effects.feedStderr(record.key, record.stderr_tail);
                         try self.effects.feedExitReason(record.key, record.code, record.exit_reason);
                     },
-                    .response => try self.effects.feedResponseOutcome(record.key, record.fetch_outcome, record.status, record.payload),
+                    .response => try self.effects.feedResponseOutcomeWithMetadata(
+                        record.key,
+                        record.fetch_outcome,
+                        record.status,
+                        record.payload,
+                        record.truncated,
+                        record.dropped,
+                    ),
                     .file => try self.effects.feedFileResult(record.key, record.file_outcome, record.payload),
                     .clipboard => try self.effects.feedClipboardResult(record.key, record.clipboard_outcome, record.payload),
                     // `.host` records ride the route in `code` (0 ok / 1

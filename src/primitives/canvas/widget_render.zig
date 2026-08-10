@@ -421,7 +421,7 @@ fn emitWidgetDepthContent(builder: *Builder, widget: Widget, tokens: DesignToken
         .icon_button => try widget_render_controls.emitIconButtonWidget(builder, paint_widget, tokens),
         .select => try widget_render_controls.emitSelectWidget(builder, paint_widget, tokens),
         .input, .text_field => try widget_render_controls.emitTextFieldWidget(builder, paint_widget, tokens),
-        .textarea => if (paint_widget.code_editor)
+        .textarea => if (paint_widget.runtime_flags.code_editor)
             try emitCodeEditorWidget(builder, paint_widget, tokens)
         else
             try widget_render_controls.emitTextFieldWidget(builder, paint_widget, tokens),
@@ -724,7 +724,7 @@ fn emitWidgetLayoutNodeContent(
             try emitWidgetLayoutChildren(builder, layout, node_index, tokens, state);
             try builder.popClip();
             // Native scroll drivers own the (OS overlay) scrollbar.
-            if (!paint_widget.native_scroll) {
+            if (!paint_widget.runtime_flags.native_scroll) {
                 try widget_render_scroll.emitScrollViewScrollbars(
                     builder,
                     paint_widget.frame,
@@ -811,7 +811,7 @@ fn emitWidgetLayoutNodeContent(
         .icon_button => try widget_render_controls.emitIconButtonWidget(builder, paint_widget, tokens),
         .select => try widget_render_controls.emitSelectWidget(builder, paint_widget, tokens),
         .input, .text_field => try widget_render_controls.emitTextFieldWidget(builder, paint_widget, tokens),
-        .textarea => if (paint_widget.code_editor)
+        .textarea => if (paint_widget.runtime_flags.code_editor)
             try emitCodeEditorWidget(builder, paint_widget, tokens)
         else
             try widget_render_controls.emitTextFieldWidget(builder, paint_widget, tokens),
@@ -885,7 +885,7 @@ fn emitWidgetLayoutScrollableChildren(
     // Native scroll drivers own the (OS overlay) scrollbar. These are
     // the virtualized containers — vertical machinery, so only the
     // vertical bar can exist.
-    if (!widget.native_scroll) {
+    if (!widget.runtime_flags.native_scroll) {
         try widget_render_scroll.emitScrollViewScrollbars(
             builder,
             widget.frame,
@@ -1128,7 +1128,7 @@ fn emitScrollViewWidget(builder: *Builder, widget: Widget, tokens: DesignTokens,
     try emitWidgetChildren(builder, widget.children, tokens, depth);
     try builder.popClip();
     // Native scroll drivers own the (OS overlay) scrollbar.
-    if (!widget.native_scroll) {
+    if (!widget.runtime_flags.native_scroll) {
         try widget_render_scroll.emitScrollViewScrollbars(
             builder,
             widget.frame,
@@ -1699,10 +1699,10 @@ fn emitVisibleCodeTextSpansWidget(
     visible_bounds: geometry.RectF,
     paint: CodeTextPaint,
 ) Error!void {
-    if (widget.code_editor and widget.text_no_wrap) {
+    if (widget.runtime_flags.code_editor and widget.text_no_wrap) {
         return emitVisibleEditableCodeLines(builder, widget, tokens, visible_bounds, paint);
     }
-    if (widget.code_editor) {
+    if (widget.runtime_flags.code_editor) {
         return emitVisibleWrappedEditableCodeLines(builder, widget, tokens, visible_bounds, paint);
     }
     const spans = widget.spans;
@@ -2322,7 +2322,7 @@ fn emitCodeLineDecorations(
     while (line_start <= widget.text.len) : (logical_line += 1) {
         // A terminal newline closes the preceding painted line; the span
         // breaker intentionally does not reserve another empty visual line.
-        if (line_start == widget.text.len and widget.text.len > 0 and !widget.code_editor) break;
+        if (line_start == widget.text.len and widget.text.len > 0 and !widget.runtime_flags.code_editor) break;
         const newline = std.mem.indexOfScalarPos(u8, widget.text, line_start, '\n');
         const line_end = newline orelse widget.text.len;
         const line = widget.text[line_start..line_end];

@@ -940,7 +940,7 @@ pub fn canvasWidgetLayoutNodeWithTextReconcileState(
         // right after, so a resized or re-texted field never keeps a
         // stale offset).
         if (canvasWidgetEditableTextKind(copy.widget.kind)) copy.widget.value = entry.value;
-        if (copy.widget.code_editor) {
+        if (copy.widget.runtime_flags.code_editor) {
             copy.widget.value_x = entry.value_x;
             if (!copy.widget.hasCodeDiff()) {
                 copy.widget.code_content_width = entry.code_content_width;
@@ -1169,7 +1169,7 @@ pub fn clampCanvasWidgetLayoutScrollOffsets(nodes: []canvas.WidgetLayoutNode, st
         // must behave the same on every host, or a source still
         // echoing the old offset would resurrect it on re-grant only
         // where drivers run.
-        if (node.widget.native_scroll) {
+        if (node.widget.runtime_flags.native_scroll) {
             const pin_y = !canvas.widgetScrollsAxis(node.widget, .vertical) and node.widget.value != 0;
             const pin_x = !canvas.widgetScrollsAxis(node.widget, .horizontal) and node.widget.value_x != 0;
             if (pin_y) nodes[index].widget.value = 0;
@@ -1241,7 +1241,7 @@ pub fn clampCanvasWidgetLayoutTextOffsets(nodes: []canvas.WidgetLayoutNode, toke
         if (node.widget.kind == .textarea) {
             canvas.cacheTextInputContentWidthForWidget(&node.widget, tokens);
             node.widget.value = canvas.clampedTextInputScrollOffsetForWidget(node.widget, tokens, node.widget.value);
-            node.widget.value_x = if (node.widget.code_editor)
+            node.widget.value_x = if (node.widget.runtime_flags.code_editor)
                 canvas.clampedTextInputHorizontalScrollOffsetForWidget(node.widget, tokens, node.widget.value_x)
             else
                 0;

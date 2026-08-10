@@ -66,6 +66,7 @@
 //                                `line` arm, then exactly one terminal follows:
 //                                `ok` with the HTTP status as its one number
 //                                field, or `err` with the transport reason
+//                                (or "truncated" if any line was cut/dropped)
 //   Cmd.clipboardWrite(bytes)    fire-and-forget clipboard write
 //   Cmd.clipboardRead({ key?, ok, err })
 //                                clipboard read; ok arm carries the text bytes,
@@ -730,7 +731,8 @@ export interface FetchRoute<M extends Msgish> {
 
 /// Streaming `Cmd.fetch` routing: each complete response line dispatches the
 /// `line` arm with its bytes; the one successful terminal dispatches `ok` with
-/// the HTTP status. Transport failure and cancellation dispatch `err` with the
+/// the HTTP status. A cut/dropped line dispatches `err` with `"truncated"` at
+/// the terminal; transport failure and cancellation dispatch `err` with their
 /// machine-readable reason bytes.
 export interface FetchStreamRoute<M extends Msgish> {
   readonly key?: string;
@@ -843,7 +845,9 @@ export interface FetchSpec {
 
 /// A line-streamed fetch request. `maxLineBytes` overrides the engine's 4 KiB
 /// per-line default for SSE/NDJSON protocols whose individual records are
-/// larger; it is bounded by the engine's 256 KiB per-line ceiling.
+/// larger; it is bounded by the engine's 256 KiB per-line ceiling. If a line
+/// is cut or dropped, the stream still ends through `err: "truncated"` rather
+/// than reporting a successful terminal.
 export interface FetchStreamSpec extends FetchSpec {
   readonly maxLineBytes?: number;
 }
@@ -1066,7 +1070,8 @@ function hostCmd(name: string, ...rest: readonly (number | Uint8Array | HostReco
 /// response. Adding `line` selects line streaming: each complete line arrives
 /// through that one-bytes-field arm, then `ok` receives the terminal HTTP
 /// status as its one number payload. A non-2xx status is still `ok` because the
-/// server delivered a response; transport failures and cancellation use `err`.
+/// server delivered a response; cut/dropped stream lines, transport failures,
+/// and cancellation use `err` (`"truncated"` for stream data loss).
 function fetchCmd<M extends Msgish>(spec: FetchSpec, route: FetchRoute<M>): Cmd<M>;
 function fetchCmd<M extends Msgish>(spec: FetchStreamSpec, route: FetchStreamRoute<M>): Cmd<M>;
 function fetchCmd<M extends Msgish>(

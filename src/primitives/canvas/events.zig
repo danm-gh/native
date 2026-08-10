@@ -141,7 +141,7 @@ pub fn widgetKeyboardNewlineTextEditEvent(widget: Widget, event: WidgetKeyboardE
 /// wider width winning exact ties (4-space files also divide by 2).
 /// Ambiguous or unindented source falls back to two spaces.
 pub fn widgetCodeTabTextEditEvent(widget: Widget, event: WidgetKeyboardEvent) ?TextInputEvent {
-    if (widget.kind != .textarea or !widget.code_editor or widget.state.disabled) return null;
+    if (widget.kind != .textarea or !widget.runtime_flags.code_editor or widget.state.disabled) return null;
     if (event.phase != .key_down or event.focus_moved or event.text.len != 0) return null;
     if (event.modifiers.shift or event.modifiers.hasNavigationModifier()) return null;
     if (!std.ascii.eqlIgnoreCase(event.key, "tab")) return null;

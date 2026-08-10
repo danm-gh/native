@@ -109,7 +109,7 @@ test "closing an earlier view transfers a later view's expanded text storage" {
         .kind = .textarea,
         .text = "expanded",
         .text_no_wrap = true,
-        .code_editor = true,
+        .runtime_flags = .{ .code_editor = true },
     };
     var editor_nodes: [1]canvas.WidgetLayoutNode = undefined;
     const editor_layout = try canvas.layoutWidgetTree(editor, geometry.RectF.init(0, 0, 240, 160), &editor_nodes);
@@ -4015,7 +4015,7 @@ test "editable code owns plain Tab and stamps its inferred indentation edit" {
         .{
             .id = 2,
             .kind = .textarea,
-            .code_editor = true,
+            .runtime_flags = .{ .code_editor = true },
             .text_no_wrap = true,
             .frame = geometry.RectF.init(12, 16, 220, 100),
             .text = source,
@@ -4729,7 +4729,7 @@ test "runtime scrolls editable no-wrap code horizontally and retains both axes" 
     const editor = canvas.Widget{
         .id = 2,
         .kind = .textarea,
-        .code_editor = true,
+        .runtime_flags = .{ .code_editor = true },
         .code_line_number_digits = 2,
         .text_no_wrap = true,
         .frame = geometry.RectF.init(12, 16, 120, 72),

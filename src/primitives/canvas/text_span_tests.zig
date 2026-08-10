@@ -265,7 +265,7 @@ test "ordinary span paragraphs paint a visible page after the line cap" {
         .id = 1,
         .kind = .scroll_view,
         .frame = geometry.RectF.init(0, 0, 100, 100),
-        .native_scroll = true,
+        .runtime_flags = .{ .native_scroll = true },
         .children = &children,
     };
 

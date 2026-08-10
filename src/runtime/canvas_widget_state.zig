@@ -32,7 +32,7 @@ fn canvasWidgetLayoutNeedsLargeTextStorage(layout: canvas.WidgetLayoutTree) bool
     var text_len: usize = 0;
     for (layout.nodes) |node| {
         const widget = node.widget;
-        if (widget.code_editor) return true;
+        if (widget.runtime_flags.code_editor) return true;
         text_len +|= widget.text.len +| widget.icon.len +| widget.command.len +| widget.semantics.label.len;
         for (widget.spans) |span| text_len +|= span.text.len +| span.link.len;
         for (widget.context_menu) |item| text_len +|= item.label.len;

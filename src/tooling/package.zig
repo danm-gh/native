@@ -2086,7 +2086,10 @@ fn createMacosDmg(allocator: std.mem.Allocator, io: std.Io, options: PackageOpti
     defer allocator.free(background_name);
     try stageDmgBackground(allocator, io, options, source_dir, source_path, background_name, retina_background_source);
 
-    if (!runArchiveCommand(io, &.{ "hdiutil", "create", "-quiet", "-volname", volume_name, "-srcfolder", source_path, "-ov", "-format", "UDRW", rw_image_path }, null)) return false;
+    // Finder persists portable window presentation in the volume's
+    // `.DS_Store` on HFS+. With hdiutil's current APFS default, the same
+    // successful AppleScript can leave no metadata in the image at all.
+    if (!runArchiveCommand(io, &.{ "hdiutil", "create", "-quiet", "-volname", volume_name, "-srcfolder", source_path, "-ov", "-format", "UDRW", "-fs", "HFS+", rw_image_path }, null)) return false;
     if (!runArchiveCommand(io, &.{ "hdiutil", "attach", "-quiet", rw_image_path, "-mountpoint", mount_path, "-nobrowse", "-noverify", "-noautoopen" }, null)) return false;
     attached = true;
 
@@ -2094,6 +2097,8 @@ fn createMacosDmg(allocator: std.mem.Allocator, io: std.Io, options: PackageOpti
     defer allocator.free(finder_script);
     if (!runArchiveCommand(io, &.{ "osascript", "-e", finder_script }, null)) {
         std.debug.print("warning: Finder could not save the DMG window layout; the image still includes its configured items and background\n", .{});
+    } else if (!try waitForDmgFinderMetadata(allocator, io, mount_path)) {
+        std.debug.print("warning: Finder returned success but did not persist the DMG window layout; the image still includes its configured items and background\n", .{});
     }
 
     if (!runArchiveCommand(io, &.{ "hdiutil", "detach", "-quiet", mount_path }, null)) {
@@ -2104,26 +2109,8 @@ fn createMacosDmg(allocator: std.mem.Allocator, io: std.Io, options: PackageOpti
 }
 
 fn dmgAppBundleNameAlloc(allocator: std.mem.Allocator, metadata: manifest_tool.Metadata) ![]u8 {
-    var configured_name = metadata.displayName();
-    if (metadata.dmg.items.len > 0) {
-        for (metadata.dmg.items) |item| {
-            if (item.kind == .app) {
-                if (item.name) |name| configured_name = name;
-                break;
-            }
-        }
-    }
-    const has_app_suffix = configured_name.len >= 4 and std.ascii.eqlIgnoreCase(configured_name[configured_name.len - 4 ..], ".app");
-    const stem = if (has_app_suffix) configured_name[0 .. configured_name.len - 4] else configured_name;
-    var safe: std.ArrayList(u8) = .empty;
-    defer safe.deinit(allocator);
-    for (stem) |byte| switch (byte) {
-        '/', ':', '\\', 0...0x1f, 0x7f => try safe.append(allocator, '-'),
-        else => try safe.append(allocator, byte),
-    };
-    if (safe.items.len == 0) try safe.appendSlice(allocator, metadata.name);
-    try safe.appendSlice(allocator, ".app");
-    return safe.toOwnedSlice(allocator);
+    var buffer: [255]u8 = undefined;
+    return allocator.dupe(u8, try manifest_tool.dmgAppBundleName(&buffer, metadata));
 }
 
 fn stageDmgItems(
@@ -2414,11 +2401,15 @@ fn dmgFinderScriptAlloc(allocator: std.mem.Allocator, dmg: manifest_tool.DmgMeta
     const bottom = 100 + @as(u32, dmg.window_height) + 36;
     const inset_right = right - 10;
     const inset_bottom = bottom - 10;
+    // Capture the window opened from our mount path immediately. Asking
+    // Finder for the container window by disk name can select an older,
+    // read-only copy of the same app DMG that the developer still has mounted.
     return std.fmt.allocPrint(allocator,
         \\tell application "Finder"
         \\  set dmgFolder to POSIX file "{s}" as alias
         \\  open dmgFolder
-        \\  set dmgWindow to container window of dmgFolder
+        \\  set dmgWindow to front window
+        \\  delay 1
         \\  set current view of dmgWindow to icon view
         \\  set toolbar visible of dmgWindow to false
         \\  set statusbar visible of dmgWindow to false
@@ -2432,16 +2423,33 @@ fn dmgFinderScriptAlloc(allocator: std.mem.Allocator, dmg: manifest_tool.DmgMeta
         \\  set background picture of theViewOptions to (POSIX file "{s}" as alias)
         \\{s}  close dmgWindow
         \\  open dmgFolder
+        \\  set dmgWindow to front window
         \\  delay 1
-        \\  set dmgWindow to container window of dmgFolder
         \\  set statusbar visible of dmgWindow to false
         \\  set the bounds of dmgWindow to {{100, 100, {d}, {d}}}
         \\  delay 1
         \\  set the bounds of dmgWindow to {{100, 100, {d}, {d}}}
         \\  update dmgFolder without registering applications
-        \\  delay 3
+        \\  delay 1
+        \\  close dmgWindow
+        \\  delay 2
         \\end tell
     , .{ escaped_mount, right, bottom, dmg.icon_size, escaped_background_path, position_lines, inset_right, inset_bottom, right, bottom });
+}
+
+fn waitForDmgFinderMetadata(allocator: std.mem.Allocator, io: std.Io, mount_path: []const u8) !bool {
+    const ds_store_path = try std.fs.path.join(allocator, &.{ mount_path, ".DS_Store" });
+    defer allocator.free(ds_store_path);
+    const cwd = std.Io.Dir.cwd();
+    for (0..50) |_| {
+        const stat = cwd.statFile(io, ds_store_path, .{}) catch {
+            std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), .awake) catch return false;
+            continue;
+        };
+        if (stat.size > 0) return true;
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(100), .awake) catch return false;
+    }
+    return false;
 }
 
 fn dmgFinderPositionLinesAlloc(allocator: std.mem.Allocator, dmg: manifest_tool.DmgMetadata, app_name: []const u8) ![]u8 {
@@ -2623,7 +2631,9 @@ test "DMG Finder script carries custom layout and escapes paths and names" {
     try std.testing.expect(std.mem.indexOf(u8, script, "set the bounds of dmgWindow to {100, 100, 820, 576}") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "set the bounds of dmgWindow to {100, 100, 810, 566}") != null);
     try std.testing.expect(std.mem.count(u8, script, "set the bounds of dmgWindow to {100, 100, 820, 576}") == 2);
-    try std.testing.expect(std.mem.indexOf(u8, script, "delay 3") != null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, script, "set dmgWindow to front window"));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, script, "close dmgWindow"));
+    try std.testing.expect(std.mem.indexOf(u8, script, "delay 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "set pathbar visible of dmgWindow to false") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "set icon size of theViewOptions to 144") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "/Volumes/Demo \\\"Installer\\\"/.background/background.jpeg") != null);
@@ -2687,6 +2697,31 @@ test "macOS archive rejects an invalid DMG background before staging the app" {
         .target = .macos,
         .output_path = root ++ "/Demo.app",
         .project_dir = root,
+        .archive = true,
+    }));
+    try std.testing.expectError(error.FileNotFound, cwd.openDir(std.testing.io, root ++ "/Demo.app", .{}));
+}
+
+test "macOS archive rejects an app-name collision before staging the app" {
+    var cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/test-package-dmg-app-name-collision";
+    try cwd.deleteTree(std.testing.io, root);
+    defer cwd.deleteTree(std.testing.io, root) catch {};
+
+    const items = [_]manifest_tool.DmgItemMetadata{
+        .{ .kind = .app, .position = .{ .x = 170, .y = 182 } },
+        .{ .kind = .link, .path = "/Applications", .name = "Demo.app", .position = .{ .x = 490, .y = 182 } },
+    };
+    try std.testing.expectError(error.DuplicateDmgItem, createPackage(std.testing.allocator, std.testing.io, .{
+        .metadata = .{
+            .id = "dev.example.demo",
+            .name = "demo",
+            .display_name = "Demo",
+            .version = "1.0.0",
+            .dmg = .{ .items = &items },
+        },
+        .target = .macos,
+        .output_path = root ++ "/Demo.app",
         .archive = true,
     }));
     try std.testing.expectError(error.FileNotFound, cwd.openDir(std.testing.io, root ++ "/Demo.app", .{}));

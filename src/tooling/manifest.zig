@@ -1687,11 +1687,12 @@ pub fn validateDmgPackageSettings(metadata: Metadata) !void {
     try validateDmgSettings(metadata.dmg);
     try validateDmgVolumeName(metadata.dmg.volume_name orelse metadata.displayName());
 
-    const configured_app_name = dmgConfiguredAppName(metadata);
-    const has_app_suffix = configured_app_name.len >= 4 and std.ascii.eqlIgnoreCase(configured_app_name[configured_app_name.len - 4 ..], ".app");
-    const stem = if (has_app_suffix) configured_app_name[0 .. configured_app_name.len - 4] else configured_app_name;
-    const final_stem = if (stem.len == 0) metadata.name else stem;
-    if (final_stem.len > 255 - ".app".len) return error.InvalidDmgItem;
+    var app_name_buffer: [255]u8 = undefined;
+    const app_name = try dmgAppBundleName(&app_name_buffer, metadata);
+    for (metadata.dmg.items) |item| {
+        const destination_name = dmgItemDestinationName(item) orelse continue;
+        if (std.ascii.eqlIgnoreCase(destination_name, app_name)) return error.DuplicateDmgItem;
+    }
 }
 
 fn dmgConfiguredAppName(metadata: Metadata) []const u8 {
@@ -1701,6 +1702,25 @@ fn dmgConfiguredAppName(metadata: Metadata) []const u8 {
         }
     }
     return metadata.displayName();
+}
+
+/// Resolve the exact app-bundle filesystem name used inside the DMG. Keeping
+/// this beside validation ensures collision checks and staging cannot drift.
+pub fn dmgAppBundleName(buffer: []u8, metadata: Metadata) ![]const u8 {
+    const configured_name = dmgConfiguredAppName(metadata);
+    const has_app_suffix = configured_name.len >= 4 and std.ascii.eqlIgnoreCase(configured_name[configured_name.len - 4 ..], ".app");
+    const configured_stem = if (has_app_suffix) configured_name[0 .. configured_name.len - 4] else configured_name;
+    const stem = if (configured_stem.len == 0) metadata.name else configured_stem;
+    if (stem.len > 255 - ".app".len or buffer.len < stem.len + ".app".len) return error.InvalidDmgItem;
+
+    for (stem, 0..) |byte, index| {
+        buffer[index] = switch (byte) {
+            '/', ':', '\\', 0...0x1f, 0x7f => '-',
+            else => byte,
+        };
+    }
+    @memcpy(buffer[stem.len..][0..".app".len], ".app");
+    return buffer[0 .. stem.len + ".app".len];
 }
 
 fn validateDmgVolumeName(name: []const u8) !void {
@@ -2953,6 +2973,18 @@ test "DMG package settings validate effective volume and app bundle names" {
         .name = "demo",
         .version = "1.0.0",
         .dmg = .{ .items = &oversized_items },
+    }));
+
+    const conflicting_items = [_]DmgItemMetadata{
+        .{ .kind = .app, .position = .{ .x = 170, .y = 182 } },
+        .{ .kind = .file, .path = "docs/demo.app", .name = "Demo.app", .position = .{ .x = 490, .y = 182 } },
+    };
+    try std.testing.expectError(error.DuplicateDmgItem, validateDmgPackageSettings(.{
+        .id = "dev.example.demo",
+        .name = "demo",
+        .display_name = "Demo",
+        .version = "1.0.0",
+        .dmg = .{ .items = &conflicting_items },
     }));
 }
 

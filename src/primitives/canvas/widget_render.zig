@@ -206,6 +206,9 @@ fn emitWidgetLayoutDragPreview(builder: *Builder, layout: anytype, tokens: Desig
 
     var preview_state = WidgetRenderState{
         .rendering_drag_preview = true,
+        .drag_preview_id = source_id,
+        .drag_preview_origin = state.drag_preview_origin,
+        .drag_preview_offset = state.drag_preview_offset,
     };
     // Keep disclosure content in the preview in the same visible phase as
     // the standing tree, while dropping focus/hover/press chrome from the
@@ -215,18 +218,31 @@ fn emitWidgetLayoutDragPreview(builder: *Builder, layout: anytype, tokens: Desig
     const ancestor_transform = widgetLayoutNodeAncestorEmissionTransform(layout, source_index) orelse return error.InvalidTransform;
     const wrap_ancestor_transform = !affinesEqual(ancestor_transform, Affine.identity());
     const inverse_ancestor_transform = if (wrap_ancestor_transform) ancestor_transform.inverse() orelse return error.InvalidTransform else Affine.identity();
-    const current_frame = layout.nodes[source_index].frame.normalized();
-    const current_origin = ancestor_transform.transformPoint(geometry.PointF.init(current_frame.x, current_frame.y));
-    const source_layout_origin = state.drag_preview_origin orelse geometry.PointF.init(current_frame.x, current_frame.y);
-    const source_origin = ancestor_transform.transformPoint(source_layout_origin);
-    const translate_x = source_origin.x + state.drag_preview_offset.dx - current_origin.x;
-    const translate_y = source_origin.y + state.drag_preview_offset.dy - current_origin.y;
-    const translation = Affine.translate(translate_x, translate_y);
+    const translation = widgetLayoutDragPreviewTranslation(layout, source_index, state, ancestor_transform);
     try builder.transform(translation);
     if (wrap_ancestor_transform) try builder.transform(ancestor_transform);
     try emitWidgetLayoutNode(builder, layout, source_index, tokens, preview_state, .none);
     if (wrap_ancestor_transform) try builder.transform(inverse_ancestor_transform);
-    try builder.transform(Affine.translate(-translate_x, -translate_y));
+    try builder.transform(Affine.translate(-translation.tx, -translation.ty));
+}
+
+/// The window-space translation around a floating drag preview. The same
+/// value drives both the builder stack and span visibility below, so a rich
+/// text child is culled at its lifted pose rather than its standing slot.
+fn widgetLayoutDragPreviewTranslation(
+    layout: anytype,
+    source_index: usize,
+    state: WidgetRenderState,
+    ancestor_transform: Affine,
+) Affine {
+    const current_frame = layout.nodes[source_index].frame.normalized();
+    const current_origin = ancestor_transform.transformPoint(geometry.PointF.init(current_frame.x, current_frame.y));
+    const source_layout_origin = state.drag_preview_origin orelse geometry.PointF.init(current_frame.x, current_frame.y);
+    const source_origin = ancestor_transform.transformPoint(source_layout_origin);
+    return Affine.translate(
+        source_origin.x + state.drag_preview_offset.dx - current_origin.x,
+        source_origin.y + state.drag_preview_offset.dy - current_origin.y,
+    );
 }
 
 /// The union of the layout's root-node frames: the whole laid-out
@@ -265,6 +281,46 @@ fn widgetLayoutNodeEmissionTransform(layout: anytype, node_index: usize) ?Affine
     return transform;
 }
 
+/// The transform active while `node_index` paints in this frame. Unlike the
+/// standing emission transform above, this includes presentation-only layout
+/// motion and the window-level translation around a floating drag preview.
+fn widgetLayoutNodePresentationTransform(
+    layout: anytype,
+    node_index: usize,
+    state: WidgetRenderState,
+    outer_transform: Affine,
+) ?Affine {
+    // Static/ordinary frames are overwhelmingly common. Keep their culling
+    // path byte-for-byte with the standing transform walk; only late passes
+    // and active layout motion pay for presentation-state lookups.
+    if (!state.rendering_drag_preview and state.layout_motions.len == 0) {
+        return widgetLayoutNodeEmissionTransform(layout, node_index);
+    }
+    if (node_index >= layout.nodes.len) return null;
+    var indices: [widget_layout.max_widget_depth]usize = undefined;
+    var len: usize = 0;
+    var current: ?usize = node_index;
+    while (current) |index| {
+        if (index >= layout.nodes.len or len >= indices.len) return null;
+        indices[len] = index;
+        len += 1;
+        if (widget_tree.widgetIsAnchored(layout.nodes[index].widget)) break;
+        current = layout.nodes[index].parent_index;
+    }
+
+    var transform = outer_transform;
+    while (len > 0) {
+        len -= 1;
+        const widget = layout.nodes[indices[len]].widget;
+        const motion = state.layoutMotionOffset(widget.id);
+        if (motion.dx != 0 or motion.dy != 0) {
+            transform = transform.multiply(Affine.translate(motion.dx, motion.dy));
+        }
+        transform = transform.multiply(widgetTransform(widget));
+    }
+    return transform;
+}
+
 /// The transform stack a node inherits at its ordinary paint position. A
 /// drag preview is hoisted to the window-level late pass to escape clipping,
 /// so it must explicitly restore this stack before painting the source.
@@ -279,24 +335,45 @@ fn widgetLayoutNodeAncestorEmissionTransform(layout: anytype, node_index: usize)
 
 /// The rectangular part of one layout node that can reach the surface,
 /// returned in the node's untransformed layout coordinate space. Window
-/// and ancestor clip bounds are intersected in device space, then mapped
-/// back through the exact transform stack active at node emission. Code
-/// paragraphs use this so transformed sources neither disappear nor lose
-/// later pages while still charging only visible runs to display budgets.
-fn widgetLayoutNodeVisibleBounds(layout: anytype, node_index: usize, bounds: geometry.RectF) ?geometry.RectF {
+/// and active ancestor clip bounds are intersected in device space, then
+/// mapped back through the exact PRESENTATION transform stack. Floating
+/// drag previews and clip-escaping landing motions stop at their lifted
+/// subtree root, so the culling policy matches the late unclipped paint pass.
+fn widgetLayoutNodeVisibleBounds(
+    layout: anytype,
+    node_index: usize,
+    bounds: geometry.RectF,
+    state: WidgetRenderState,
+) ?geometry.RectF {
     if (node_index >= layout.nodes.len) return null;
     var device_visible = (widgetLayoutRootBounds(layout) orelse return null).normalized();
+    const has_layout_motion = state.layout_motions.len > 0;
+    const outer_transform = if (state.rendering_drag_preview) blk: {
+        const preview_id = state.drag_preview_id orelse return null;
+        const preview_index = widget_tree.widgetIndexById(layout, preview_id) orelse return null;
+        const ancestor_transform = widgetLayoutNodeAncestorEmissionTransform(layout, preview_index) orelse return null;
+        break :blk widgetLayoutDragPreviewTranslation(layout, preview_index, state, ancestor_transform);
+    } else Affine.identity();
 
     var current = node_index;
     while (true) {
-        // Hoisted anchored surfaces escape their original ancestor clips,
-        // but the window intersection still bounds display-list demand.
-        if (widget_tree.widgetIsAnchored(layout.nodes[current].widget)) break;
+        const current_widget = layout.nodes[current].widget;
+        const is_drag_preview_root = state.rendering_drag_preview and
+            state.drag_preview_id != null and
+            state.drag_preview_id.? == current_widget.id;
+        // Every late window-level pass escapes clips ABOVE its lifted root,
+        // but nested clips inside that subtree still constrain descendants.
+        if (widget_tree.widgetIsAnchored(current_widget) or
+            is_drag_preview_root or
+            has_layout_motion and state.layoutMotionEscapesAncestorClips(current_widget.id))
+        {
+            break;
+        }
         const parent_index = layout.nodes[current].parent_index orelse break;
         if (parent_index >= layout.nodes.len) return null;
         const parent = layout.nodes[parent_index];
         if (widgetClipsContent(parent.widget)) {
-            const parent_transform = widgetLayoutNodeEmissionTransform(layout, parent_index) orelse return null;
+            const parent_transform = widgetLayoutNodePresentationTransform(layout, parent_index, state, outer_transform) orelse return null;
             const device_clip = parent_transform.transformRect(parent.frame.normalized());
             device_visible = geometry.RectF.intersection(device_visible, device_clip);
             if (device_visible.isEmpty()) return null;
@@ -304,7 +381,7 @@ fn widgetLayoutNodeVisibleBounds(layout: anytype, node_index: usize, bounds: geo
         current = parent_index;
     }
 
-    const transform = widgetLayoutNodeEmissionTransform(layout, node_index) orelse return null;
+    const transform = widgetLayoutNodePresentationTransform(layout, node_index, state, outer_transform) orelse return null;
     const inverse = transform.inverse() orelse return null;
     const local_visible = inverse.transformRect(device_visible);
     const clipped = geometry.RectF.intersection(bounds.normalized(), local_visible.normalized());
@@ -790,11 +867,11 @@ fn emitWidgetLayoutNodeContent(
         .menu_surface, .dropdown_menu => try widget_render_surfaces.emitMenuSurfaceWidgetChrome(builder, paint_widget, tokens),
         .text => {
             if (isSyntaxCodeParagraph(paint_widget)) {
-                if (widgetLayoutNodeVisibleBounds(layout, node_index, paint_widget.frame)) |visible_bounds| {
+                if (widgetLayoutNodeVisibleBounds(layout, node_index, paint_widget.frame, state)) |visible_bounds| {
                     try emitVisibleCodeTextSpansWidget(builder, paint_widget, tokens, visible_bounds, .{});
                 }
             } else if (paint_widget.spans.len > 0) {
-                if (widgetLayoutNodeVisibleBounds(layout, node_index, paint_widget.frame)) |visible_bounds| {
+                if (widgetLayoutNodeVisibleBounds(layout, node_index, paint_widget.frame, state)) |visible_bounds| {
                     try emitVisibleTextSpansWidget(builder, paint_widget, tokens, visible_bounds);
                 }
             } else {

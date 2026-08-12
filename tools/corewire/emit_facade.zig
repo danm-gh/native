@@ -2663,7 +2663,7 @@ const FacadeEmitter = struct {
             \\// ---------------------------------------------------- the cmd wire
             \\// Encoder for the inert Cmd data the author's update returns —
             \\// byte-for-byte the layouts the host's command decoder expects
-            \\// (cmd_format_version 3). nscfTagOf maps a Msg arm name onto its
+            \\// (cmd_format_version 4). nscfTagOf maps a Msg arm name onto its
             \\// declaration-order wire tag.
             \\
             \\const nscfFetchMethods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"];
@@ -2712,6 +2712,18 @@ const FacadeEmitter = struct {
             \\      return;
             \\    case "request":
             \\      nscfWU8(sink, 0x05);
+            \\      nscfWShortText(sink, cmd.name);
+            \\      nscfWShortText(sink, cmd.key);
+            \\      nscfWU8(sink, nscfTagOf(cmd.okKind));
+            \\      nscfWU8(sink, nscfTagOf(cmd.errKind));
+            \\      nscfWU8(sink, cmd.typedService ? 1 : 0);
+            \\      nscfWBytes(sink, cmd.payload);
+            \\      return;
+            \\    case "service_stream_request":
+            \\      nscfWU8(sink, 0x28);
+            \\      nscfWF64(sink, cmd.channelKey);
+            \\      nscfWU8(sink, nscfTagOf(cmd.eventKind));
+            \\      nscfWU8(sink, cmd.maxPending);
             \\      nscfWShortText(sink, cmd.name);
             \\      nscfWShortText(sink, cmd.key);
             \\      nscfWU8(sink, nscfTagOf(cmd.okKind));
@@ -2882,6 +2894,7 @@ const FacadeEmitter = struct {
             \\      nscfWU8(sink, 0x15);
             \\      nscfWF64(sink, cmd.key);
             \\      nscfWU8(sink, nscfTagOf(cmd.eventKind));
+            \\      nscfWU8(sink, cmd.maxPending);
             \\      return;
             \\    case "channel_close":
             \\      nscfWU8(sink, 0x16);

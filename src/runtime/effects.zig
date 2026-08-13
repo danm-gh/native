@@ -77,6 +77,7 @@ const runtime_clock = @import("clock.zig");
 const persist_store = @import("persist_store.zig");
 const record_store = @import("record_store.zig");
 const relational_store = @import("relational_store.zig");
+const credentials_store = @import("credentials_store.zig");
 const pty_transport = @import("pty.zig");
 
 /// Maximum in-flight effects (spawn slots / worker threads).
@@ -84,7 +85,10 @@ pub const max_effects: usize = 16;
 /// Record-store effects have their own capacity: a large batch or a busy
 /// database cannot consume the spawn/fetch/file family's sixteen slots.
 pub const max_store_effects: usize = 16;
-const total_effect_slots: usize = max_effects + max_store_effects;
+/// Keychain calls can block while an OS keyring unlocks, so credentials own
+/// a small worker family instead of consuming file/fetch or SQLite slots.
+pub const max_credentials_effects: usize = 4;
+const total_effect_slots: usize = max_effects + max_store_effects + max_credentials_effects;
 /// Relational queries and transactions have their own loop-side capacity;
 /// they never consume file/fetch workers or record-store request slots.
 pub const max_db_effects: usize = 16;
@@ -187,6 +191,19 @@ pub const max_effect_store_result_bytes: usize = record_store.max_result_bytes;
 pub const default_effect_store_scan_limit: u32 = record_store.default_scan_limit;
 pub const max_effect_store_scan_limit: u32 = record_store.max_scan_limit;
 pub const EffectStoreOutcome = record_store.Outcome;
+pub const EffectCredentialsOperation = credentials_store.Operation;
+pub const EffectCredentialsOutcome = credentials_store.Outcome;
+/// One terminal from an app-scoped credential effect. Secret bytes exist
+/// only on a successful get and are valid only for the receiving update.
+pub const EffectCredentialsResult = struct {
+    key: u64,
+    operation: EffectCredentialsOperation,
+    outcome: EffectCredentialsOutcome,
+    bytes: []const u8 = "",
+};
+pub const CredentialsStoreBinding = credentials_store.Binding;
+pub const max_effect_credentials_key_bytes: usize = credentials_store.max_key_bytes;
+pub const max_effect_credentials_secret_bytes: usize = credentials_store.max_secret_bytes;
 pub const EffectStoreOp = record_store.Operation;
 pub const RecordStoreBinding = record_store.Binding;
 pub const max_effect_db_sql_bytes: usize = relational_store.max_sql_bytes;
@@ -249,6 +266,12 @@ pub const EffectPersistResult = struct {
 /// on purpose — healthy local I/O finishes in milliseconds and never
 /// meets this bound.
 pub const default_effect_file_join_deadline_ms: u64 = 15_000;
+
+/// How long teardown lets an OS credential call remain blocked (for
+/// example behind an interactive keyring unlock) before fencing it off from
+/// the runtime and detaching its worker. The platform is told to preserve
+/// the callback context in that exceptional path.
+pub const default_credentials_join_deadline_ms: u64 = 15_000;
 
 /// Teardown budget for one channel's in-flight host wake call (see
 /// `Effects.channel_wake_join_deadline_ms` and `quiesceChannelWake`).
@@ -355,9 +378,6 @@ pub const SystemServiceBinding = struct {
     context: *anyopaque,
     open_external_url_fn: *const fn (context: *anyopaque, url: []const u8) anyerror!void,
     reveal_path_fn: *const fn (context: *anyopaque, path: []const u8) anyerror!void,
-    set_credential_fn: *const fn (context: *anyopaque, credential: platform.Credential) anyerror!void,
-    get_credential_fn: *const fn (context: *anyopaque, key: platform.CredentialKey, buffer: []u8) anyerror!?[]const u8,
-    delete_credential_fn: *const fn (context: *anyopaque, key: platform.CredentialKey) anyerror!bool,
     format_local_time_fn: *const fn (context: *anyopaque, timestamp_ms: i64, style: platform.LocalTimeStyle, buffer: []u8) anyerror![]const u8,
 };
 
@@ -1965,6 +1985,11 @@ pub const EffectResultKind = enum(u8) {
     /// `dbJournalCode`. Admission rejections mark
     /// `exit_reason == .rejected` and regenerate.
     db = 17,
+    /// One app-scoped credential result. A successful get's live secret is
+    /// present in `payload` only until the recorder replaces it with a
+    /// salted digest and length; replay synthesizes same-length placeholder
+    /// bytes and never consults an OS keychain.
+    credentials = 18,
 };
 
 /// Journaled wall-clock reads buffered for replay (`Effects.wallMs`).
@@ -2124,6 +2149,15 @@ pub const EffectResultRecord = struct {
     /// pages stay inline in `payload`; terminals use neither representation.
     db_blob_hash: [effect_image_blob_hash_len]u8 = @splat(0),
     db_blob_len: u64 = 0,
+    /// `.credentials` records: the operation and closed outcome. Successful
+    /// get bytes never persist; the recorder stores only their length, a
+    /// per-session salt, and a replay-placeholder digest independent of the
+    /// secret (so recordings are not offline guessing oracles).
+    credentials_operation: EffectCredentialsOperation = .get,
+    credentials_outcome: EffectCredentialsOutcome = .ok,
+    credentials_secret_len: u64 = 0,
+    credentials_salt: [16]u8 = @splat(0),
+    credentials_digest: [32]u8 = @splat(0),
 };
 
 /// Type-erased sink the drain reports every delivered result to while a
@@ -2643,6 +2677,7 @@ pub fn Effects(comptime Msg: type) type {
         pub const AudioMsgFn = *const fn (event: EffectAudio) Msg;
         pub const VideoMsgFn = *const fn (event: EffectVideo) Msg;
         pub const HostMsgFn = *const fn (result: EffectHostResult) Msg;
+        pub const CredentialsMsgFn = *const fn (result: EffectCredentialsResult) Msg;
         pub const DbMsgFn = *const fn (result: EffectDbResult) Msg;
         pub const ImageMsgFn = *const fn (result: EffectImageResult) Msg;
         pub const ChannelMsgFn = *const fn (event: EffectChannelEvent) Msg;
@@ -2690,6 +2725,16 @@ pub fn Effects(comptime Msg: type) type {
         pub fn fileMsg(comptime tag: std.meta.Tag(Msg)) FileMsgFn {
             return struct {
                 fn make(result: EffectFileResult) Msg {
+                    return @unionInit(Msg, @tagName(tag), result);
+                }
+            }.make;
+        }
+
+        /// Comptime Msg constructor for credential effects. The variant's
+        /// payload type must be `native_sdk.EffectCredentialsResult`.
+        pub fn credentialsMsg(comptime tag: std.meta.Tag(Msg)) CredentialsMsgFn {
+            return struct {
+                fn make(result: EffectCredentialsResult) Msg {
                     return @unionInit(Msg, @tagName(tag), result);
                 }
             }.make;
@@ -3029,6 +3074,34 @@ pub fn Effects(comptime Msg: type) type {
             key: u64,
             entries: []const StoreEntry,
             on_result: ?HostMsgFn = null,
+        };
+
+        /// App-scoped secure credential operations. `credential_key` is the
+        /// only authored identifier; the bound app identity supplies the OS
+        /// keychain service namespace. Set/delete route empty bytes on ok,
+        /// get routes the secret bytes, and every terminal carries one closed
+        /// `EffectCredentialsOutcome` in `EffectCredentialsResult`.
+        pub const CredentialsSetOptions = struct {
+            key: u64,
+            credential_key: []const u8,
+            secret: []const u8,
+            on_result: ?CredentialsMsgFn = null,
+            /// Internal adapter for the TypeScript request wire.
+            host_result: ?HostMsgFn = null,
+        };
+
+        pub const CredentialsGetOptions = struct {
+            key: u64,
+            credential_key: []const u8,
+            on_result: ?CredentialsMsgFn = null,
+            host_result: ?HostMsgFn = null,
+        };
+
+        pub const CredentialsDeleteOptions = struct {
+            key: u64,
+            credential_key: []const u8,
+            on_result: ?CredentialsMsgFn = null,
+            host_result: ?HostMsgFn = null,
         };
 
         pub const DbQueryOptions = struct {
@@ -3659,7 +3732,7 @@ pub fn Effects(comptime Msg: type) type {
         /// post-enqueue epilogue finishes; reclaim joins that epilogue.
         const SlotState = enum(u8) { idle, running, done, draining };
 
-        const SlotKind = enum(u8) { spawn, fetch, file, clipboard, host, store, image };
+        const SlotKind = enum(u8) { spawn, fetch, file, clipboard, host, store, credentials, image };
 
         const DbSlotKind = enum(u8) { query, exec, live };
 
@@ -3766,6 +3839,7 @@ pub fn Effects(comptime Msg: type) type {
             file_fn: ?FileMsgFn = null,
             clipboard_fn: ?ClipboardMsgFn = null,
             host_fn: ?HostMsgFn = null,
+            credentials_fn: ?CredentialsMsgFn = null,
             image_fn: ?ImageMsgFn = null,
             /// `.line` entries whose payload exceeds the inline buffer
             /// (a raised `max_line_bytes` bound): the bytes ride in this
@@ -3797,6 +3871,11 @@ pub fn Effects(comptime Msg: type) type {
             /// replay) and feed fallbacks. Bytes here are never a host
             /// answer's — those ride the queue with their slot buffer.
             host: struct { result: EffectHostResult, host_fn: ?HostMsgFn, rejected: bool },
+            credentials: struct {
+                result: EffectCredentialsResult,
+                credentials_fn: ?CredentialsMsgFn,
+                host_fn: ?HostMsgFn,
+            },
             /// `resolve`: a fed audio event (fake executor / replay)
             /// whose key and handler come from the live channel at
             /// delivery time — exactly how a platform event resolves in
@@ -3870,6 +3949,7 @@ pub fn Effects(comptime Msg: type) type {
                     // EffectHostResult carries none: its terminals are
                     // one-per-request by construction.
                     .host => {},
+                    .credentials => {},
                     // Image terminals never enter the ring (they stage
                     // in the non-lossy `pending_images`), so neither
                     // overflow arm can ever see one. EffectImageResult
@@ -3903,6 +3983,7 @@ pub fn Effects(comptime Msg: type) type {
                     .audio => 0,
                     .pty => 0,
                     .host => 0,
+                    .credentials => 0,
                     // Never in the ring; see `addDropped`.
                     .video => unreachable,
                     .image => unreachable,
@@ -4204,6 +4285,24 @@ pub fn Effects(comptime Msg: type) type {
             output_len: usize = 0,
         };
 
+        /// Private inputs and output for one blocking keychain call. All
+        /// storage is process-lived until the worker joins (or frees it after
+        /// an abandon), so the platform call never borrows runtime-owned
+        /// service, namespace, command, or result storage.
+        const CredentialsWorkerContext = struct {
+            mutex: SpinMutex = .{},
+            abandoned: bool = false,
+            committed: bool = false,
+            services: platform.PlatformServices,
+            service: []u8,
+            permitted: bool,
+            operation: EffectCredentialsOperation,
+            key: []u8,
+            secret: []u8,
+            output: []u8,
+            execution: credentials_store.Execution = .{ .outcome = .rejected },
+        };
+
         const Slot = struct {
             state: std.atomic.Value(SlotState) = std.atomic.Value(SlotState).init(.idle),
             generation: u32 = 0,
@@ -4216,6 +4315,7 @@ pub fn Effects(comptime Msg: type) type {
             on_file: ?FileMsgFn = null,
             on_clipboard: ?ClipboardMsgFn = null,
             on_host: ?HostMsgFn = null,
+            on_credentials: ?CredentialsMsgFn = null,
             /// Set by `cancel` before any kill attempt; read by the
             /// worker so a cancel that lands before the process spawns
             /// still kills it.
@@ -4256,6 +4356,9 @@ pub fn Effects(comptime Msg: type) type {
             /// write. Store workers are always joined before teardown can
             /// release the host-owned database binding.
             store_ctx: ?*StoreWorkerContext = null,
+            /// Off-loop OS keychain operation; joined before the runtime or
+            /// its PlatformServices vtable can be released.
+            credentials_ctx: ?*CredentialsWorkerContext = null,
             /// Producer-side drop accounting (worker in real mode, loop
             /// thread in fake mode; never both).
             dropped_pending: u32 = 0,
@@ -4263,8 +4366,11 @@ pub fn Effects(comptime Msg: type) type {
             argv_slices: [max_effect_argv][]const u8 = undefined,
             argv_count: usize = 0,
             argv_storage: [max_effect_argv_bytes]u8 = undefined,
-            stdin_storage: [max_effect_stdin_bytes]u8 = undefined,
-            stdin_len: usize = 0,
+            /// Spawn stdin is copied only for an accepted occupancy. Keeping
+            /// the 4 KiB bound inline in every general/store/credential slot
+            /// inflated the whole `Effects` value even though almost every
+            /// slot has no stdin at all.
+            stdin_buffer: ?[]u8 = null,
             // ---- line-framing fields (.lines spawns, .stream fetches) ----
             /// Effective per-line bound: the default or the accepted
             /// `max_line_bytes` override.
@@ -4305,6 +4411,14 @@ pub fn Effects(comptime Msg: type) type {
             file_op: EffectFileOp = .read,
             // ---- clipboard-only fields (kind == .clipboard) ----
             clipboard_op: EffectClipboardOp = .write,
+            // ---- credentials-only fields (kind == .credentials) ----
+            credentials_op: EffectCredentialsOperation = .get,
+            /// Real credential operations execute one at a time in issue
+            /// order. A waiting replacement owns a slot but no thread, so a
+            /// burst under one route coalesces instead of exhausting all four
+            /// credential slots or letting an older set finish last.
+            credentials_waiting: bool = false,
+            credentials_sequence: u64 = 0,
             // ---- image-only fields (kind == .image) ----
             on_image: ?ImageMsgFn = null,
             /// The local source path (the URL rides `url_storage`, a
@@ -4359,7 +4473,7 @@ pub fn Effects(comptime Msg: type) type {
             }
 
             fn stdinBytes(slot: *const Slot) []const u8 {
-                return slot.stdin_storage[0..slot.stdin_len];
+                return slot.stdin_buffer orelse "";
             }
 
             fn fetchUrl(slot: *const Slot) []const u8 {
@@ -4577,6 +4691,9 @@ pub fn Effects(comptime Msg: type) type {
         /// SDK-reserved routed requests, so their results reuse the request
         /// journal/replay path while the database handle stays host-owned.
         record_store_binding: ?RecordStoreBinding = null,
+        /// App-namespaced OS credential store. Permission is captured in the
+        /// binding at install; denied effects never reach a platform worker.
+        credentials_store_binding: ?CredentialsStoreBinding = null,
         /// Capability-installed Tier-3 relational database. Queries execute
         /// synchronously on the loop thread and stage bounded page results.
         relational_store_binding: ?RelationalStoreBinding = null,
@@ -4630,6 +4747,12 @@ pub fn Effects(comptime Msg: type) type {
         /// bounded, warned leak — see `SpawnWorkerContext`). The seam
         /// tests assert against: zero on every healthy teardown.
         abandoned_spawn_workers: u32 = 0,
+        /// Teardown budget for a synchronous OS credential call. Unlike a
+        /// fetch, keychain APIs have no portable cancellation primitive.
+        credentials_join_deadline_ms: u64 = default_credentials_join_deadline_ms,
+        /// Number of credential workers detached after that deadline. A
+        /// healthy platform call always leaves this at zero.
+        abandoned_credentials_workers: u32 = 0,
         /// Teardown budget (milliseconds, per channel) for a host wake
         /// call still inside the embedder's `wake_fn` when the channel
         /// sweep quiesces it — see `quiesceChannelWake` for why the
@@ -4660,6 +4783,7 @@ pub fn Effects(comptime Msg: type) type {
         /// drained.
         fetch_start_rejections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
         next_generation: u32 = 1,
+        next_credentials_sequence: u64 = 1,
         /// The channel family's OWN generation counter — u64 and
         /// monotonic for the process's lifetime, never the shared u32
         /// `next_generation` above: channel handles live on app-owned
@@ -4854,6 +4978,9 @@ pub fn Effects(comptime Msg: type) type {
         /// when the next response or file result drains, or at
         /// `deinit`).
         drain_fetch_body: ?[]u8 = null,
+        /// The current drain buffer contains a credential request/result and
+        /// must be securely zeroed before it is returned to the allocator.
+        drain_fetch_body_sensitive: bool = false,
         /// Owned page bytes for the most recently delivered relational Msg.
         drain_db_bytes: ?[]u8 = null,
         /// The collect buffer of the most recently delivered collect
@@ -4871,7 +4998,7 @@ pub fn Effects(comptime Msg: type) type {
         /// unconditional — fetch supervisors cancel on the shutdown
         /// flag (and an exchange that cannot start cancellably is
         /// rejected up front), so no fetch worker survives this call.
-        /// Spawn and file workers get a deadline each
+        /// Spawn and file workers get deadlines
         /// (`spawn_join_deadline_ms` / `file_join_deadline_ms`), with
         /// a best-effort cancel of the blocked task at the halfway
         /// mark: a spawn normally converges from the process-group
@@ -4879,17 +5006,21 @@ pub fn Effects(comptime Msg: type) type {
         /// group (`setsid`, a shell's `set -m` background job) keeps
         /// the stdout pipe open past every kill, and file I/O has no
         /// converging force at all (a write to a FIFO with no reader,
-        /// a stalled network filesystem). A worker still stuck when
+        /// a stalled network filesystem). Credential calls use their
+        /// own `credentials_join_deadline_ms`: OS keyrings expose no
+        /// portable cancellation while they wait for an unlock. A worker still stuck when
         /// its budget expires is ABANDONED — thread detached, its
         /// out-of-line context, private buffers, and the executor io
-        /// deliberately leaked, one warning naming the stuck op (see
+        /// deliberately leaked, one warning naming the stuck op (credential
+        /// workers instead self-destroy their private context when the OS
+        /// call returns, while the platform callback context is preserved; see
         /// `FileWorkerContext` / `SpawnWorkerContext` for the
         /// invariant). Either way the owner may free the channel's
         /// memory — and tear down the allocator behind it — the moment
         /// this returns: nothing an abandoned worker can still reach
         /// lives in the channel or in caller-allocator storage (the
         /// leakable set is allocated from `process_allocator`). All
-        /// three worker classes share one terminal guarantee: teardown
+        /// four worker classes share one terminal guarantee: teardown
         /// returns bounded, and every byte a live thread can still
         /// touch stays valid forever.
         ///
@@ -5140,15 +5271,15 @@ pub fn Effects(comptime Msg: type) type {
                 }
             }
             // Store writes use std.Thread directly rather than the shared
-            // threaded-I/O executor. Let the bounded SQLite operations finish
-            // and join them before the runner may close their host-owned DB.
-            // Their ordered-write condition means all workers must be allowed
-            // to progress together; wait for the family as a set, then join.
+            // threaded-I/O executor. Let them finish and join before their
+            // runtime-owned SQLite binding is released. Ordered writes must
+            // all be allowed to progress together, so wait for the family as
+            // a set, then join.
             if (comptime io_threaded_supported) {
                 while (true) {
                     var store_running = false;
                     for (&self.slots) |*slot| {
-                        if (slot.kind == .store and !slot.fake and slot.state.load(.acquire) == .running) {
+                        if (slot.kind == .store and !slot.fake and slot.worker_thread != null and slot.state.load(.acquire) == .running) {
                             store_running = true;
                             break;
                         }
@@ -5158,6 +5289,70 @@ pub fn Effects(comptime Msg: type) type {
                 }
                 for (&self.slots) |*slot| {
                     if (slot.kind == .store) joinWorker(slot);
+                }
+
+                // Credential APIs may wait forever for an interactive OS
+                // keyring unlock. Bound that wait, then use the context's
+                // commit/abandon fence: a committed worker is already in its
+                // short runtime epilogue and is joined; an uncommitted one is
+                // detached and can touch only its process-lived private block.
+                const credentials_start_ns = runtime_clock.monotonicNanoseconds();
+                while (true) {
+                    var credentials_running = false;
+                    for (&self.slots) |*slot| {
+                        if (slot.kind == .credentials and !slot.fake and slot.worker_thread != null and slot.state.load(.acquire) == .running) {
+                            credentials_running = true;
+                            break;
+                        }
+                    }
+                    if (!credentials_running) break;
+                    const elapsed_ms = (runtime_clock.monotonicNanoseconds() - credentials_start_ns) / std.time.ns_per_ms;
+                    if (elapsed_ms >= self.credentials_join_deadline_ms) break;
+                    std.Thread.yield() catch {};
+                }
+                for (&self.slots) |*slot| {
+                    if (slot.kind != .credentials or slot.fake or slot.worker_thread == null) continue;
+                    if (slot.state.load(.acquire) != .running) continue;
+                    const ctx = slot.credentials_ctx orelse continue;
+                    ctx.mutex.lock();
+                    const committed = ctx.committed;
+                    if (committed) {
+                        ctx.mutex.unlock();
+                        continue;
+                    }
+                    ctx.abandoned = true;
+                    // Keep the fence locked through the last teardown-side
+                    // context access. Once it unlocks, a concurrently
+                    // returning detached worker may scrub and free `ctx`.
+                    ctx.services.noteBlockingCallAbandoned();
+                    if (comptime builtin.os.tag != .freestanding) {
+                        std.debug.print(
+                            "effects teardown: credential {s} for key '{s}' is still blocked in the OS store after {d}ms; abandoning its worker and preserving the platform callback context so teardown can return safely\n",
+                            .{ @tagName(slot.credentials_op), ctx.key, self.credentials_join_deadline_ms },
+                        );
+                    }
+                    if (slot.worker_thread) |thread| {
+                        slot.worker_thread = null;
+                        thread.detach();
+                    }
+                    // The detached worker owns and securely destroys `ctx`
+                    // after its OS call returns. The runtime-owned command /
+                    // result copy is independent and can be scrubbed now.
+                    slot.credentials_ctx = null;
+                    slot.credentials_waiting = false;
+                    slot.generation = 0;
+                    ctx.mutex.unlock();
+                    self.releaseFetchSlot(slot);
+                    self.abandoned_credentials_workers += 1;
+                }
+                for (&self.slots) |*slot| {
+                    if (slot.kind != .credentials) continue;
+                    joinWorker(slot);
+                    if (slot.state.load(.acquire) == .running or slot.credentials_waiting) {
+                        slot.credentials_waiting = false;
+                        slot.generation = 0;
+                        self.releaseFetchSlot(slot);
+                    }
                 }
             }
             for (&self.slots) |*slot| {
@@ -5356,6 +5551,7 @@ pub fn Effects(comptime Msg: type) type {
             self.clearQueue();
             for (&self.slots) |*slot| {
                 if (slot.fetch_buffer) |buffer| {
+                    if (slot.kind == .credentials) std.crypto.secureZero(u8, buffer);
                     self.allocator.free(buffer);
                     slot.fetch_buffer = null;
                 }
@@ -5367,11 +5563,12 @@ pub fn Effects(comptime Msg: type) type {
                     self.allocator.free(buffer);
                     slot.line_buffer = null;
                 }
+                if (slot.stdin_buffer) |buffer| {
+                    self.allocator.free(buffer);
+                    slot.stdin_buffer = null;
+                }
             }
-            if (self.drain_fetch_body) |buffer| {
-                self.allocator.free(buffer);
-                self.drain_fetch_body = null;
-            }
+            self.releaseDrainFetchBody();
             if (self.drain_db_bytes) |buffer| {
                 self.allocator.free(buffer);
                 self.drain_db_bytes = null;
@@ -5506,6 +5703,7 @@ pub fn Effects(comptime Msg: type) type {
             // context belongs to the embedding host.
             self.host_calls = null;
             self.record_store_binding = null;
+            self.credentials_store_binding = null;
             self.relational_store_binding = null;
             self.system_services = null;
         }
@@ -5875,6 +6073,13 @@ pub fn Effects(comptime Msg: type) type {
         /// receive a closed `rejected` outcome if a command is smuggled in.
         pub fn bindRecordStore(self: *Self, binding: RecordStoreBinding) void {
             if (self.record_store_binding == null) self.record_store_binding = binding;
+        }
+
+        /// Bind the app-scoped credential store. The binding captures both
+        /// the manifest identity and the credentials permission; a missing or
+        /// denied binding produces `.denied` without entering the OS.
+        pub fn bindCredentialsStore(self: *Self, binding: CredentialsStoreBinding) void {
+            if (self.credentials_store_binding == null) self.credentials_store_binding = binding;
         }
 
         /// Bind the engine-owned Tier-3 relational database. Loop-thread
@@ -6380,8 +6585,14 @@ pub fn Effects(comptime Msg: type) type {
                 slot.argv_slices[index] = slot.argv_storage[offset .. offset + arg.len];
                 offset += arg.len;
             }
-            @memcpy(slot.stdin_storage[0..stdin_bytes.len], stdin_bytes);
-            slot.stdin_len = stdin_bytes.len;
+            if (slot.stdin_buffer) |old| {
+                self.allocator.free(old);
+                slot.stdin_buffer = null;
+            }
+            if (stdin_bytes.len > 0) {
+                slot.stdin_buffer = self.allocator.dupe(u8, stdin_bytes) catch
+                    return self.reject(options);
+            }
             slot.output_mode = options.output;
             slot.collect_len = 0;
             slot.collect_truncated = false;
@@ -6401,6 +6612,10 @@ pub fn Effects(comptime Msg: type) type {
                 // from the worker context at commit; fake mode
                 // accumulates into it directly).
                 slot.collect_buffer = self.allocator.alloc(u8, max_effect_collect_bytes) catch {
+                    if (slot.stdin_buffer) |buffer| {
+                        self.allocator.free(buffer);
+                        slot.stdin_buffer = null;
+                    }
                     return self.reject(options);
                 };
             }
@@ -8095,7 +8310,7 @@ pub fn Effects(comptime Msg: type) type {
                 .name = "core.store.set",
                 .payload = payload,
                 .on_result = options.on_result,
-            }, max_effect_store_value_bytes + max_effect_store_key_bytes + 16, 32, .set);
+            }, max_effect_store_value_bytes + max_effect_store_key_bytes + 16, 32, .set, null, null);
         }
 
         /// Read one record. The ok payload is a one-byte presence envelope:
@@ -8112,7 +8327,7 @@ pub fn Effects(comptime Msg: type) type {
                 .name = "core.store.get",
                 .payload = payload,
                 .on_result = options.on_result,
-            }, max_effect_store_key_bytes + 8, max_effect_store_value_bytes + 1, .get);
+            }, max_effect_store_key_bytes + 8, max_effect_store_value_bytes + 1, .get, null, null);
         }
 
         /// Delete one record. Missing keys succeed.
@@ -8126,7 +8341,7 @@ pub fn Effects(comptime Msg: type) type {
                 .name = "core.store.delete",
                 .payload = payload,
                 .on_result = options.on_result,
-            }, max_effect_store_key_bytes + 8, 32, .delete);
+            }, max_effect_store_key_bytes + 8, 32, .delete, null, null);
         }
 
         /// Scan a byte-lexicographic prefix page. The ok payload is
@@ -8156,7 +8371,7 @@ pub fn Effects(comptime Msg: type) type {
                 .name = "core.store.scan",
                 .payload = payload,
                 .on_result = options.on_result,
-            }, max_effect_store_key_bytes * 2 + 16, max_effect_store_result_bytes, .scan);
+            }, max_effect_store_key_bytes * 2 + 16, max_effect_store_result_bytes, .scan, null, null);
         }
 
         /// Atomically upsert a bounded batch. Validation happens before the
@@ -8189,7 +8404,82 @@ pub fn Effects(comptime Msg: type) type {
                 .name = "core.store.setMany",
                 .payload = payload,
                 .on_result = options.on_result,
-            }, max_effect_store_batch_bytes, 32, .set_many);
+            }, max_effect_store_batch_bytes, 32, .set_many, null, null);
+        }
+
+        /// Store one secret in the OS credential manager under this app's
+        /// manifest identity. Keychain work is blocking and therefore runs
+        /// in the credential-only worker family. Reissuing `key` replaces
+        /// the old effect; permission and validation refusals are staged so
+        /// a `Cmd.batch` observes them in command-stream order.
+        pub fn credentialsSet(self: *Self, options: CredentialsSetOptions) void {
+            const binding = self.credentials_store_binding orelse
+                return self.rejectCredentials(options.key, .set, options.on_result, options.host_result, .denied);
+            if (!binding.permitted) return self.rejectCredentials(options.key, .set, options.on_result, options.host_result, .denied);
+            if (!credentials_store.validKey(options.credential_key) or options.secret.len > max_effect_credentials_secret_bytes) {
+                return self.rejectCredentials(options.key, .set, options.on_result, options.host_result, .over_bound);
+            }
+            const payload = self.credentialsFieldsPayload(&.{ options.credential_key, options.secret }) orelse
+                return self.rejectCredentials(options.key, .set, options.on_result, options.host_result, .rejected);
+            defer secureFree(self.allocator, payload);
+            self.startHostRequest(.{
+                .key = options.key,
+                .name = "core.credentials.set",
+                .payload = payload,
+                .on_result = options.host_result,
+            }, max_effect_credentials_key_bytes + max_effect_credentials_secret_bytes + 8, 32, null, .set, options.on_result);
+        }
+
+        /// Read one app-scoped secret. A miss is the closed `miss` error
+        /// outcome; successful bytes are ephemeral drain scratch and must not
+        /// be retained outside the receiving update.
+        pub fn credentialsGet(self: *Self, options: CredentialsGetOptions) void {
+            const binding = self.credentials_store_binding orelse
+                return self.rejectCredentials(options.key, .get, options.on_result, options.host_result, .denied);
+            if (!binding.permitted) return self.rejectCredentials(options.key, .get, options.on_result, options.host_result, .denied);
+            if (!credentials_store.validKey(options.credential_key)) {
+                return self.rejectCredentials(options.key, .get, options.on_result, options.host_result, .over_bound);
+            }
+            const payload = self.credentialsFieldsPayload(&.{options.credential_key}) orelse
+                return self.rejectCredentials(options.key, .get, options.on_result, options.host_result, .rejected);
+            defer secureFree(self.allocator, payload);
+            self.startHostRequest(.{
+                .key = options.key,
+                .name = "core.credentials.get",
+                .payload = payload,
+                .on_result = options.host_result,
+            }, max_effect_credentials_key_bytes + 4, max_effect_credentials_secret_bytes, null, .get, options.on_result);
+        }
+
+        /// Delete one app-scoped secret. Deleting a missing entry succeeds.
+        pub fn credentialsDelete(self: *Self, options: CredentialsDeleteOptions) void {
+            const binding = self.credentials_store_binding orelse
+                return self.rejectCredentials(options.key, .delete, options.on_result, options.host_result, .denied);
+            if (!binding.permitted) return self.rejectCredentials(options.key, .delete, options.on_result, options.host_result, .denied);
+            if (!credentials_store.validKey(options.credential_key)) {
+                return self.rejectCredentials(options.key, .delete, options.on_result, options.host_result, .over_bound);
+            }
+            const payload = self.credentialsFieldsPayload(&.{options.credential_key}) orelse
+                return self.rejectCredentials(options.key, .delete, options.on_result, options.host_result, .rejected);
+            defer secureFree(self.allocator, payload);
+            self.startHostRequest(.{
+                .key = options.key,
+                .name = "core.credentials.delete",
+                .payload = payload,
+                .on_result = options.host_result,
+            }, max_effect_credentials_key_bytes + 4, 32, null, .delete, options.on_result);
+        }
+
+        fn credentialsFieldsPayload(self: *Self, fields: []const []const u8) ?[]u8 {
+            var len: usize = 0;
+            for (fields) |field| {
+                len = std.math.add(usize, len, 4) catch return null;
+                len = std.math.add(usize, len, field.len) catch return null;
+            }
+            const payload = self.allocator.alloc(u8, len) catch return null;
+            var at: usize = 0;
+            for (fields) |field| writeStoreField(payload, &at, field);
+            return payload;
         }
 
         fn storeFieldsPayload(self: *Self, fields: []const []const u8) ?[]u8 {
@@ -8218,6 +8508,21 @@ pub fn Effects(comptime Msg: type) type {
 
         fn rejectStore(self: *Self, key: u64, on_result: ?HostMsgFn, outcome: EffectStoreOutcome) void {
             self.deliverLoopHost(.{ .key = key, .ok = false, .bytes = record_store.outcomeName(outcome) }, on_result, true);
+        }
+
+        fn rejectCredentials(
+            self: *Self,
+            key: u64,
+            operation: EffectCredentialsOperation,
+            credentials_fn: ?CredentialsMsgFn,
+            host_fn: ?HostMsgFn,
+            outcome: EffectCredentialsOutcome,
+        ) void {
+            self.deliverLoopCredentials(.{
+                .key = key,
+                .operation = operation,
+                .outcome = outcome,
+            }, credentials_fn, host_fn);
         }
 
         /// Run one read-only SQL statement and stage bounded row pages followed
@@ -8577,7 +8882,7 @@ pub fn Effects(comptime Msg: type) type {
         /// the request parks in its slot (inspect with `pendingHostAt`,
         /// answer with `feedHostResult`).
         pub fn hostRequest(self: *Self, options: HostRequestOptions) void {
-            self.startHostRequest(options, max_effect_host_payload_bytes, max_effect_host_result_bytes, null);
+            self.startHostRequest(options, max_effect_host_payload_bytes, max_effect_host_result_bytes, null, null, null);
         }
 
         fn startHostRequest(
@@ -8586,29 +8891,34 @@ pub fn Effects(comptime Msg: type) type {
             payload_limit: usize,
             result_limit: usize,
             store_op: ?EffectStoreOp,
+            credentials_op: ?EffectCredentialsOperation,
+            credentials_fn: ?CredentialsMsgFn,
         ) void {
             self.reclaimSlots();
             const fake = self.executor == .fake;
-            const native_request = isNativeHostRequestName(options.name);
             const store_request = store_op != null;
+            const credentials_request = credentials_op != null;
+            const native_request = isNativeHostRequestName(options.name);
             if (options.name.len == 0 or options.name.len > max_effect_host_name_bytes or
                 options.payload.len > payload_limit)
             {
-                return self.rejectHost(options.key, options.on_result);
+                return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
             }
-            if (!fake and self.host_calls == null and !native_request) return self.rejectHost(options.key, options.on_result);
+            if (!fake and self.host_calls == null and !native_request and !credentials_request) {
+                return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
+            }
             // A staged non-regenerating image terminal holds the key
             // exactly like the slot windows below (see
             // `stagedImageOccupiesKey`): under replay that image
             // request is still parked until its journaled terminal
             // feeds, and the parked fake is what rejects this request
             // there.
-            if (self.stagedImageOccupiesKey(options.key)) return self.rejectHost(options.key, options.on_result);
+            if (self.stagedImageOccupiesKey(options.key)) return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
             // Channel occupancies hold the shared key space the same
             // way: from open (or a staged executor-truth rejection)
             // until the terminal delivers, live and replayed alike.
             if (self.channelOccupiesKey(options.key) or self.stagedChannelOccupiesKey(options.key)) {
-                return self.rejectHost(options.key, options.on_result);
+                return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
             }
             // Pty occupancies too: from spawn until the `.exit`
             // terminal delivers, plus the staged executor-truth
@@ -8618,7 +8928,7 @@ pub fn Effects(comptime Msg: type) type {
             // the families inline only because a same-key HOST
             // occupancy is replaced, never rejected).
             if (self.ptyOccupiesKey(options.key) or self.stagedPtyOccupiesKey(options.key)) {
-                return self.rejectHost(options.key, options.on_result);
+                return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
             }
             const slot_index = blk: {
                 // In flight = running (no answer yet) OR draining with
@@ -8637,57 +8947,69 @@ pub fn Effects(comptime Msg: type) type {
                     const state = slot.state.load(.acquire);
                     if (state != .running and state != .draining) continue;
                     if (slot.key != options.key) continue;
-                    const expected_kind: SlotKind = if (store_request) .store else .host;
+                    const expected_kind: SlotKind = if (store_request) .store else if (credentials_request) .credentials else .host;
                     if (slot.kind != expected_kind) {
                         if (state == .running or slotTerminalUndelivered(slot)) {
-                            return self.rejectHost(options.key, options.on_result);
+                            return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
                         }
                         continue;
                     }
-                    // A write already handed to SQLite is only logically
-                    // cancelled: it still runs in issue order, and its
-                    // terminal is swallowed. Its replacement needs a fresh
-                    // store slot so the worker's storage cannot be reused.
-                    if (slot.kind == .store and state == .running and !slot.fake and slot.worker_thread != null) {
+                    // Work already handed to SQLite or the credential
+                    // manager is only logically cancelled: its terminal is
+                    // swallowed. A credential replacement which has not
+                    // reached the platform yet is reusable, however; this
+                    // coalesces a burst to the newest request while the one
+                    // active keychain call finishes.
+                    if ((slot.kind == .store or slot.kind == .credentials) and state == .running and !slot.fake and slot.worker_thread != null) {
                         slot.cancelled_generation = slot.generation;
                         slot.cancel_requested.store(true, .release);
                         continue;
                     }
                     if (!native_request and self.host_calls != null and self.host_calls.?.reject_duplicate_keys) {
-                        return self.rejectHost(options.key, options.on_result);
+                        return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
                     }
                     // Tell the host first: a late answer for the old
                     // occupancy must find nothing.
                     if (slot.kind == .host and state == .running and !slot.fake) self.notifyHostCancel(options.key);
-                    if (slot.kind == .store and state == .draining) joinWorker(slot);
+                    if ((slot.kind == .store or slot.kind == .credentials) and state == .draining) joinWorker(slot);
                     self.releaseFetchSlot(slot);
                     slot.generation = 0;
                     replaced = index;
                 }
                 break :blk replaced orelse
-                    ((if (store_request) self.findIdleStoreSlot() else self.findIdleSlot()) orelse
-                        return self.rejectHost(options.key, options.on_result));
+                    ((if (store_request) self.findIdleStoreSlot() else if (credentials_request) self.findIdleCredentialsSlot() else self.findIdleSlot()) orelse
+                        return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn));
             };
 
             const slot = &self.slots[slot_index];
             // The buffer holds the payload copy, then the result space.
             const total_buffer_len = std.math.add(usize, options.payload.len, result_limit) catch {
-                return self.rejectHost(options.key, options.on_result);
+                return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
             };
             const buffer = self.allocator.alloc(u8, total_buffer_len) catch {
-                return self.rejectHost(options.key, options.on_result);
+                return self.rejectStartedHost(options.key, options.on_result, credentials_op, credentials_fn);
             };
             slot.generation = self.next_generation;
             self.next_generation +%= 1;
             if (self.next_generation == 0) self.next_generation = 1;
             slot.key = options.key;
-            slot.kind = if (store_request) .store else .host;
+            slot.kind = if (store_request) .store else if (credentials_request) .credentials else .host;
+            if (credentials_op) |operation| {
+                slot.credentials_op = operation;
+                slot.credentials_sequence = self.next_credentials_sequence;
+                self.next_credentials_sequence +%= 1;
+                if (self.next_credentials_sequence == 0) self.next_credentials_sequence = 1;
+                slot.credentials_waiting = !fake;
+            } else {
+                slot.credentials_waiting = false;
+            }
             slot.on_line = null;
             slot.on_exit = null;
             slot.on_response = null;
             slot.on_file = null;
             slot.on_clipboard = null;
             slot.on_host = options.on_result;
+            slot.on_credentials = credentials_fn;
             slot.cancel_requested.store(false, .release);
             // `cancelled_generation` stays sticky, exactly as in `spawn`.
             slot.dropped_pending = 0;
@@ -8698,7 +9020,10 @@ pub fn Effects(comptime Msg: type) type {
                 self.allocator.free(old);
                 slot.line_buffer = null;
             }
-            if (slot.fetch_buffer) |old| self.allocator.free(old);
+            if (slot.fetch_buffer) |old| {
+                if (credentials_request) std.crypto.secureZero(u8, old);
+                self.allocator.free(old);
+            }
             slot.fetch_buffer = buffer;
             @memcpy(buffer[0..options.payload.len], options.payload);
             slot.payload_len = options.payload.len;
@@ -8717,6 +9042,10 @@ pub fn Effects(comptime Msg: type) type {
                 }
                 return;
             }
+            if (credentials_op != null) {
+                self.startNextCredentialsWorker();
+                return;
+            }
             if (native_request) {
                 self.performNativeHostRequest(slot.hostName(), options.key, slot.fetchPayload());
                 return;
@@ -8729,9 +9058,6 @@ pub fn Effects(comptime Msg: type) type {
             return std.mem.startsWith(u8, name, "core.store.") or
                 std.mem.eql(u8, name, "native-sdk.launch-at-login.status") or
                 std.mem.eql(u8, name, "native-sdk.launch-at-login.set") or
-                std.mem.eql(u8, name, "native-sdk.credentials.set") or
-                std.mem.eql(u8, name, "native-sdk.credentials.get") or
-                std.mem.eql(u8, name, "native-sdk.credentials.delete") or
                 std.mem.eql(u8, name, "native-sdk.time.formatLocal");
         }
 
@@ -8754,9 +9080,7 @@ pub fn Effects(comptime Msg: type) type {
                 self.performBoundStoreRequest(name, key, payload);
                 return;
             }
-            if (std.mem.startsWith(u8, name, "native-sdk.credentials.") or
-                std.mem.eql(u8, name, "native-sdk.time.formatLocal"))
-            {
+            if (std.mem.eql(u8, name, "native-sdk.time.formatLocal")) {
                 self.performBoundSystemRequest(name, key, payload);
                 return;
             }
@@ -8910,6 +9234,169 @@ pub fn Effects(comptime Msg: type) type {
             self.wakeHost();
         }
 
+        /// Start the oldest queued real credential operation when no other
+        /// keychain call is active. Serial execution preserves command issue
+        /// order across platform APIs that provide no ordering of their own.
+        fn startNextCredentialsWorker(self: *Self) void {
+            if (comptime !io_threaded_supported) return;
+            if (self.shutdown.load(.acquire)) return;
+            for (&self.slots) |*slot| {
+                if (slot.kind != .credentials or slot.fake or slot.worker_thread == null) continue;
+                if (slot.state.load(.acquire) == .running) return;
+                joinWorker(slot);
+            }
+            var oldest: ?usize = null;
+            for (&self.slots, 0..) |*slot, index| {
+                if (slot.kind != .credentials or slot.fake or !slot.credentials_waiting) continue;
+                if (slot.state.load(.acquire) != .running) continue;
+                if (oldest == null or slot.credentials_sequence < self.slots[oldest.?].credentials_sequence) oldest = index;
+            }
+            const slot_index = oldest orelse return;
+            const slot = &self.slots[slot_index];
+            slot.credentials_waiting = false;
+            self.startCredentialsWorker(slot_index, slot.credentials_op);
+        }
+
+        fn startCredentialsWorker(self: *Self, slot_index: usize, operation: EffectCredentialsOperation) void {
+            const slot = &self.slots[slot_index];
+            if (comptime !io_threaded_supported) {
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.locked)) catch {};
+                return;
+            }
+            const binding = self.credentials_store_binding orelse {
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.denied)) catch {};
+                return;
+            };
+            // A blocking platform call can outlive the runtime only when the
+            // platform supplies the destruction latch that preserves its
+            // callback context. First-party hosts all wire this seam.
+            if (binding.services.note_blocking_call_abandoned_fn == null) {
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.locked)) catch {};
+                return;
+            }
+            var at: usize = 0;
+            const credential_key = takeNativeRequestBytes(slot.fetchPayload(), &at) orelse {
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                return;
+            };
+            const secret = if (operation == .set)
+                takeNativeRequestBytes(slot.fetchPayload(), &at) orelse {
+                    self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                    return;
+                }
+            else
+                "";
+            if (at != slot.payload_len) {
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                return;
+            }
+            const key_copy = process_allocator.dupe(u8, credential_key) catch {
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                return;
+            };
+            const secret_copy = process_allocator.dupe(u8, secret) catch {
+                process_allocator.free(key_copy);
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                return;
+            };
+            const service_copy = process_allocator.dupe(u8, binding.service) catch {
+                secureFree(process_allocator, secret_copy);
+                process_allocator.free(key_copy);
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                return;
+            };
+            const output = process_allocator.alloc(u8, max_effect_credentials_secret_bytes) catch {
+                process_allocator.free(service_copy);
+                secureFree(process_allocator, secret_copy);
+                process_allocator.free(key_copy);
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                return;
+            };
+            const ctx = process_allocator.create(CredentialsWorkerContext) catch {
+                secureFree(process_allocator, output);
+                process_allocator.free(service_copy);
+                secureFree(process_allocator, secret_copy);
+                process_allocator.free(key_copy);
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                return;
+            };
+            ctx.* = .{
+                .services = binding.services.*,
+                .service = service_copy,
+                .permitted = binding.permitted,
+                .operation = operation,
+                .key = key_copy,
+                .secret = secret_copy,
+                .output = output,
+            };
+            slot.credentials_ctx = ctx;
+            const thread = std.Thread.spawn(.{}, credentialsWorkerMain, .{ self, slot_index, slot.generation, ctx }) catch {
+                slot.credentials_ctx = null;
+                destroyCredentialsContext(ctx);
+                self.feedHostResult(slot.key, false, credentials_store.outcomeName(.rejected)) catch {};
+                return;
+            };
+            slot.worker_thread = thread;
+        }
+
+        fn credentialsWorkerMain(self: *Self, slot_index: usize, generation: u32, ctx: *CredentialsWorkerContext) void {
+            ctx.execution = credentials_store.execute(.{
+                .services = &ctx.services,
+                .service = ctx.service,
+                .permitted = ctx.permitted,
+            }, ctx.operation, ctx.key, ctx.secret, ctx.output);
+            // Core delete is idempotent. The shared adapter preserves `.miss`
+            // so the existing WebView bridge can keep returning false for a
+            // missing entry; only this core-effect surface promotes it to ok.
+            if (ctx.operation == .delete and ctx.execution.outcome == .miss) {
+                ctx.execution = .{ .outcome = .ok };
+            }
+            // Commit to touching the runtime only while teardown still owns
+            // it. If teardown won this fence, the detached worker owns and
+            // scrubs its private block when the OS call eventually returns.
+            ctx.mutex.lock();
+            if (ctx.abandoned) {
+                ctx.mutex.unlock();
+                destroyCredentialsContext(ctx);
+                return;
+            }
+            ctx.committed = true;
+            ctx.mutex.unlock();
+            const slot = &self.slots[slot_index];
+            const buffer = slot.fetch_buffer orelse {
+                slot.state.store(.done, .release);
+                return;
+            };
+            const result: []const u8 = if (ctx.execution.outcome == .ok)
+                ctx.output[0..@min(ctx.execution.len, ctx.output.len)]
+            else
+                credentials_store.outcomeName(ctx.execution.outcome);
+            const capacity = buffer.len - slot.payload_len;
+            const within_bound = ctx.execution.len <= ctx.output.len and result.len <= capacity;
+            const delivered = if (within_bound) result else credentials_store.outcomeName(.over_bound);
+            @memcpy(buffer[slot.payload_len..][0..delivered.len], delivered);
+            slot.body_len = delivered.len;
+            var entry: Entry = .{
+                .kind = .host,
+                .slot_index = @intCast(slot_index),
+                .generation = generation,
+                .key = slot.key,
+                .line_len = @intCast(delivered.len),
+                .host_ok = within_bound and ctx.execution.outcome == .ok,
+                .host_fn = slot.on_host,
+                .credentials_fn = slot.on_credentials,
+            };
+            while (!self.enqueue(&entry)) {
+                if (self.shutdown.load(.acquire)) {
+                    slot.state.store(.done, .release);
+                    return;
+                }
+                std.atomic.spinLoopHint();
+            }
+            slot.state.store(.draining, .release);
+            self.wakeHost();
+        }
+
         fn performBoundSystemRequest(self: *Self, name: []const u8, key: u64, payload: []const u8) void {
             const binding = self.system_services orelse {
                 self.feedHostResult(key, false, "unsupported") catch {};
@@ -8938,39 +9425,7 @@ pub fn Effects(comptime Msg: type) type {
                 return;
             }
 
-            var at: usize = 0;
-            const account = takeNativeRequestBytes(payload, &at) orelse return self.feedInvalidNativeRequest(key);
-            if (std.mem.eql(u8, name, "native-sdk.credentials.set")) {
-                const secret = takeNativeRequestBytes(payload, &at) orelse return self.feedInvalidNativeRequest(key);
-                const service = takeNativeRequestBytes(payload, &at) orelse return self.feedInvalidNativeRequest(key);
-                if (at != payload.len) return self.feedInvalidNativeRequest(key);
-                binding.set_credential_fn(binding.context, .{ .service = service, .account = account, .secret = secret }) catch |err| {
-                    self.feedHostResult(key, false, systemServiceErrorName(err)) catch {};
-                    return;
-                };
-                self.feedHostResult(key, true, "") catch {};
-                return;
-            }
-            const service = takeNativeRequestBytes(payload, &at) orelse return self.feedInvalidNativeRequest(key);
-            if (at != payload.len) return self.feedInvalidNativeRequest(key);
-            const credential_key: platform.CredentialKey = .{ .service = service, .account = account };
-            if (std.mem.eql(u8, name, "native-sdk.credentials.get")) {
-                var secret_buffer: [platform.max_credential_secret_bytes]u8 = undefined;
-                const secret = binding.get_credential_fn(binding.context, credential_key, &secret_buffer) catch |err| {
-                    self.feedHostResult(key, false, systemServiceErrorName(err)) catch {};
-                    return;
-                } orelse {
-                    self.feedHostResult(key, false, "not_found") catch {};
-                    return;
-                };
-                self.feedHostResult(key, true, secret) catch {};
-                return;
-            }
-            const deleted = binding.delete_credential_fn(binding.context, credential_key) catch |err| {
-                self.feedHostResult(key, false, systemServiceErrorName(err)) catch {};
-                return;
-            };
-            self.feedHostResult(key, deleted, if (deleted) "" else "not_found") catch {};
+            self.feedInvalidNativeRequest(key);
         }
 
         fn takeNativeRequestBytes(payload: []const u8, at: *usize) ?[]const u8 {
@@ -9029,14 +9484,14 @@ pub fn Effects(comptime Msg: type) type {
             for (&self.slots) |*slot| {
                 const state = slot.state.load(.acquire);
                 if (state != .running and state != .draining) continue;
-                if ((slot.kind != .host and slot.kind != .store) or slot.key != key) continue;
-                if (slot.kind == .store and state == .running and !slot.fake and slot.worker_thread != null) {
+                if ((slot.kind != .host and slot.kind != .store and slot.kind != .credentials) or slot.key != key) continue;
+                if ((slot.kind == .store or slot.kind == .credentials) and state == .running and !slot.fake and slot.worker_thread != null) {
                     slot.cancelled_generation = slot.generation;
                     slot.cancel_requested.store(true, .release);
                     continue;
                 }
                 if (slot.kind == .host and state == .running and !slot.fake) self.notifyHostCancel(key);
-                if (slot.kind == .store and state == .draining) joinWorker(slot);
+                if ((slot.kind == .store or slot.kind == .credentials) and state == .draining) joinWorker(slot);
                 self.releaseFetchSlot(slot);
                 // A queued result entry (fed, undrained) dies by
                 // generation mismatch; zero marks "no occupancy".
@@ -9056,12 +9511,39 @@ pub fn Effects(comptime Msg: type) type {
             self.deliverLoopHost(.{ .key = key, .ok = false, .bytes = "rejected" }, host_fn, true);
         }
 
+        fn rejectStartedHost(
+            self: *Self,
+            key: u64,
+            host_fn: ?HostMsgFn,
+            credentials_op: ?EffectCredentialsOperation,
+            credentials_fn: ?CredentialsMsgFn,
+        ) void {
+            if (credentials_op) |operation| {
+                return self.rejectCredentials(key, operation, credentials_fn, host_fn, .rejected);
+            }
+            self.rejectHost(key, host_fn);
+        }
+
         /// Queue a host terminal produced on the loop thread
         /// (rejections and feed fallbacks) for the next drain. Bytes
         /// here are always static.
         fn deliverLoopHost(self: *Self, result: EffectHostResult, host_fn: ?HostMsgFn, rejected: bool) void {
             if (host_fn == null) return;
             self.deliverPending(.{ .host = .{ .result = result, .host_fn = host_fn, .rejected = rejected } });
+        }
+
+        fn deliverLoopCredentials(
+            self: *Self,
+            result: EffectCredentialsResult,
+            credentials_fn: ?CredentialsMsgFn,
+            host_fn: ?HostMsgFn,
+        ) void {
+            if (credentials_fn == null and host_fn == null) return;
+            self.deliverPending(.{ .credentials = .{
+                .result = result,
+                .credentials_fn = credentials_fn,
+                .host_fn = host_fn,
+            } });
         }
 
         /// Cancel a running effect by key. After this returns, no
@@ -9085,7 +9567,7 @@ pub fn Effects(comptime Msg: type) type {
                 return;
             };
             const slot = &self.slots[slot_index];
-            if (slot.kind == .host or slot.kind == .store) return self.cancelHostRequest(key);
+            if (slot.kind == .host or slot.kind == .store or slot.kind == .credentials) return self.cancelHostRequest(key);
             slot.cancelled_generation = slot.generation;
             slot.cancel_requested.store(true, .release);
             if (slot.fake) {
@@ -10600,6 +11082,18 @@ pub fn Effects(comptime Msg: type) type {
                             });
                             return host_fn(entry.result);
                         },
+                        .credentials => |entry| {
+                            if (entry.credentials_fn) |credentials_fn| return credentials_fn(entry.result);
+                            const host_fn = entry.host_fn orelse continue;
+                            return host_fn(.{
+                                .key = entry.result.key,
+                                .ok = entry.result.outcome == .ok,
+                                .bytes = if (entry.result.outcome == .ok)
+                                    entry.result.bytes
+                                else
+                                    credentials_store.outcomeName(entry.result.outcome),
+                            });
+                        },
                         .db => |entry| {
                             if (!entry.transient) {
                                 const slot_index = self.findDbSlot(entry.key) orelse {
@@ -10970,8 +11464,9 @@ pub fn Effects(comptime Msg: type) type {
                         // Take body ownership so the slot can be reused
                         // while `update` still reads the slice; the
                         // buffer is freed when the next response drains.
-                        if (self.drain_fetch_body) |old| self.allocator.free(old);
+                        self.releaseDrainFetchBody();
                         self.drain_fetch_body = slot.fetch_buffer;
+                        self.drain_fetch_body_sensitive = false;
                         slot.fetch_buffer = null;
                         const payload_len = slot.payload_len;
                         const response_fn = entry.response_fn orelse continue;
@@ -11015,8 +11510,9 @@ pub fn Effects(comptime Msg: type) type {
                         slot.state.store(.draining, .release);
                         // Take buffer ownership so the slot can be
                         // reused while `update` still reads the bytes.
-                        if (self.drain_fetch_body) |old| self.allocator.free(old);
+                        self.releaseDrainFetchBody();
                         self.drain_fetch_body = slot.fetch_buffer;
+                        self.drain_fetch_body_sensitive = false;
                         slot.fetch_buffer = null;
                         const payload_len = slot.payload_len;
                         const file_fn = entry.file_fn orelse continue;
@@ -11056,8 +11552,9 @@ pub fn Effects(comptime Msg: type) type {
                         if (entry.generation != slot.generation) continue;
                         // Take buffer ownership so the slot can be
                         // reused while `update` still reads the text.
-                        if (self.drain_fetch_body) |old| self.allocator.free(old);
+                        self.releaseDrainFetchBody();
                         self.drain_fetch_body = slot.fetch_buffer;
+                        self.drain_fetch_body_sensitive = false;
                         slot.fetch_buffer = null;
                         const payload_len = slot.payload_len;
                         const text: []const u8 = if (self.drain_fetch_body) |buffer|
@@ -11113,13 +11610,18 @@ pub fn Effects(comptime Msg: type) type {
                         // able to reuse this slot instead of consuming a
                         // second store slot (or rejecting at capacity).
                         // The worker's later re-store is idempotent.
-                        if (slot.kind == .store) slot.state.store(.draining, .release);
+                        if (slot.kind == .store or slot.kind == .credentials) slot.state.store(.draining, .release);
                         // Take buffer ownership so the slot can be
                         // reused while `update` still reads the bytes.
-                        if (self.drain_fetch_body) |old| self.allocator.free(old);
+                        self.releaseDrainFetchBody();
                         self.drain_fetch_body = slot.fetch_buffer;
+                        self.drain_fetch_body_sensitive = slot.kind == .credentials;
                         slot.fetch_buffer = null;
                         const payload_len = slot.payload_len;
+                        if (slot.kind == .credentials and !slot.fake) {
+                            joinWorker(slot);
+                            self.startNextCredentialsWorker();
+                        }
                         // A cancel that raced the feed (the entry was
                         // already queued) still drops silently — on
                         // both sides: live never journals it, and the
@@ -11141,13 +11643,36 @@ pub fn Effects(comptime Msg: type) type {
                         // session replay the request is a parked fake
                         // that only this record's feed retires. Only
                         // the Msg depends on the handler.
-                        self.journalNote(.{
-                            .kind = .host,
-                            .key = result.key,
-                            .payload = result.bytes,
-                            // `.host` journal encoding: route in `code`.
-                            .code = @intFromBool(!result.ok),
-                        });
+                        if (slot.kind == .credentials) {
+                            const credentials_outcome: EffectCredentialsOutcome = if (result.ok)
+                                .ok
+                            else
+                                credentials_store.outcomeFromName(result.bytes) orelse .rejected;
+                            const credentials_result: EffectCredentialsResult = .{
+                                .key = result.key,
+                                .operation = slot.credentials_op,
+                                .outcome = credentials_outcome,
+                                .bytes = if (credentials_outcome == .ok) result.bytes else "",
+                            };
+                            self.journalNote(.{
+                                .kind = .credentials,
+                                .key = result.key,
+                                .payload = credentials_result.bytes,
+                                .credentials_operation = slot.credentials_op,
+                                .credentials_outcome = credentials_outcome,
+                            });
+                            if (entry.credentials_fn) |credentials_fn| return credentials_fn(credentials_result);
+                            const host_fn = entry.host_fn orelse continue;
+                            return host_fn(result);
+                        } else {
+                            self.journalNote(.{
+                                .kind = .host,
+                                .key = result.key,
+                                .payload = result.bytes,
+                                // `.host` journal encoding: route in `code`.
+                                .code = @intFromBool(!result.ok),
+                            });
+                        }
                         const host_fn = entry.host_fn orelse continue;
                         return host_fn(result);
                     },
@@ -11159,8 +11684,9 @@ pub fn Effects(comptime Msg: type) type {
                         // Take buffer ownership so the slot can be
                         // reused while `update` (and the journal sink)
                         // still read the bytes.
-                        if (self.drain_fetch_body) |old| self.allocator.free(old);
+                        self.releaseDrainFetchBody();
                         self.drain_fetch_body = slot.fetch_buffer;
+                        self.drain_fetch_body_sensitive = false;
                         slot.fetch_buffer = null;
                         // Retire the slot BEFORE the terminal reaches any
                         // handler. The real worker stores `.draining`
@@ -12236,7 +12762,7 @@ pub fn Effects(comptime Msg: type) type {
         pub fn pendingHostCount(self: *Self) usize {
             var count: usize = 0;
             for (&self.slots) |*slot| {
-                if (slot.fake and (slot.kind == .host or slot.kind == .store) and slot.state.load(.acquire) == .running) count += 1;
+                if (slot.fake and (slot.kind == .host or slot.kind == .store or slot.kind == .credentials) and slot.state.load(.acquire) == .running) count += 1;
             }
             return count;
         }
@@ -12245,7 +12771,7 @@ pub fn Effects(comptime Msg: type) type {
         pub fn pendingHostAt(self: *Self, index: usize) ?HostRequest {
             var seen: usize = 0;
             for (&self.slots) |*slot| {
-                if (!(slot.fake and (slot.kind == .host or slot.kind == .store) and slot.state.load(.acquire) == .running)) continue;
+                if (!(slot.fake and (slot.kind == .host or slot.kind == .store or slot.kind == .credentials) and slot.state.load(.acquire) == .running)) continue;
                 if (seen == index) {
                     return .{
                         .key = slot.key,
@@ -12272,7 +12798,7 @@ pub fn Effects(comptime Msg: type) type {
         pub fn feedHostResult(self: *Self, key: u64, ok: bool, bytes: []const u8) error{EffectNotFound}!void {
             const slot_index = blk: {
                 const index = self.findActiveSlot(key) orelse return error.EffectNotFound;
-                if (self.slots[index].kind != .host and self.slots[index].kind != .store) return error.EffectNotFound;
+                if (self.slots[index].kind != .host and self.slots[index].kind != .store and self.slots[index].kind != .credentials) return error.EffectNotFound;
                 break :blk index;
             };
             const slot = &self.slots[slot_index];
@@ -12294,14 +12820,61 @@ pub fn Effects(comptime Msg: type) type {
                 .line_len = @intCast(delivered.len),
                 .host_ok = delivered_ok,
                 .host_fn = slot.on_host,
+                .credentials_fn = slot.on_credentials,
             };
             slot.state.store(.draining, .release);
             if (!self.enqueue(&entry)) {
                 const host_fn = slot.on_host;
+                const credentials_fn = slot.on_credentials;
+                const kind = slot.kind;
+                const operation = slot.credentials_op;
                 self.releaseFetchSlot(slot);
-                self.deliverLoopHost(.{ .key = entry.key, .ok = false }, host_fn, false);
+                if (kind == .credentials) {
+                    self.deliverLoopCredentials(.{
+                        .key = entry.key,
+                        .operation = operation,
+                        .outcome = .rejected,
+                    }, credentials_fn, host_fn);
+                } else {
+                    self.deliverLoopHost(.{ .key = entry.key, .ok = false }, host_fn, false);
+                }
             }
             self.wakeHost();
+        }
+
+        /// Replay one redacted credential result. A successful get receives a
+        /// deterministic same-length placeholder derived from the recorded
+        /// digest; no keychain is touched and no live secret is recoverable
+        /// from the journal. Other outcomes reconstruct their closed enum
+        /// name as the err-route bytes.
+        pub fn feedCredentialsResult(
+            self: *Self,
+            key: u64,
+            operation: EffectCredentialsOperation,
+            outcome: EffectCredentialsOutcome,
+            secret_len: u64,
+            digest: [32]u8,
+        ) anyerror!void {
+            const slot_index = self.findActiveSlot(key) orelse return error.EffectNotFound;
+            const slot = &self.slots[slot_index];
+            if (slot.kind != .credentials or slot.credentials_op != operation or !slot.fake) return error.ReplayDamagedRecord;
+            if (outcome != .ok) {
+                if (secret_len != 0) return error.ReplayDamagedRecord;
+                return self.feedHostResult(key, false, credentials_store.outcomeName(outcome));
+            }
+            if (operation != .get) {
+                if (secret_len != 0) return error.ReplayDamagedRecord;
+                return self.feedHostResult(key, true, "");
+            }
+            const len = std.math.cast(usize, secret_len) orelse return error.ReplayDamagedRecord;
+            if (len > max_effect_credentials_secret_bytes) return error.ReplayDamagedRecord;
+            const placeholder = self.allocator.alloc(u8, len) catch
+                @panic("effects: out of memory synthesizing a redacted credential replay placeholder");
+            defer secureFree(self.allocator, placeholder);
+            for (placeholder, 0..) |*byte, index| {
+                byte.* = digest[index % digest.len] ^ @as(u8, @truncate(index));
+            }
+            return self.feedHostResult(key, true, placeholder);
         }
 
         /// Number of recorded (still-armed) fake fx timers.
@@ -13236,6 +13809,7 @@ pub fn Effects(comptime Msg: type) type {
         /// only.
         fn releaseFetchSlot(self: *Self, slot: *Slot) void {
             if (slot.fetch_buffer) |buffer| {
+                if (slot.kind == .credentials) std.crypto.secureZero(u8, buffer);
                 self.allocator.free(buffer);
                 slot.fetch_buffer = null;
             }
@@ -13243,13 +13817,32 @@ pub fn Effects(comptime Msg: type) type {
                 self.allocator.free(buffer);
                 slot.line_buffer = null;
             }
+            if (slot.kind == .credentials) slot.credentials_waiting = false;
             slot.state.store(.idle, .release);
+        }
+
+        fn releaseDrainFetchBody(self: *Self) void {
+            if (self.drain_fetch_body) |buffer| {
+                if (self.drain_fetch_body_sensitive) std.crypto.secureZero(u8, buffer);
+                self.allocator.free(buffer);
+                self.drain_fetch_body = null;
+            }
+            self.drain_fetch_body_sensitive = false;
+        }
+
+        fn secureFree(allocator: std.mem.Allocator, bytes: []u8) void {
+            std.crypto.secureZero(u8, bytes);
+            allocator.free(bytes);
         }
 
         /// Free a spawn slot's collect and line buffers (if any) and
         /// return it to `.idle` (spawn-time failures, fake cancels, and
         /// feed fallbacks). Loop-thread only.
         fn releaseSpawnSlot(self: *Self, slot: *Slot) void {
+            if (slot.stdin_buffer) |buffer| {
+                self.allocator.free(buffer);
+                slot.stdin_buffer = null;
+            }
             if (slot.collect_buffer) |buffer| {
                 self.allocator.free(buffer);
                 slot.collect_buffer = null;
@@ -13935,7 +14528,15 @@ pub fn Effects(comptime Msg: type) type {
         }
 
         fn findIdleStoreSlot(self: *Self) ?usize {
-            for (self.slots[max_effects..], max_effects..) |*slot, index| {
+            for (self.slots[max_effects .. max_effects + max_store_effects], max_effects..) |*slot, index| {
+                if (slot.state.load(.acquire) == .idle) return index;
+            }
+            return null;
+        }
+
+        fn findIdleCredentialsSlot(self: *Self) ?usize {
+            const first = max_effects + max_store_effects;
+            for (self.slots[first..], first..) |*slot, index| {
                 if (slot.state.load(.acquire) == .idle) return index;
             }
             return null;
@@ -14033,7 +14634,7 @@ pub fn Effects(comptime Msg: type) type {
         fn slotTerminalUndelivered(slot: *const Slot) bool {
             return switch (slot.kind) {
                 .spawn => slot.collect_buffer != null or slot.exit_undelivered,
-                .fetch, .file, .clipboard, .host, .store, .image => slot.fetch_buffer != null,
+                .fetch, .file, .clipboard, .host, .store, .credentials, .image => slot.fetch_buffer != null,
             };
         }
 
@@ -14092,6 +14693,10 @@ pub fn Effects(comptime Msg: type) type {
                     process_allocator.destroy(ctx);
                     slot.store_ctx = null;
                 }
+                if (slot.credentials_ctx) |ctx| {
+                    destroyCredentialsContext(ctx);
+                    slot.credentials_ctx = null;
+                }
             }
         }
 
@@ -14101,6 +14706,14 @@ pub fn Effects(comptime Msg: type) type {
         fn destroySpawnContext(ctx: *SpawnWorkerContext) void {
             if (ctx.line_buffer) |buffer| process_allocator.free(buffer);
             if (ctx.collect_buffer) |buffer| process_allocator.free(buffer);
+            process_allocator.destroy(ctx);
+        }
+
+        fn destroyCredentialsContext(ctx: *CredentialsWorkerContext) void {
+            secureFree(process_allocator, ctx.output);
+            secureFree(process_allocator, ctx.secret);
+            secureFree(process_allocator, ctx.key);
+            process_allocator.free(ctx.service);
             process_allocator.destroy(ctx);
         }
 
@@ -14126,6 +14739,7 @@ pub fn Effects(comptime Msg: type) type {
                     else => {},
                 }
             }
+            self.startNextCredentialsWorker();
         }
 
         fn enqueue(self: *Self, entry: *const Entry) bool {

@@ -2663,7 +2663,7 @@ const FacadeEmitter = struct {
             \\// ---------------------------------------------------- the cmd wire
             \\// Encoder for the inert Cmd data the author's update returns —
             \\// byte-for-byte the layouts the host's command decoder expects
-            \\// (cmd_format_version 4). nscfTagOf maps a Msg arm name onto its
+            \\// (cmd_format_version 5). nscfTagOf maps a Msg arm name onto its
             \\// declaration-order wire tag.
             \\
             \\const nscfFetchMethods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"];
@@ -2771,6 +2771,49 @@ const FacadeEmitter = struct {
             \\      nscfWU8(sink, nscfTagOf(cmd.errKind));
             \\      nscfWBytes(sink, cmd.path);
             \\      nscfWBytes(sink, cmd.bytes);
+            \\      return;
+            \\    case "append_file":
+            \\      nscfWU8(sink, 0x2b);
+            \\      nscfWShortText(sink, cmd.key);
+            \\      nscfWU8(sink, nscfTagOf(cmd.okKind));
+            \\      nscfWU8(sink, nscfTagOf(cmd.errKind));
+            \\      nscfWBytes(sink, cmd.path);
+            \\      nscfWBytes(sink, cmd.bytes);
+            \\      return;
+            \\    case "stat_file":
+            \\      nscfWU8(sink, 0x2c);
+            \\      nscfWShortText(sink, cmd.key);
+            \\      nscfWU8(sink, nscfTagOf(cmd.okKind));
+            \\      nscfWU8(sink, nscfTagOf(cmd.errKind));
+            \\      nscfWBytes(sink, cmd.path);
+            \\      return;
+            \\    case "read_file_stream":
+            \\      nscfWU8(sink, 0x2d);
+            \\      nscfWShortText(sink, cmd.key);
+            \\      nscfWU8(sink, nscfTagOf(cmd.chunkKind));
+            \\      nscfWU8(sink, nscfTagOf(cmd.doneKind));
+            \\      nscfWU8(sink, nscfTagOf(cmd.errKind));
+            \\      nscfWBytes(sink, cmd.path);
+            \\      return;
+            \\    case "write_file_stream":
+            \\      nscfWU8(sink, 0x2e);
+            \\      nscfWShortText(sink, cmd.key);
+            \\      nscfWU8(sink, nscfTagOf(cmd.okKind));
+            \\      nscfWU8(sink, nscfTagOf(cmd.errKind));
+            \\      nscfWBytes(sink, cmd.path);
+            \\      return;
+            \\    case "write_file_chunk":
+            \\      nscfWU8(sink, 0x2f);
+            \\      nscfWShortText(sink, cmd.key);
+            \\      nscfWU8(sink, nscfTagOf(cmd.okKind));
+            \\      nscfWU8(sink, nscfTagOf(cmd.errKind));
+            \\      nscfWBytes(sink, cmd.bytes);
+            \\      return;
+            \\    case "write_file_close":
+            \\      nscfWU8(sink, 0x30);
+            \\      nscfWShortText(sink, cmd.key);
+            \\      nscfWU8(sink, nscfTagOf(cmd.okKind));
+            \\      nscfWU8(sink, nscfTagOf(cmd.errKind));
             \\      return;
             \\    case "fetch": {
             \\      nscfWU8(sink, 0x09);

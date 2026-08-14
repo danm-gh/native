@@ -3,6 +3,8 @@ export declare function utf8Bytes(s: string): Uint8Array;
 export type Msgish = {
     readonly kind: string;
 };
+import { type WindowDescriptor, type WindowDescriptorSpec } from "./events.js";
+export declare function windowDescriptor(spec: WindowDescriptorSpec): WindowDescriptor;
 /** Cooperative cancellation capability supplied by generated service hosts. */
 export interface ServiceCancellation {
     /** True after Cmd.cancel or the operation deadline requests cancellation. */

@@ -31,7 +31,7 @@ if (process.env.SCRIPTC_TARGET !== "x86_64-windows-gnu") { console.error("wrong 
 if (!(process.env.PATH ?? "").startsWith(${JSON.stringify(zigDir)})) { console.error("zig directory missing from PATH front"); process.exit(9); }
 const output = process.argv[process.argv.indexOf("-o") + 1];
 fs.writeFileSync(output + ".lib.a", "target archive bytes");
-fs.writeFileSync("core.contract.json", JSON.stringify({ build_id: "cross-target" }));
+fs.writeFileSync("core.contract.json", JSON.stringify({ build_id: "cross-target", model_unbound: [], msg: { unbound: [] } }));
 `);
     const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "run_external_core_compiler.mjs");
     const archive = path.join(root, "libfixture_core.a");
@@ -216,7 +216,7 @@ if (process.env.SCRIPTC_CC !== "zigcc") { console.error("mobile compile missing 
 if (process.env.SCRIPTC_TARGET !== "aarch64-apple-ios-simulator") { console.error("mobile compile got SCRIPTC_TARGET=" + process.env.SCRIPTC_TARGET); process.exit(9); }
 const output = process.argv[process.argv.indexOf("-o") + 1];
 fs.writeFileSync(output + ".lib.a", "ios simulator archive bytes");
-fs.writeFileSync("core.contract.json", JSON.stringify({ build_id: "ios-simulator" }));
+fs.writeFileSync("core.contract.json", JSON.stringify({ build_id: "ios-simulator", model_unbound: [], msg: { unbound: [] } }));
 `);
     const archive = path.join(root, "libfixture_core.a");
     const env = { ...process.env };
@@ -263,7 +263,7 @@ if (process.argv.includes("-v")) { console.log("0.0.29"); process.exit(0); }
 if (process.env.SCRIPTC_CC !== undefined || process.env.SCRIPTC_TARGET !== undefined) { console.error("native compile received cross environment"); process.exit(9); }
 const output = process.argv[process.argv.indexOf("-o") + 1];
 fs.writeFileSync(output + ".lib.a", "native msvc archive bytes");
-fs.writeFileSync("core.contract.json", JSON.stringify({ build_id: "native-msvc" }));
+fs.writeFileSync("core.contract.json", JSON.stringify({ build_id: "native-msvc", model_unbound: [], msg: { unbound: [] } }));
 `);
     const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "run_external_core_compiler.mjs");
     const archive = path.join(root, "libfixture_core.a");

@@ -4983,7 +4983,7 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
             // `on_double_press` handler (falling back to the ordinary
             // press), while its first release already dispatched the
             // single press — select-then-act, the list convention.
-            if (tree.msgForPointerClick(target.id, pointer_event.pointer.phase, pointer_event.pointer.click_count)) |msg| {
+            if (tree.msgForPointerEvent(target.id, pointer_event.pointer)) |msg| {
                 try self.dispatch(runtime, pointer_event.window_id, msg);
             }
         }
@@ -5829,6 +5829,12 @@ pub fn UiAppWithFeatures(comptime ModelT: type, comptime MsgT: type, comptime fe
                             }
                             return;
                         }
+                        // A radio group owns Arrow/Home/End even when the
+                        // requested target is already focused and selected.
+                        // That in-place case deliberately has no selection
+                        // intent (and therefore no duplicate on-change), but
+                        // it must still stop before the app-level key map.
+                        if (keyboard_event.keyboard.radio_group_navigation) return;
                     }
                 }
             }

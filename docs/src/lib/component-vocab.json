@@ -58,7 +58,7 @@
     },
     {
       "name": "radio",
-      "doc": "Value control; bind checked or selected, dispatch with on-toggle."
+      "doc": "Single-choice value control; bind checked or selected. Selection dispatches on-change when bound, then on-toggle, then on-press for compatibility."
     },
     {
       "name": "toggle",
@@ -118,7 +118,7 @@
     },
     {
       "name": "radio-group",
-      "doc": "Row container grouping radio controls; children flow horizontally."
+      "doc": "Logical radiogroup: give it an accessible label; descendant radios at any nesting depth share one Tab stop and selection, arrows wrap, and Home/End move to the scope edges."
     },
     {
       "name": "tabs",

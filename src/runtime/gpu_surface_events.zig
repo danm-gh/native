@@ -9,6 +9,7 @@ const runtime_canvas_widget_context_menu = @import("canvas_widget_context_menu.z
 const runtime_canvas_widget_display = @import("canvas_widget_display.zig");
 const runtime_canvas_widget_events = @import("canvas_widget_events.zig");
 const runtime_canvas_widget_scroll_drivers = @import("canvas_widget_scroll_drivers.zig");
+const canvas_widget_runtime = @import("canvas_widget_runtime.zig");
 
 const canvasWidgetInputBatchesDisplayListRefresh = canvas_frame_helpers.canvasWidgetInputBatchesDisplayListRefresh;
 const gpuSurfaceFrameEventFromGpuFrame = canvas_frame_helpers.gpuSurfaceFrameEventFromGpuFrame;
@@ -361,7 +362,7 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                     // activation (checkbox/toggle state), not only app Msgs and
                     // commands. Geometry controls applied their live resize on
                     // move; a terminal drag owes no release mutation.
-                    if (!widget_drag_terminal) try CanvasWidgetEventMethods().updateCanvasWidgetControlFromPointer(self, pointer_event.*);
+                    if (!widget_drag_terminal) try CanvasWidgetEventMethods().updateCanvasWidgetControlFromPointer(self, pointer_event);
                     try CanvasWidgetEventMethods().updateCanvasWidgetInteractionFromPointer(self, pointer_event.*);
                     // The text pass may stamp a caret/selection or clear
                     // edit onto the event for the app dispatch below.
@@ -448,6 +449,28 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
             // from "an arrow landed here in place".
             if (widget_keyboard_event) |*keyboard_event| {
                 keyboard_event.keyboard.focus_moved = widget_focus_moved;
+                // Nearest-radio-group navigation owns its key even when
+                // Home/End names the current edge or a one-member group
+                // wraps in place. Selection is a separate stamp: a real
+                // focus move selects the landed radio, and an in-place
+                // move selects only an unchecked current radio. Bare
+                // radios preserve their legacy focus-only spatial
+                // behavior, and Tab entry never synthesizes a selection.
+                const view_index = runtimeFindViewIndex(self, input_event.window_id, input_event.label).?;
+                const layout = self.views[view_index].widgetLayoutTree();
+                const radio_group_navigation = navigation: {
+                    const target = keyboard_event.target orelse break :navigation false;
+                    if (target.kind != .radio) break :navigation false;
+                    if (canvas_widget_runtime.canvasWidgetRadioGroupScopeIndex(layout, target.index) == null) break :navigation false;
+                    break :navigation canvas_widget_runtime.canvasWidgetGroupFocusEdgeFromInput(input_event) != null or
+                        canvas_widget_runtime.canvasWidgetSpatialFocusDirection(input_event) != null;
+                };
+                keyboard_event.keyboard.radio_group_navigation = radio_group_navigation;
+                if (radio_group_navigation) {
+                    const target = keyboard_event.target.?;
+                    keyboard_event.keyboard.radio_group_selection = widget_focus_moved or
+                        !canvas_widget_runtime.canvasWidgetSelectableSelected(layout.nodes[target.index].widget);
+                }
             }
             // Clipboard shortcuts resolve against the raw input (copy has
             // no routed target when a static text selection is live) and
@@ -471,7 +494,7 @@ pub fn RuntimeGpuSurfaceEvents(comptime Runtime: type) type {
                 // armed/shown tooltip before the control mutation and
                 // app dispatch observe the input.
                 try CanvasWidgetEventMethods().updateCanvasTooltipIntentForKeyboardActivation(self, keyboard_event.*);
-                try CanvasWidgetEventMethods().updateCanvasWidgetControlFromKeyboard(self, keyboard_event.*);
+                try CanvasWidgetEventMethods().updateCanvasWidgetControlFromKeyboard(self, keyboard_event);
                 try CanvasWidgetEventMethods().updateCanvasWidgetTextFromKeyboard(self, keyboard_event);
             }
             // An IME sequence belongs to whoever it STARTED over: a

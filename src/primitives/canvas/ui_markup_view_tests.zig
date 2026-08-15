@@ -1418,6 +1418,12 @@ test "the registry's a11y name classes match the engine's control predicates" {
         if (entry.a11y_name == .image) {
             try testing.expect(kind == .avatar or kind == .media_surface or kind == .image);
         }
+        // Radio-group is the one named container class: it is not a hit
+        // target, but its label supplies the shared question announced
+        // around the descendant radio choices.
+        if (entry.a11y_name == .radiogroup) {
+            try testing.expectEqual(canvas.WidgetKind.radio_group, kind);
+        }
     }
 }
 
@@ -2171,8 +2177,8 @@ pub const catalog_markup_source =
     \\    <input text="{query}" placeholder="Name" autofocus="true" on-input="query_edit" on-submit="submit_query" grow="1" />
     \\    <combobox text="{query}" placeholder="Search fruit" on-input="query_edit" />
     \\  </row>
-    \\  <radio-group gap="4">
-    \\    <radio checked="{bold}" on-toggle="toggle_bold" label="Bold" />
+    \\  <radio-group gap="4" label="Formatting">
+    \\    <radio checked="{bold}" on-change="toggle_bold" label="Bold" />
     \\  </radio-group>
     \\  <accordion text="Details" selected="{details_open}" on-toggle="toggle_details" padding="8">
     \\    <text>More info</text>
@@ -2301,8 +2307,8 @@ pub fn handCatalogView(ui: *CatalogUi, model: *const CatalogModel) CatalogUi.Nod
             ui.el(.input, .{ .text = model.query, .placeholder = "Name", .autofocus = true, .on_input = CatalogUi.inputMsg(.query_edit), .on_submit = .submit_query, .grow = 1 }, .{}),
             ui.el(.combobox, .{ .text = model.query, .placeholder = "Search fruit", .on_input = CatalogUi.inputMsg(.query_edit) }, .{}),
         }),
-        ui.el(.radio_group, .{ .gap = 4 }, .{
-            ui.el(.radio, .{ .checked = model.bold, .on_toggle = .toggle_bold }, .{}),
+        ui.el(.radio_group, .{ .gap = 4, .semantics = .{ .label = "Formatting" } }, .{
+            ui.el(.radio, .{ .checked = model.bold, .on_change = .toggle_bold }, .{}),
         }),
         ui.el(.accordion, .{ .text = "Details", .selected = model.details_open, .on_toggle = .toggle_details, .padding = 8 }, .{
             ui.text(.{}, "More info"),

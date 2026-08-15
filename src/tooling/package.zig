@@ -197,6 +197,15 @@ pub fn artifactName(buffer: []u8, metadata: manifest_tool.Metadata, target: Pack
 }
 
 pub fn createPackage(allocator: std.mem.Allocator, io: std.Io, options: PackageOptions) !PackageStats {
+    // Keep the manifest's accessory-app safety invariant at the artifact
+    // boundary too. CLI package verbs and direct callers receive Metadata,
+    // not the typed manifest that `native validate` checks, so without this
+    // guard they could emit LSUIElement=true for an app with no status-item
+    // route back to its hidden windows.
+    if (!options.metadata.dock_visible and !metadataHasCapability(options.metadata, "tray")) {
+        std.debug.print("error: app.zon dock_visible = false requires the \"tray\" capability: an accessory app has no Dock/app-switcher route back to hidden windows - add \"tray\" to .capabilities and install a status item, or keep dock_visible = true (the default)\n", .{});
+        return error.MissingTrayCapability;
+    }
     // The package boundary of the reject-conflicts contract: an exclude
     // (from `--web-layer` or app.zon) against declared web content — or
     // against a resolved Chromium engine — never becomes an artifact.
@@ -231,6 +240,13 @@ pub fn createPackage(allocator: std.mem.Allocator, io: std.Io, options: PackageO
         }
     }
     return stats;
+}
+
+fn metadataHasCapability(metadata: manifest_tool.Metadata, name: []const u8) bool {
+    for (metadata.capabilities) |capability| {
+        if (std.mem.eql(u8, capability, name)) return true;
+    }
+    return false;
 }
 
 fn validateWebEngineTarget(target: PackageTarget, web_engine: WebEngine) !void {
@@ -737,6 +753,10 @@ fn macosInfoPlist(allocator: std.mem.Allocator, metadata: manifest_tool.Metadata
     defer allocator.free(url_types);
     const privacy_descriptions = try macosPrivacyUsageDescriptions(allocator, metadata);
     defer allocator.free(privacy_descriptions);
+    const launch_policy = if (!metadata.dock_visible)
+        "  <key>LSUIElement</key>\n  <true/>\n"
+    else
+        "";
     // The About panel's bottom line in packaged bundles: the manifest
     // description rides NSHumanReadableCopyright, the plist key the
     // standard About panel renders as its footer text — the same line
@@ -773,11 +793,11 @@ fn macosInfoPlist(allocator: std.mem.Allocator, metadata: manifest_tool.Metadata
         \\  <string>{s}</string>
         \\  <key>CFBundleVersion</key>
         \\  <string>{s}</string>
-        \\{s}{s}{s}{s}
+        \\{s}{s}{s}{s}{s}
         \\</dict>
         \\</plist>
         \\
-    , .{ bundle_id, display_name, display_name, executable, icon, version, version, about_line, privacy_descriptions, document_types, url_types });
+    , .{ bundle_id, display_name, display_name, executable, icon, version, version, launch_policy, about_line, privacy_descriptions, document_types, url_types });
 }
 
 fn metadataHasPermission(metadata: manifest_tool.Metadata, name: []const u8) bool {
@@ -3184,6 +3204,42 @@ test "plist capture usage descriptions follow manifest permissions" {
     try std.testing.expect(std.mem.indexOf(u8, bare_plist, "NSMicrophoneUsageDescription") == null);
     try std.testing.expect(std.mem.indexOf(u8, bare_plist, "NSAudioCaptureUsageDescription") == null);
     try std.testing.expect(std.mem.indexOf(u8, bare_plist, "NSScreenCaptureUsageDescription") == null);
+}
+
+test "plist launch policy follows dock visibility" {
+    const accessory: manifest_tool.Metadata = .{
+        .id = "dev.example.menu",
+        .name = "menu",
+        .version = "1.0.0",
+        .dock_visible = false,
+    };
+    const accessory_plist = try macosInfoPlist(std.testing.allocator, accessory, "menu");
+    defer std.testing.allocator.free(accessory_plist);
+    try std.testing.expect(std.mem.indexOf(u8, accessory_plist, "<key>LSUIElement</key>\n  <true/>") != null);
+
+    const regular: manifest_tool.Metadata = .{ .id = "dev.example.app", .name = "demo", .version = "1.0.0" };
+    const regular_plist = try macosInfoPlist(std.testing.allocator, regular, "demo");
+    defer std.testing.allocator.free(regular_plist);
+    try std.testing.expect(std.mem.indexOf(u8, regular_plist, "LSUIElement") == null);
+}
+
+test "package rejects accessory startup without a tray before staging an artifact" {
+    var cwd = std.Io.Dir.cwd();
+    const root = ".zig-cache/test-package-accessory-tray";
+    try cwd.deleteTree(std.testing.io, root);
+    defer cwd.deleteTree(std.testing.io, root) catch {};
+
+    try std.testing.expectError(error.MissingTrayCapability, createPackage(std.testing.allocator, std.testing.io, .{
+        .metadata = .{
+            .id = "dev.example.stranded",
+            .name = "stranded",
+            .version = "1.0.0",
+            .dock_visible = false,
+        },
+        .target = .macos,
+        .output_path = root ++ "/Stranded.app",
+    }));
+    try std.testing.expectError(error.FileNotFound, cwd.openDir(std.testing.io, root ++ "/Stranded.app", .{}));
 }
 
 test "plist template includes document and URL registrations" {

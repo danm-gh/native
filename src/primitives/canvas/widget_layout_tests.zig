@@ -1490,6 +1490,175 @@ test "horizontal scroll views draw the bottom-edge scrollbar and two-axis region
     try std.testing.expect(sheet_list.findCommandById(widgetPartId(1, 5)) != null);
 }
 
+test "modal surfaces resolve against root bounds through nested layout" {
+    const modal_children = [_]Widget{
+        .{ .id = 3, .kind = .dialog, .frame = geometry.RectF.init(7, 9, 240, 120) },
+        .{ .id = 4, .kind = .drawer, .frame = geometry.RectF.init(11, 13, 180, 100) },
+        .{ .id = 5, .kind = .sheet, .frame = geometry.RectF.init(17, 19, 160, 80) },
+    };
+    const nested = Widget{
+        .id = 2,
+        .kind = .stack,
+        .frame = geometry.RectF.init(30, 40, 200, 150),
+        .layout = .{ .padding = .{ .top = 12, .right = 12, .bottom = 12, .left = 12 } },
+        .children = &modal_children,
+    };
+    const root = Widget{ .id = 1, .kind = .stack, .children = &.{nested} };
+    const root_bounds = geometry.RectF.init(10, 20, 600, 400);
+    var nodes: [5]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTree(root, root_bounds, &nodes);
+
+    // The nested container's frame, padding, and child offsets have no say
+    // in modal placement: all three use the root bounds.
+    try expectLayoutFrame(layout, 3, geometry.RectF.init(190, 160, 240, 120));
+    try expectLayoutFrame(layout, 4, geometry.RectF.init(10, 320, 600, 100));
+    try expectLayoutFrame(layout, 5, geometry.RectF.init(450, 20, 160, 400));
+
+    // The dialog's own scrim names the same root geometry its placement
+    // used, even though the surface was declared inside the padded stack.
+    var commands: [64]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try layout.emitDisplayList(&builder, .{});
+    switch (builder.displayList().findCommandById(widgetPartId(3, 14)).?.command) {
+        .fill_rect => |fill| try expectRect(root_bounds, fill.rect),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "root-relative modals consume neither flow extent nor grid cells" {
+    const first = Widget{ .id = 2, .kind = .button, .frame = geometry.RectF.init(0, 0, 80, 20), .text = "First" };
+    const dialog = Widget{ .id = 3, .kind = .dialog, .frame = geometry.RectF.init(0, 0, 200, 100) };
+    const second = Widget{ .id = 4, .kind = .button, .frame = geometry.RectF.init(0, 0, 80, 20), .text = "Second" };
+
+    const column = Widget{
+        .id = 1,
+        .kind = .column,
+        .layout = .{ .gap = 5 },
+        .children = &.{ first, dialog, second },
+    };
+    const column_without_modal = Widget{
+        .id = 1,
+        .kind = .column,
+        .layout = .{ .gap = 5 },
+        .children = &.{ first, second },
+    };
+    try std.testing.expectEqualDeep(intrinsicWidgetSize(column_without_modal, .{}), intrinsicWidgetSize(column, .{}));
+
+    const bounds = geometry.RectF.init(0, 0, 400, 200);
+    var column_nodes: [4]WidgetLayoutNode = undefined;
+    const column_layout = try layoutWidgetTree(column, bounds, &column_nodes);
+    try expectLayoutFrame(column_layout, 2, geometry.RectF.init(0, 0, 80, 20));
+    try expectLayoutFrame(column_layout, 4, geometry.RectF.init(0, 25, 80, 20));
+    try expectLayoutFrame(column_layout, 3, geometry.RectF.init(100, 50, 200, 100));
+
+    const grid = Widget{
+        .id = 1,
+        .kind = .grid,
+        .layout = .{ .columns = 2 },
+        .children = &.{ first, dialog, second },
+    };
+    var grid_nodes: [4]WidgetLayoutNode = undefined;
+    const grid_layout = try layoutWidgetTree(grid, bounds, &grid_nodes);
+    try expectLayoutFrame(grid_layout, 2, geometry.RectF.init(0, 0, 80, 20));
+    try expectLayoutFrame(grid_layout, 4, geometry.RectF.init(200, 0, 80, 20));
+    try expectLayoutFrame(grid_layout, 3, geometry.RectF.init(100, 50, 200, 100));
+}
+
+test "a modal layout root retains viewport bounds for scrims and anchored children" {
+    const menu = Widget{
+        .id = 2,
+        .kind = .dropdown_menu,
+        .frame = geometry.RectF.init(0, 0, 120, 100),
+        .layout = .{ .anchor = .{} },
+    };
+    const dialog = Widget{
+        .id = 1,
+        .kind = .dialog,
+        .frame = geometry.RectF.init(0, 0, 240, 120),
+        .children = &.{menu},
+    };
+    const viewport = geometry.RectF.init(10, 20, 600, 400);
+    var nodes: [3]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTree(dialog, viewport, &nodes);
+
+    const dialog_frame = layout.findById(1).?.frame;
+    try expectRect(geometry.RectF.init(190, 160, 240, 120), dialog_frame);
+    try expectRect(viewport, canvas.widgetLayoutRootBounds(layout).?);
+    // The menu clamps against the viewport, not the smaller dialog root.
+    const menu_frame = layout.findById(2).?.frame;
+    try std.testing.expectEqual(dialog_frame.maxY() + 4, menu_frame.y);
+    try std.testing.expectEqual(@as(f32, 100), menu_frame.height);
+
+    var commands: [32]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try layout.emitDisplayList(&builder, .{});
+    switch (builder.displayList().findCommandById(widgetPartId(1, 14)).?.command) {
+        .fill_rect => |fill| try expectRect(viewport, fill.rect),
+        else => return error.TestUnexpectedResult,
+    }
+
+    // A viewport may resize around the same center, leaving the dialog's
+    // own frame unchanged. The separate root bounds still make that a full
+    // scrim invalidation.
+    var resized_nodes: [3]WidgetLayoutNode = undefined;
+    const resized_viewport = geometry.RectF.init(-40, 20, 700, 400);
+    const resized = try layoutWidgetTree(dialog, resized_viewport, &resized_nodes);
+    try expectRect(dialog_frame, resized.findById(1).?.frame);
+    var invalidations: [3]canvas.WidgetInvalidation = undefined;
+    const changes = try layout.diff(resized, &invalidations);
+    try std.testing.expectEqual(@as(usize, 1), changes.len);
+    try std.testing.expect(changes[0].layout_dirty);
+    try expectRect(geometry.RectF.unionWith(viewport, resized_viewport), changes[0].dirty_bounds.?);
+}
+
+test "modal nested in a scroll viewport paints and routes at window level" {
+    const panel_children = [_]Widget{.{
+        .id = 4,
+        .kind = .dialog,
+        .frame = geometry.RectF.init(0, 0, 200, 100),
+    }};
+    const scroll_children = [_]Widget{.{
+        .id = 3,
+        .kind = .panel,
+        .frame = geometry.RectF.init(0, 0, 120, 200),
+        .children = &panel_children,
+    }};
+    const root_children = [_]Widget{.{
+        .id = 2,
+        .kind = .scroll_view,
+        .frame = geometry.RectF.init(0, 0, 120, 80),
+        .children = &scroll_children,
+    }};
+    const root = Widget{ .id = 1, .kind = .stack, .children = &root_children };
+    var nodes: [4]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTree(root, geometry.RectF.init(0, 0, 400, 300), &nodes);
+    try expectLayoutFrame(layout, 4, geometry.RectF.init(100, 100, 200, 100));
+
+    // This point is inside the dialog but below the scroll viewport. The
+    // modal's window-level hit pass must still win.
+    const hit = layout.hitTest(geometry.PointF.init(150, 120)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(ObjectId, 4), hit.id);
+
+    // The modal chrome is emitted after the scroll viewport's clip closes.
+    var commands: [64]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try layout.emitDisplayList(&builder, .{});
+    var clip_depth: usize = 0;
+    var saw_dialog_chrome = false;
+    for (builder.displayList().commands) |command| {
+        switch (command) {
+            .push_clip => clip_depth += 1,
+            .pop_clip => clip_depth -= 1,
+            else => {},
+        }
+        if (command.objectId() == widgetPartId(4, 1)) {
+            saw_dialog_chrome = true;
+            try std.testing.expectEqual(@as(usize, 0), clip_depth);
+        }
+    }
+    try std.testing.expect(saw_dialog_chrome);
+}
+
 test "a both-axes region whose content only overflows sideways reports horizontal scroll semantics" {
     // 500-wide content in a 200 x 100 both-axes viewport: no vertical
     // range, real horizontal range. The assistive node must read the

@@ -780,6 +780,11 @@ pub const widgetWindowDragTargetIndexFromNode = @import("widget_routing.zig").wi
 /// stack-container list all derive from).
 pub const widgetKindStacksChildren = @import("widget_layout.zig").widgetKindStacksChildren;
 pub const widgetIsAnchored = @import("widget_tree.zig").widgetIsAnchored;
+pub const widgetIsRootRelativeModal = @import("widget_tree.zig").widgetIsRootRelativeModal;
+pub const widgetEscapesAncestorClips = @import("widget_tree.zig").widgetEscapesAncestorClips;
+pub const WidgetPaintOrder = @import("widget_tree.zig").WidgetPaintOrder;
+pub const widgetLayoutWindowSurfaceOrder = @import("widget_tree.zig").widgetLayoutWindowSurfaceOrder;
+pub const widgetPaintOrderLess = @import("widget_tree.zig").widgetPaintOrderLess;
 /// The runtime-scrolled virtual list predicate (widget_tree.zig): a
 /// virtualized scroll_view with a DECLARED total item count, whose
 /// scroll offset the runtime owns (engine scrolling + native drivers)
@@ -798,6 +803,12 @@ pub const disclosureSettledOpen = @import("widget_tree.zig").disclosureSettledOp
 pub const disclosureContentBottom = @import("widget_tree.zig").disclosureContentBottom;
 pub const isWidgetConcealedByDisclosure = @import("widget_tree.zig").isWidgetConcealedByDisclosure;
 pub const anchoredWidgetFrame = @import("widget_layout.zig").anchoredWidgetFrame;
+pub const relayoutAnchoredChildren = @import("widget_layout.zig").relayoutAnchoredChildren;
+pub const relayoutAnchoredChildrenWithRootBounds = @import("widget_layout.zig").relayoutAnchoredChildrenWithRootBounds;
+pub const relayoutAnchoredChildrenAtDepth = @import("widget_layout.zig").relayoutAnchoredChildrenAtDepth;
+pub const anchoredNestingDepth = @import("widget_layout.zig").anchoredNestingDepth;
+pub const maxAnchoredNestingDepth = @import("widget_layout.zig").maxAnchoredNestingDepth;
+pub const widgetLayoutRootBounds = @import("widget_render.zig").widgetLayoutRootBounds;
 /// Window-control reservation trigger (widget_layout.zig): true when a
 /// laid-out tree left drag-header CONTENT under the OS window-control
 /// cluster, so runtimes know to stamp `DesignTokens.window_controls`

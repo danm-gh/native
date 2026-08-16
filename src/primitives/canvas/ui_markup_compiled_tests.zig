@@ -99,6 +99,38 @@ const zero_card_padding_markup =
 ;
 const ZeroCardPaddingCompiled = canvas.CompiledMarkupView(fixture.Model, fixture.Msg, zero_card_padding_markup);
 
+const selection_label_content_markup =
+    \\<column gap="8">
+    \\  <checkbox checked="true" on-toggle="add">Done</checkbox>
+    \\  <checkbox on-toggle="add" text="Later" />
+    \\  <radio-group label="Density">
+    \\    <radio checked="true" on-change="add">Default</radio>
+    \\    <radio on-change="add" text="Compact" />
+    \\  </radio-group>
+    \\</column>
+;
+const SelectionLabelContentCompiled = canvas.CompiledMarkupView(fixture.Model, fixture.Msg, selection_label_content_markup);
+
+test "checkbox and radio element content builds identically in both markup engines" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const model = fixture.testModel();
+
+    var interpreter = try InboxInterpreter.init(arena, selection_label_content_markup);
+    var interpreter_ui = InboxUi.init(arena);
+    const interpreted = try interpreter_ui.finalize(try interpreter.build(&interpreter_ui, &model));
+    var compiled_ui = InboxUi.init(arena);
+    const compiled = try compiled_ui.finalize(SelectionLabelContentCompiled.build(&compiled_ui, &model));
+
+    try expectSameTree(fixture.Msg, interpreted, compiled);
+    try expectSameTexts(interpreted.root, compiled.root);
+    try testing.expect(fixture.findByText(compiled.root, .checkbox, "Done") != null);
+    try testing.expect(fixture.findByText(compiled.root, .checkbox, "Later") != null);
+    try testing.expect(fixture.findByText(compiled.root, .radio, "Default") != null);
+    try testing.expect(fixture.findByText(compiled.root, .radio, "Compact") != null);
+}
+
 test "explicit zero card padding survives interpreted and compiled markup" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
@@ -130,6 +162,26 @@ fn compileInbox(arena: std.mem.Allocator, model: *const fixture.Model) !InboxUi.
 }
 
 const ContextMenuCompiled = canvas.CompiledMarkupView(fixture.Model, fixture.Msg, fixture.context_menu_markup_source);
+const DragContextMenuCompiled = canvas.CompiledMarkupView(fixture.Model, fixture.Msg, fixture.drag_context_menu_markup_source);
+
+test "compiled drag-only context-menu host matches the interpreter" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const model = fixture.testModel();
+
+    var interpreter_view = try InboxInterpreter.init(arena, fixture.drag_context_menu_markup_source);
+    var interpreter_ui = InboxUi.init(arena);
+    const interpreted = try interpreter_ui.finalize(try interpreter_view.build(&interpreter_ui, &model));
+    var compiled_ui = InboxUi.init(arena);
+    const compiled = try compiled_ui.finalize(DragContextMenuCompiled.build(&compiled_ui, &model));
+
+    try expectSameTree(fixture.Msg, interpreted, compiled);
+    try expectSameTexts(interpreted.root, compiled.root);
+    try testing.expect(compiled.root.semantics.actions.drag);
+    try testing.expect(canvas.widgetClaimsPress(compiled.root));
+    try testing.expectEqual(fixture.Msg.add, compiled.msgForContextMenu(compiled.root.id, 0).?);
+}
 
 test "compiled context-menus build the interpreter's declared items and handler entries exactly" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);

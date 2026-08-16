@@ -301,6 +301,7 @@ fn buttonGroupSegmentRadius(widget: Widget, visual: ControlVisualTokens, tokens:
 /// freed by the retired button shadow.
 fn emitButtonBorder(builder: *Builder, widget: Widget, tokens: DesignTokens, radius: Radius) Error!void {
     const stroke_width = buttonStrokeWidth(widget, tokens);
+    if (stroke_width <= 0) return;
     const border = snapHairlineStrokeRect(tokens, .{
         .id = widgetPartId(widget.id, 2),
         .rect = widget.frame,
@@ -830,7 +831,7 @@ pub fn emitListItemWidget(builder: *Builder, widget: Widget, tokens: DesignToken
             .id = widgetPartId(widget.id, 1),
             .rect = widget.frame,
             .radius = radius,
-            .fill = widgetBackgroundFill(widget, fill),
+            .fill = colorFill(fill),
         });
     }
     if (widget.state.focused) try emitWidgetFocusRing(builder, widget, tokens, 2);
@@ -902,7 +903,7 @@ pub fn emitDataCellWidgetChrome(builder: *Builder, widget: Widget, tokens: Desig
         try builder.fillRect(.{
             .id = widgetPartId(widget.id, 1),
             .rect = widget.frame,
-            .fill = widgetBackgroundFill(widget, state_fill),
+            .fill = colorFill(state_fill),
         });
     }
     // Borderless by default: the table's chrome is its hairline ROW
@@ -1107,30 +1108,41 @@ pub fn emitCheckboxWidget(builder: *Builder, widget: Widget, tokens: DesignToken
     // 6px token reads nearly round; 4px keeps the square-with-softened-
     // corners shape the checkbox is known by.
     const radius = controlRadius(widget, visual, 4);
+    const box_rest = if (selected)
+        widgetAccentColor(widget, visual.active_background orelse tokens.colors.accent)
+    else
+        widgetBackgroundColor(widget, buttonStateBackground(visual, false, washHovered(widget), tokens.colors.surface));
     try builder.fillRoundedRect(.{
         .id = widgetPartId(widget.id, 1),
         .rect = box,
         .radius = radius,
-        .fill = if (selected)
-            colorFill(disabledWash(widgetAccentColor(widget, visual.active_background orelse tokens.colors.accent), widget.state.disabled, tokens.states.disabled_alpha))
-        else
-            colorFill(widgetBackgroundColor(widget, buttonStateBackground(visual, false, washHovered(widget), tokens.colors.surface))),
+        .fill = colorFill(selectionDisabledBackground(widget, visual, box_rest, tokens)),
     });
     try builder.strokeRect(snapHairlineStrokeRect(tokens, .{
         .id = widgetPartId(widget.id, 2),
         .rect = box,
         .radius = radius,
         .stroke = .{
-            .fill = colorFill(disabledWash(if (selected) widgetAccentColor(widget, visual.border orelse visual.active_background orelse tokens.colors.accent) else widgetBorderColor(widget, visual.border orelse tokens.colors.border), widget.state.disabled, tokens.states.disabled_alpha)),
+            .fill = colorFill(selectionDisabledNeutral(
+                widget,
+                visual,
+                if (selected) widgetAccentColor(widget, visual.border orelse visual.active_background orelse tokens.colors.accent) else widgetBorderColor(widget, visual.border orelse tokens.colors.border),
+                tokens,
+            )),
             .width = controlStrokeWidth(widget, visual, tokens.stroke.regular),
         },
     }));
     if (widget.state.focused) try emitWidgetFocusRingForRect(builder, widget, tokens, 3, box, radius);
     if (selected) {
-        // The check keeps the accent-foreground tint even when disabled
-        // (washed to half strength with the box) — swapping it to the
-        // muted text gray would read muddy on the washed accent fill.
-        const check_color = disabledWash(widget.style.accent_foreground orelse visual.foreground orelse tokens.colors.accent_text, widget.state.disabled, tokens.states.disabled_alpha);
+        // With no theme swap, the check keeps the accent-foreground tint
+        // washed in step with the box; an explicit disabled foreground
+        // replaces that channel (and the label) consistently.
+        const check_color = selectionDisabledForeground(
+            widget,
+            visual,
+            widget.style.accent_foreground orelse visual.foreground orelse tokens.colors.accent_text,
+            tokens,
+        );
         const left = pixelSnapGeometryPoint(tokens, geometry.PointF.init(box.x + box.width * 0.26, box.y + box.height * 0.54));
         const mid = pixelSnapGeometryPoint(tokens, geometry.PointF.init(box.x + box.width * 0.43, box.y + box.height * 0.70));
         const right = pixelSnapGeometryPoint(tokens, geometry.PointF.init(box.x + box.width * 0.76, box.y + box.height * 0.32));
@@ -1153,19 +1165,30 @@ pub fn emitCheckboxWidget(builder: *Builder, widget: Widget, tokens: DesignToken
             .cap = .round,
         });
     }
-    try emitControlLabelWithColor(builder, widget, tokens, box.x + box.width + widgetControlInset(widget, tokens, tokens.spacing.sm), 6, visual.foreground orelse tokens.colors.text);
+    try emitControlLabelWithColor(
+        builder,
+        widget,
+        tokens,
+        box.x + box.width + widgetControlInset(widget, tokens, tokens.spacing.sm),
+        6,
+        selectionDisabledForeground(widget, visual, widget.style.foreground orelse visual.foreground orelse tokens.colors.text, tokens),
+    );
 }
 
 pub fn emitRadioWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
     const visual = selectionControlVisualTokens(widget, tokens);
     const circle = radioWidgetCircleRect(widget, tokens);
     const selected = booleanControlSelected(widget);
-    const radius = controlRadius(widget, visual, circle.height * 0.5);
+    // The house fallback is a circle in every size register. Explicit
+    // widget/theme radii still shape the control through the ordinary
+    // precedence ladder.
+    const radius = selectionShapeRadius(widget, visual, circle.height * 0.5);
+    const circle_rest = widgetBackgroundColor(widget, buttonStateBackground(visual, false, washHovered(widget), tokens.colors.surface));
     try builder.fillRoundedRect(.{
         .id = widgetPartId(widget.id, 1),
         .rect = circle,
         .radius = radius,
-        .fill = colorFill(widgetBackgroundColor(widget, buttonStateBackground(visual, false, washHovered(widget), tokens.colors.surface))),
+        .fill = colorFill(selectionDisabledBackground(widget, visual, circle_rest, tokens)),
     });
     try builder.strokeRect(snapHairlineStrokeRect(tokens, .{
         .id = widgetPartId(widget.id, 2),
@@ -1174,7 +1197,7 @@ pub fn emitRadioWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) 
         // The border stays on the input hairline even when selected —
         // the primary-colored dot alone carries the checked state.
         .stroke = .{
-            .fill = colorFill(disabledWash(widgetBorderColor(widget, visual.border orelse tokens.colors.border), widget.state.disabled, tokens.states.disabled_alpha)),
+            .fill = colorFill(selectionDisabledNeutral(widget, visual, widgetBorderColor(widget, visual.border orelse tokens.colors.border), tokens)),
             .width = controlStrokeWidth(widget, visual, tokens.stroke.regular),
         },
     }));
@@ -1191,10 +1214,22 @@ pub fn emitRadioWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) 
             .id = widgetPartId(widget.id, 4),
             .rect = dot,
             .radius = Radius.all(dot.height * 0.5),
-            .fill = colorFill(disabledWash(widgetAccentColor(widget, visual.active_background orelse tokens.colors.accent), widget.state.disabled, tokens.states.disabled_alpha)),
+            .fill = colorFill(selectionDisabledForeground(
+                widget,
+                visual,
+                widgetAccentColor(widget, visual.active_background orelse tokens.colors.accent),
+                tokens,
+            )),
         });
     }
-    try emitControlLabelWithColor(builder, widget, tokens, circle.x + circle.width + widgetControlInset(widget, tokens, tokens.spacing.sm), 5, visual.foreground orelse tokens.colors.text);
+    try emitControlLabelWithColor(
+        builder,
+        widget,
+        tokens,
+        circle.x + circle.width + widgetControlInset(widget, tokens, tokens.spacing.sm),
+        5,
+        selectionDisabledForeground(widget, visual, widget.style.foreground orelse visual.foreground orelse tokens.colors.text, tokens),
+    );
 }
 
 pub fn emitToggleWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
@@ -1202,7 +1237,9 @@ pub fn emitToggleWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
     const visual = selectionControlVisualTokens(widget, tokens);
     const knob_inset = widgetSizedDensityValue(widget, tokens, 2);
     const track = toggleWidgetTrackRect(widget, tokens);
-    const track_radius = controlRadius(widget, visual, track.height * 0.5);
+    // The house rail is a pill in every size register. Explicit
+    // widget/theme radii still shape both rail and thumb.
+    const track_radius = selectionShapeRadius(widget, visual, track.height * 0.5);
     const knob_size = @max(0, track.height - knob_inset * 2);
     const knob_x = if (selected)
         track.x + track.width - knob_size - knob_inset
@@ -1210,14 +1247,15 @@ pub fn emitToggleWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
         track.x + knob_inset;
     const knob = pixelSnapGeometryRect(tokens, geometry.RectF.init(knob_x, track.y + knob_inset, knob_size, knob_size));
 
+    const track_rest = if (selected)
+        widgetAccentColor(widget, visual.active_background orelse tokens.colors.accent)
+    else
+        widgetBackgroundColor(widget, buttonStateBackground(visual, false, washHovered(widget), tokens.colors.surface_pressed));
     try builder.fillRoundedRect(.{
         .id = widgetPartId(widget.id, 1),
         .rect = track,
         .radius = track_radius,
-        .fill = if (selected)
-            colorFill(disabledWash(widgetAccentColor(widget, visual.active_background orelse tokens.colors.accent), widget.state.disabled, tokens.states.disabled_alpha))
-        else
-            colorFill(disabledWash(widgetBackgroundColor(widget, buttonStateBackground(visual, false, washHovered(widget), tokens.colors.surface_pressed)), widget.state.disabled, tokens.states.disabled_alpha)),
+        .fill = colorFill(selectionDisabledBackground(widget, visual, track_rest, tokens)),
     });
     // Borderless by default: the switch is a filled pill (primary when
     // on, the input wash when off) whose near-white thumb provides the
@@ -1232,7 +1270,7 @@ pub fn emitToggleWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
             .rect = track,
             .radius = track_radius,
             .stroke = .{
-                .fill = widgetBorderFill(widget, visual.border orelse tokens.colors.border),
+                .fill = colorFill(selectionDisabledNeutral(widget, visual, widgetBorderColor(widget, visual.border orelse tokens.colors.border), tokens)),
                 .width = track_stroke_width,
             },
         }));
@@ -1240,19 +1278,57 @@ pub fn emitToggleWidget(builder: *Builder, widget: Widget, tokens: DesignTokens)
     try builder.fillRoundedRect(.{
         .id = widgetPartId(widget.id, 3),
         .rect = knob,
-        .radius = controlRadius(widget, visual, knob.height * 0.5),
+        .radius = selectionShapeRadius(widget, visual, knob.height * 0.5),
         // The thumb is near-white in both states and schemes (the
         // primary-foreground tint), so it stays legible on the primary
-        // track and on the dark input wash alike. Disabled washes it to
-        // half strength with the track instead of swapping to gray.
-        .fill = colorFill(disabledWash(
-            if (selected) widget.style.accent_foreground orelse visual.foreground orelse tokens.colors.accent_text else widget.style.background orelse visual.foreground orelse tokens.colors.accent_text,
-            widget.state.disabled,
-            tokens.states.disabled_alpha,
+        // track and on the dark input wash alike. Disabled washes it with
+        // the track unless the theme supplies a foreground swap.
+        .fill = colorFill(selectionDisabledForeground(
+            widget,
+            visual,
+            widget.style.accent_foreground orelse visual.foreground orelse tokens.colors.accent_text,
+            tokens,
         )),
     });
     if (widget.state.focused) try emitWidgetFocusRingForRect(builder, widget, tokens, 4, track, track_radius);
-    try emitControlLabelWithColor(builder, widget, tokens, track.x + track.width + widgetControlInset(widget, tokens, tokens.spacing.sm), 5, visual.foreground orelse tokens.colors.text);
+    try emitControlLabelWithColor(
+        builder,
+        widget,
+        tokens,
+        track.x + track.width + widgetControlInset(widget, tokens, tokens.spacing.sm),
+        5,
+        selectionDisabledForeground(widget, visual, widget.style.foreground orelse visual.foreground orelse tokens.colors.text, tokens),
+    );
+}
+
+/// Selection controls share the slider's disabled-token contract. With no
+/// explicit disabled channel, every resolved rest color gets the house
+/// alpha wash. Stating either disabled channel selects the theme's swap
+/// register: stated background/foreground colors replace those channels,
+/// while unstated channels stay at full strength. Marks and thumbs are
+/// foreground channels; boxes and tracks are backgrounds.
+fn selectionDisabledBackground(widget: Widget, visual: ControlVisualTokens, rest: Color, tokens: DesignTokens) Color {
+    if (!widget.state.disabled) return rest;
+    if (visual.disabled_background) |color| return color;
+    return selectionDisabledNeutral(widget, visual, rest, tokens);
+}
+
+fn selectionDisabledForeground(widget: Widget, visual: ControlVisualTokens, rest: Color, tokens: DesignTokens) Color {
+    if (!widget.state.disabled) return rest;
+    if (visual.disabled_foreground) |color| return color;
+    return selectionDisabledNeutral(widget, visual, rest, tokens);
+}
+
+fn selectionDisabledNeutral(widget: Widget, visual: ControlVisualTokens, rest: Color, tokens: DesignTokens) Color {
+    const swap = visual.disabled_background != null or visual.disabled_foreground != null;
+    return disabledWash(rest, widget.state.disabled and !swap, tokens.states.disabled_alpha);
+}
+
+fn selectionShapeRadius(widget: Widget, visual: ControlVisualTokens, fallback: f32) Radius {
+    if (widget.style.radius != null or visual.radius != null) {
+        return controlRadius(widget, visual, fallback);
+    }
+    return Radius.all(@max(0, fallback));
 }
 
 pub fn emitSliderWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
@@ -1456,7 +1532,9 @@ fn emitControlLabelWithColor(builder: *Builder, widget: Widget, tokens: DesignTo
         .font_id = tokens.typography.font_id,
         .size = text_size,
         .origin = pixelSnapTextPoint(tokens, boundedTextOrigin(labelFrameForControl(widget.frame, x), text_size, 0)),
-        .color = widgetForegroundColor(widget, tokens, color),
+        // Callers resolve the selection control's enabled/disabled
+        // foreground channel before reaching this common text emitter.
+        .color = color,
         .text = widget.text,
         .text_layout = boundedTextLayout(labelFrameForControl(widget.frame, x), text_size, 0, .start, .none, widget.text_overflow, tokens),
     });

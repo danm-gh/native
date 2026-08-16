@@ -169,13 +169,13 @@ pub fn widgetBorderColor(widget: Widget, fallback: Color) Color {
 }
 
 pub fn widgetForegroundColor(widget: Widget, tokens: DesignTokens, fallback: Color) Color {
-    if (widget.state.disabled) return tokens.colors.text_muted;
-    return widget.style.foreground orelse fallback;
+    const color = widget.style.foreground orelse fallback;
+    return disabledWash(color, widget.state.disabled, tokens.states.disabled_alpha);
 }
 
 pub fn widgetAccentForegroundColor(widget: Widget, tokens: DesignTokens, fallback: Color) Color {
-    if (widget.state.disabled) return tokens.colors.text_muted;
-    return widget.style.accent_foreground orelse fallback;
+    const color = widget.style.accent_foreground orelse fallback;
+    return disabledWash(color, widget.state.disabled, tokens.states.disabled_alpha);
 }
 
 pub fn widgetRadius(widget: Widget, fallback: f32) Radius {
@@ -282,7 +282,7 @@ pub fn buttonFillColor(widget: Widget, tokens: DesignTokens) Color {
         // the light recipe, so a bare untheme'd `DesignTokens{}` (whose
         // color defaults are the light palette) renders identically.
         .destructive => widgetAccentColor(widget, destructiveChipBackground(visual, tokens, pressed, selected, hovered)),
-        .secondary => widgetBackgroundColor(widget, buttonStateBackground(visual, pressed or selected, hovered, if (pressed or selected) tokens.colors.surface_pressed else hoverWash(tokens.colors.surface_subtle, false, hovered, tokens.states.secondary_hover_alpha))),
+        .secondary => widgetAccentColor(widget, buttonStateBackground(visual, pressed or selected, hovered, if (pressed or selected) tokens.colors.surface_pressed else hoverWash(tokens.colors.surface_subtle, false, hovered, tokens.states.secondary_hover_alpha))),
         // The quiet variants step through the neutral washes: hover and
         // a toggle's on-state sit on the muted wash, a press deepens one
         // step further so the moment of commitment is visible under the
@@ -419,6 +419,7 @@ pub fn buttonBorderFill(widget: Widget, tokens: DesignTokens) Fill {
             // chip's edge is where its wash ends, nothing more.
             .destructive => widgetAccentColor(widget, visual.border orelse transparentColor()),
             .ghost => widgetBorderColor(widget, visual.border orelse transparentColor()),
+            .secondary => widgetAccentColor(widget, visual.border orelse tokens.colors.border),
             else => widgetBorderColor(widget, visual.border orelse tokens.colors.border),
         };
     };
@@ -544,7 +545,15 @@ pub fn textInputControlVisualTokens(widget: Widget, tokens: DesignTokens) Contro
 }
 
 pub fn textInputFill(widget: Widget, tokens: DesignTokens, visual: ControlVisualTokens) Fill {
-    if (widget.state.disabled) return colorFill(visual.disabled_background orelse tokens.colors.disabled);
+    if (widget.state.disabled) {
+        if (visual.disabled_background) |color| return colorFill(color);
+        const rest = restStateWidget(widget);
+        return colorFill(disabledWash(
+            widgetBackgroundColor(rest, buttonStateBackground(visual, false, false, tokens.colors.surface)),
+            true,
+            tokens.states.disabled_alpha,
+        ));
+    }
     return colorFill(widgetBackgroundColor(widget, buttonStateBackground(visual, false, washHovered(widget), tokens.colors.surface)));
 }
 
@@ -642,11 +651,18 @@ pub fn componentPillRadius(widget: Widget, visual: ControlVisualTokens, fallback
 }
 
 pub fn badgeBackgroundColor(widget: Widget, tokens: DesignTokens, visual: ControlVisualTokens) Color {
-    if (widget.state.disabled) return visual.disabled_background orelse tokens.colors.disabled;
+    if (widget.state.disabled) {
+        if (visual.disabled_background) |color| return color;
+        return disabledWash(badgeBackgroundColor(restStateWidget(widget), tokens, visual), true, tokens.states.disabled_alpha);
+    }
     const hovered = washHovered(widget);
+    // Badges intentionally have one control table rather than the button
+    // register's per-variant tables. Variant identity therefore resolves
+    // from the shared palette plus local style channels; this does not
+    // invent themeable per-variant badge tokens.
     return switch (widget.variant) {
         .default, .primary => widgetAccentColor(widget, controlStateBackground(visual, widget.state.pressed, widget.state.pressed or widget.state.selected, hovered, tokens.colors.accent)),
-        .secondary => widgetBackgroundColor(widget, controlStateBackground(visual, widget.state.pressed, widget.state.pressed or widget.state.selected, hovered, tokens.colors.surface_subtle)),
+        .secondary => widgetAccentColor(widget, controlStateBackground(visual, widget.state.pressed, widget.state.pressed or widget.state.selected, hovered, tokens.colors.surface_subtle)),
         .outline, .ghost => widgetBackgroundColor(widget, controlStateBackground(visual, widget.state.pressed, widget.state.pressed or widget.state.selected, hovered, if (hovered or widget.state.pressed) tokens.colors.surface_subtle else transparentColor())),
         // The QUIET destructive chip: a translucent destructive wash
         // (`states.badge_destructive_wash_alpha`) under destructive
@@ -658,15 +674,20 @@ pub fn badgeBackgroundColor(widget: Widget, tokens: DesignTokens, visual: Contro
 }
 
 pub fn badgeBorderColor(widget: Widget, tokens: DesignTokens, visual: ControlVisualTokens) Color {
-    return switch (widget.variant) {
+    const border = widget.style.border orelse switch (widget.variant) {
         .default, .primary => widgetAccentColor(widget, visual.border orelse tokens.colors.accent),
         .destructive => widgetAccentColor(widget, visual.border orelse tokens.colors.destructive),
-        else => widgetBorderColor(widget, visual.border orelse tokens.colors.border),
+        .secondary => widgetAccentColor(widget, visual.border orelse tokens.colors.border),
+        else => visual.border orelse tokens.colors.border,
     };
+    return disabledWash(border, widget.state.disabled, tokens.states.disabled_alpha);
 }
 
 pub fn badgeTextColor(widget: Widget, tokens: DesignTokens, visual: ControlVisualTokens) Color {
-    if (widget.state.disabled) return visual.disabled_foreground orelse tokens.colors.text_muted;
+    if (widget.state.disabled) {
+        if (visual.disabled_foreground) |color| return color;
+        return disabledWash(badgeTextColor(restStateWidget(widget), tokens, visual), true, tokens.states.disabled_alpha);
+    }
     return switch (widget.variant) {
         .default, .primary => widgetAccentForegroundColor(widget, tokens, visual.foreground orelse tokens.colors.accent_text),
         // Ink on the quiet wash, not knockout text on a filled block.
@@ -705,13 +726,32 @@ pub fn listItemFillColor(widget: Widget, tokens: DesignTokens, state: WidgetStat
     // The quiet-surface knob reads through the widget, not the caller's
     // state copy, so every row/cell path honors it identically.
     const hovered = state.hovered and !widget.style.quiet_hover;
-    const fallback = if (state.selected or state.pressed)
-        tokens.colors.surface_pressed
-    else if (hovered)
-        tokens.colors.surface_subtle
-    else
-        transparentColor();
-    return controlStateBackground(visual, state.pressed, state.selected or state.pressed, hovered, fallback);
+    if (state.pressed) return visual.pressed_background orelse visual.active_background orelse visual.hover_background orelse visual.background orelse tokens.colors.surface_pressed;
+    if (state.selected) return visual.active_background orelse visual.hover_background orelse visual.background orelse tokens.colors.surface_pressed;
+    if (hovered) return visual.hover_background orelse visual.background orelse tokens.colors.surface_subtle;
+    // Local authored chrome is the rest rung. A theme's shared row
+    // background remains the fallback for rows without one, while its
+    // state-specific channels above still own interaction feedback.
+    return widget.style.background orelse visual.background orelse transparentColor();
+}
+
+/// Surface chrome uses the same neutral feedback ladder as an actionable
+/// row when its theme does not state state-specific colors: surface at
+/// rest, subtle on hover, pressed on selection/press. A themed active or
+/// hover fill remains authoritative, and a locally authored background is
+/// the surface's explicit all-state override.
+pub fn surfaceStateBackground(widget: Widget, visual: ControlVisualTokens, tokens: DesignTokens) Color {
+    const active = widget.state.pressed or widget.state.selected;
+    const hovered = washHovered(widget);
+    // A local background is an explicit all-state override. The theme
+    // table's background is only the REST rung: letting it participate in
+    // the state fallbacks would mask the standard subtle/pressed washes
+    // whenever a custom theme stated only its surface color.
+    if (widget.style.background) |background| return background;
+    if (widget.state.pressed) return visual.pressed_background orelse visual.active_background orelse visual.hover_background orelse tokens.colors.surface_pressed;
+    if (active) return visual.active_background orelse visual.hover_background orelse tokens.colors.surface_pressed;
+    if (hovered) return visual.hover_background orelse tokens.colors.surface_subtle;
+    return visual.background orelse tokens.colors.surface;
 }
 
 pub fn transparentColor() Color {

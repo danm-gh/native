@@ -510,6 +510,7 @@ test "the a11y lint: unnamed controls, radiogroups, and text entry are errors" {
     // select's face content.
     const clean = [_][]const u8{
         "<row>\n  <checkbox on-toggle=\"select\">Done</checkbox>\n</row>",
+        "<radio-group label=\"Density\">\n  <radio checked=\"true\">Default</radio>\n</radio-group>",
         "<row>\n  <checkbox text=\"Done\" on-toggle=\"select\" />\n</row>",
         "<row>\n  <checkbox label=\"Done\" on-toggle=\"select\" />\n</row>",
         "<row>\n  <button icon=\"trash\" label=\"Delete\" on-press=\"remove\"></button>\n</row>",
@@ -639,7 +640,7 @@ test "collectA11yErrors reports every a11y error in one pass with validate's pos
     try testing.expectEqual(@as(usize, 0), markup.collectA11yErrors(try clean_parser.parse(), &storage).len);
 }
 
-test "press and toggle handlers are legal on layout elements (press fall-through makes them pressable)" {
+test "press toggle and drag handlers are legal on layout elements (press fall-through makes them interactive)" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
 
@@ -651,6 +652,7 @@ test "press and toggle handlers are legal on layout elements (press fall-through
         "<column>\n  <row on-press=\"select\" gap=\"8\">\n    <text>press me</text>\n  </row>\n</column>",
         "<column on-press=\"add\">\n  <text>x</text>\n</column>",
         "<column>\n  <stack on-toggle=\"flip\">\n    <text>x</text>\n  </stack>\n</column>",
+        "<column>\n  <row on-drag=\"drag:{open_count}\" label=\"Draggable\">\n    <text>x</text>\n  </row>\n</column>",
         "<row>\n  <icon name=\"search\" on-press=\"go\" />\n</row>",
         "<row>\n  <badge on-press=\"open\">3</badge>\n</row>",
     };

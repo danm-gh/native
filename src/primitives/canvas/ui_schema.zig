@@ -50,7 +50,7 @@ const std = @import("std");
 /// documents, journals, serialized contracts) carry it; readers reach
 /// older artifacts through document→document migrations, never silent
 /// reinterpretation.
-pub const schema_version: u16 = 1;
+pub const schema_version: u16 = 2;
 
 /// Value type-class of an attribute: what shape of value the engines
 /// accept for it. `option` values name a Zig enum member (the enum itself
@@ -128,8 +128,8 @@ pub const EventInfo = struct {
     /// ever receive this event.
     dismissible_only: bool = false,
     /// This handler binds control/text behavior a non-hit-target element
-    /// does not have, so it is a dead handler there (press/toggle are
-    /// exempt: a bound press handler makes any element pressable).
+    /// does not have, so it is a dead handler there (press/toggle/drag
+    /// are exempt: their handlers make any element interactive).
     dead_on_non_hit_target: bool = false,
 };
 
@@ -261,8 +261,8 @@ pub const elements = [_]ElementInfo{
     // paints whenever the view renders it.
     .{ .code = 39, .name = "tooltip", .widget_kind = "tooltip", .takes_text = true, .hit_target = false, .anchorable = true },
     // Value controls and text entry.
-    .{ .code = 40, .name = "checkbox", .widget_kind = "checkbox", .a11y_name = .control },
-    .{ .code = 41, .name = "radio", .widget_kind = "radio", .a11y_name = .control },
+    .{ .code = 40, .name = "checkbox", .widget_kind = "checkbox", .takes_text = true, .a11y_name = .control },
+    .{ .code = 41, .name = "radio", .widget_kind = "radio", .takes_text = true, .a11y_name = .control },
     .{ .code = 42, .name = "slider", .widget_kind = "slider", .a11y_name = .control },
     .{ .code = 43, .name = "progress", .widget_kind = "progress" },
     .{ .code = 44, .name = "text-field", .widget_kind = "text_field", .a11y_name = .editable },

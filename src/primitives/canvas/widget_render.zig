@@ -105,6 +105,7 @@ const badgeBackgroundColor = widget_render_style.badgeBackgroundColor;
 const badgeBorderColor = widget_render_style.badgeBorderColor;
 const badgeTextColor = widget_render_style.badgeTextColor;
 const badgeStrokeWidth = widget_render_style.badgeStrokeWidth;
+const listItemFillColor = widget_render_style.listItemFillColor;
 pub const buttonStrokeWidth = widget_render_style.buttonStrokeWidth;
 pub const transparentColor = widget_render_style.transparentColor;
 pub const checkboxWidgetBoxRect = widget_render_controls.checkboxWidgetBoxRect;
@@ -447,7 +448,7 @@ fn emitWidgetDepthContent(builder: *Builder, widget: Widget, tokens: DesignToken
     try emitWidgetBackdropBlur(builder, paint_widget, tokens);
     switch (paint_widget.kind) {
         .stack, .row, .column => {
-            try emitLayoutContainerBackground(builder, paint_widget);
+            try emitLayoutContainerBackground(builder, paint_widget, tokens);
             try emitWidgetClippedChildren(builder, paint_widget, tokens, depth);
         },
         .grid, .list, .breadcrumb, .pagination, .radio_group, .toggle_group, .split, .tree => try emitWidgetClippedChildren(builder, paint_widget, tokens, depth),
@@ -787,7 +788,7 @@ fn emitWidgetLayoutNodeContent(
     const paint_widget = widgetWithFrame(widget, pixelSnapGeometryRect(tokens, widget.frame));
     try emitWidgetBackdropBlur(builder, paint_widget, tokens);
     switch (paint_widget.kind) {
-        .stack, .row, .column => try emitLayoutContainerBackground(builder, paint_widget),
+        .stack, .row, .column => try emitLayoutContainerBackground(builder, paint_widget, tokens),
         .breadcrumb, .button_group, .pagination, .radio_group, .toggle_group, .split, .tree => {},
         .data_row => try emitDataRowWidgetWash(builder, paint_widget, tokens),
         .tabs => try widget_render_surfaces.emitTabsListWidgetChrome(builder, paint_widget, tokens),
@@ -939,12 +940,31 @@ fn emitWidgetLayoutNodeContent(
     try emitWidgetLayoutClippedChildren(builder, layout, node_index, tokens, state, paint_widget);
 }
 
-/// Flow and stacking containers have no implicit surface treatment, but
-/// an author background is real chrome: it fills the laid-out frame
-/// before any children, with the same optional radius accepted by the
-/// builder and markup grammar.
-fn emitLayoutContainerBackground(builder: *Builder, widget: Widget) Error!void {
-    const background = widget.style.background orelse return;
+/// Flow and stacking containers have no implicit surface treatment. An
+/// actionable container, however, wears the same neutral hover/pressed
+/// ladder as a list row over its full hit frame; an authored background is
+/// its rest fill. Non-actionable containers paint only that authored fill.
+fn emitLayoutContainerBackground(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
+    const actions = widget.semantics.actions;
+    const actionable = widget.id != 0 and !widget.state.disabled and
+        (actions.press or actions.toggle or actions.drag);
+    if (!actionable) {
+        const background = widget.style.background orelse return;
+        if (background.a <= 0) return;
+        try builder.fillRoundedRect(.{
+            .id = widgetPartId(widget.id, 1),
+            .rect = widget.frame,
+            .radius = Radius.all(nonNegative(widget.style.radius orelse 0)),
+            .fill = colorFill(background),
+        });
+        return;
+    }
+    // The common rest-state actionable container with no authored fill
+    // emits nothing. Avoid the token ladder on every structural row in a
+    // full rebuild; only live feedback or authored chrome needs it.
+    if (widget.style.background == null and !widget.state.selected and !widget.state.pressed and !widget_render_style.washHovered(widget)) return;
+    const background = listItemFillColor(widget, tokens, widget.state);
+    if (background.a <= 0) return;
     try builder.fillRoundedRect(.{
         .id = widgetPartId(widget.id, 1),
         .rect = widget.frame,
@@ -3014,15 +3034,18 @@ fn emitBadgeWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) Erro
         .radius = radius,
         .fill = colorFill(badgeBackgroundColor(widget, tokens, visual)),
     });
-    try builder.strokeRect(snapHairlineStrokeRect(tokens, .{
-        .id = widgetPartId(widget.id, 2),
-        .rect = widget.frame,
-        .radius = radius,
-        .stroke = .{
-            .fill = widgetBorderFill(widget, badgeBorderColor(widget, tokens, visual)),
-            .width = badgeStrokeWidth(widget, tokens, visual),
-        },
-    }));
+    const stroke_width = badgeStrokeWidth(widget, tokens, visual);
+    if (stroke_width > 0) {
+        try builder.strokeRect(snapHairlineStrokeRect(tokens, .{
+            .id = widgetPartId(widget.id, 2),
+            .rect = widget.frame,
+            .radius = radius,
+            .stroke = .{
+                .fill = colorFill(badgeBorderColor(widget, tokens, visual)),
+                .width = stroke_width,
+            },
+        }));
+    }
     const content_color = badgeTextColor(widget, tokens, visual);
     // Inline vector icon: icon-only badges center it (the stepper's
     // completed check, status chips); icon + text draws it before the
@@ -3209,7 +3232,7 @@ fn emitSkeletonWidget(builder: *Builder, widget: Widget, tokens: DesignTokens) E
 /// edge to edge (the table register's row hover), square-cornered so
 /// adjacent rows tile. Rows at rest draw nothing.
 fn emitDataRowWidgetWash(builder: *Builder, widget: Widget, tokens: DesignTokens) Error!void {
-    const fill = widget_render_style.listItemFillColor(widget, tokens, widget.state);
+    const fill = listItemFillColor(widget, tokens, widget.state);
     if (fill.a <= 0) return;
     try builder.fillRect(.{
         .id = widgetPartId(widget.id, 1),

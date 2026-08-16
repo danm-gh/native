@@ -438,15 +438,16 @@ test "icon widgets render built-in vector icons as tinted path commands" {
     }
 }
 
-test "checkbox check mark strokes one anti-aliased vector path" {
+test "checkbox check mark and label render through their pinned part slots" {
     const checkbox = Widget{
         .id = 63,
         .kind = WidgetKind.checkbox,
-        .frame = geometry.RectF.init(0, 0, 24, 24),
+        .frame = geometry.RectF.init(0, 0, 80, 24),
         .value = 1,
+        .text = "Done",
     };
     const tokens = DesignTokens{};
-    var commands: [8]CanvasCommand = undefined;
+    var commands: [9]CanvasCommand = undefined;
     var builder = Builder.init(&commands);
     try emitWidgetTree(&builder, checkbox, tokens);
     const display_list = builder.displayList();
@@ -465,18 +466,22 @@ test "checkbox check mark strokes one anti-aliased vector path" {
         },
         else => return error.TestUnexpectedResult,
     }
+    switch (display_list.findCommandById(widgetPartId(63, 6)).?.command) {
+        .draw_text => |text| try std.testing.expectEqualStrings("Done", text.text),
+        else => return error.TestUnexpectedResult,
+    }
 
-    // Rasterized, the diagonal carries partial-coverage edge pixels —
-    // anti-aliasing a binary point-in-capsule test can never produce —
-    // and the whole render pins byte-identical.
-    var render_commands: [8]RenderCommand = undefined;
+    // Rasterized, the diagonal carries partial-coverage edge pixels and
+    // the label is present at its stable part slot. The whole 80x24
+    // checkbox-plus-label render pins byte-identical.
+    var render_commands: [9]RenderCommand = undefined;
     const plan = try (DisplayList{ .commands = display_list.commands }).renderPlan(&render_commands);
-    var pixels: [24 * 24 * 4]u8 = undefined;
+    var pixels: [80 * 24 * 4]u8 = undefined;
     @memset(&pixels, 0);
-    const surface = try ReferenceRenderSurface.init(24, 24, &pixels);
+    const surface = try ReferenceRenderSurface.init(80, 24, &pixels);
     try surface.renderPass(.{
         .commands = plan.commands,
-        .surface_size = geometry.SizeF.init(24, 24),
+        .surface_size = geometry.SizeF.init(80, 24),
         .full_repaint = true,
     }, Color.rgb8(255, 255, 255));
     // Sample strictly inside the accent fill (the 16px box spans y 4-20;
@@ -487,12 +492,12 @@ test "checkbox check mark strokes one anti-aliased vector path" {
     while (y < 18) : (y += 1) {
         var x: usize = 2;
         while (x < 14) : (x += 1) {
-            const value = pixels[(y * 24 + x) * 4];
+            const value = pixels[(y * 80 + x) * 4];
             if (value > 60 and value < 200) partial += 1;
         }
     }
     try std.testing.expect(partial >= 4);
-    try std.testing.expectEqual(@as(u64, 10271374105851145327), support.referenceSurfaceSignature(&pixels));
+    try std.testing.expectEqual(@as(u64, 516383874562490834), support.referenceSurfaceSignature(&pixels));
 }
 
 test "a builder accumulating two widget trees keeps each checkbox mark's own geometry" {
@@ -541,6 +546,240 @@ test "a builder accumulating two widget trees keeps each checkbox mark's own geo
                 try std.testing.expectEqual(expected_element.points[0], element.points[0]);
             }
         },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "compact radio and switch chrome stays circular and disabled selection fills wash" {
+    const tokens = DesignTokens{};
+    const disabled_fill = Color.rgba(
+        tokens.colors.surface.r,
+        tokens.colors.surface.g,
+        tokens.colors.surface.b,
+        tokens.colors.surface.a * tokens.states.disabled_alpha,
+    );
+    const controls = [_]struct { kind: WidgetKind, frame: geometry.RectF }{
+        .{ .kind = .checkbox, .frame = geometry.RectF.init(0, 0, 80, 28) },
+        .{ .kind = .radio, .frame = geometry.RectF.init(0, 0, 80, 28) },
+    };
+    for (controls) |control| {
+        const widget = Widget{
+            .id = 67,
+            .kind = control.kind,
+            .frame = control.frame,
+            .size = .sm,
+            .state = .{ .disabled = true },
+        };
+        var commands: [8]CanvasCommand = undefined;
+        var builder = Builder.init(&commands);
+        try emitWidgetTree(&builder, widget, tokens);
+        switch (builder.displayList().findCommandById(widgetPartId(67, 1)).?.command) {
+            .fill_rounded_rect => |fill| {
+                try expectFillColor(disabled_fill, fill.fill);
+                if (control.kind == .radio) {
+                    try std.testing.expectApproxEqAbs(fill.rect.height * 0.5, fill.radius.top_left, 0.001);
+                }
+            },
+            else => return error.TestUnexpectedResult,
+        }
+    }
+
+    const toggle = Widget{
+        .id = 68,
+        .kind = .switch_control,
+        .frame = geometry.RectF.init(0, 0, 80, 28),
+        .size = .sm,
+    };
+    var toggle_commands: [8]CanvasCommand = undefined;
+    var toggle_builder = Builder.init(&toggle_commands);
+    try emitWidgetTree(&toggle_builder, toggle, tokens);
+    switch (toggle_builder.displayList().findCommandById(widgetPartId(68, 1)).?.command) {
+        .fill_rounded_rect => |fill| try std.testing.expectApproxEqAbs(fill.rect.height * 0.5, fill.radius.top_left, 0.001),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (toggle_builder.displayList().findCommandById(widgetPartId(68, 3)).?.command) {
+        .fill_rounded_rect => |fill| try std.testing.expectApproxEqAbs(fill.rect.height * 0.5, fill.radius.top_left, 0.001),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "selection controls honor explicit disabled background and foreground tokens" {
+    const disabled_background = Color.rgb8(34, 68, 102);
+    const disabled_foreground = Color.rgb8(238, 204, 170);
+    const disabled_border = Color.rgb8(51, 119, 85);
+    const tokens = DesignTokens{ .controls = .{
+        .checkbox = .{ .disabled_background = disabled_background, .disabled_foreground = disabled_foreground, .border = disabled_border },
+        .radio = .{ .disabled_background = disabled_background, .disabled_foreground = disabled_foreground, .border = disabled_border },
+        .switch_control = .{ .disabled_background = disabled_background, .disabled_foreground = disabled_foreground, .border = disabled_border },
+    } };
+    const cases = [_]struct {
+        kind: WidgetKind,
+        foreground_slot: ObjectId,
+        label_slot: ObjectId,
+    }{
+        .{ .kind = .checkbox, .foreground_slot = 4, .label_slot = 6 },
+        .{ .kind = .radio, .foreground_slot = 4, .label_slot = 5 },
+        .{ .kind = .switch_control, .foreground_slot = 3, .label_slot = 5 },
+    };
+    for (cases, 0..) |case, index| {
+        const id: ObjectId = @intCast(80 + index);
+        const widget = Widget{
+            .id = id,
+            .kind = case.kind,
+            .frame = geometry.RectF.init(0, 0, 120, 28),
+            .text = "Disabled",
+            .value = 1,
+            .state = .{ .disabled = true },
+        };
+        var commands: [10]CanvasCommand = undefined;
+        var builder = Builder.init(&commands);
+        try emitWidgetTree(&builder, widget, tokens);
+        const list = builder.displayList();
+        switch (list.findCommandById(widgetPartId(id, 1)).?.command) {
+            .fill_rounded_rect => |fill| try expectFillColor(disabled_background, fill.fill),
+            else => return error.TestUnexpectedResult,
+        }
+        switch (list.findCommandById(widgetPartId(id, 2)).?.command) {
+            .stroke_rect => |stroke| try expectFillColor(disabled_border, stroke.stroke.fill),
+            else => return error.TestUnexpectedResult,
+        }
+        switch (list.findCommandById(widgetPartId(id, case.foreground_slot)).?.command) {
+            .fill_rounded_rect => |fill| try expectFillColor(disabled_foreground, fill.fill),
+            .stroke_path => |stroke| try expectFillColor(disabled_foreground, stroke.stroke.fill),
+            else => return error.TestUnexpectedResult,
+        }
+        switch (list.findCommandById(widgetPartId(id, case.label_slot)).?.command) {
+            .draw_text => |text| try std.testing.expectEqualDeep(disabled_foreground, text.color),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+
+    // Like the slider register, stating either disabled channel opts the
+    // control into color-swap mode: an unstated counterpart stays at full
+    // rest strength instead of being alpha-washed behind the swap.
+    const background_only_tokens = DesignTokens{ .controls = .{
+        .checkbox = .{ .disabled_background = disabled_background },
+    } };
+    const background_only = Widget{
+        .id = 83,
+        .kind = .checkbox,
+        .frame = geometry.RectF.init(0, 0, 120, 28),
+        .text = "Background only",
+        .value = 1,
+        .state = .{ .disabled = true },
+    };
+    var background_only_commands: [10]CanvasCommand = undefined;
+    var background_only_builder = Builder.init(&background_only_commands);
+    try emitWidgetTree(&background_only_builder, background_only, background_only_tokens);
+    switch (background_only_builder.displayList().findCommandById(widgetPartId(83, 1)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(disabled_background, fill.fill),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (background_only_builder.displayList().findCommandById(widgetPartId(83, 4)).?.command) {
+        .stroke_path => |stroke| try expectFillColor(background_only_tokens.colors.accent_text, stroke.stroke.fill),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const foreground_only_tokens = DesignTokens{ .controls = .{
+        .checkbox = .{ .disabled_foreground = disabled_foreground },
+    } };
+    var foreground_only_commands: [10]CanvasCommand = undefined;
+    var foreground_only_builder = Builder.init(&foreground_only_commands);
+    try emitWidgetTree(&foreground_only_builder, background_only, foreground_only_tokens);
+    switch (foreground_only_builder.displayList().findCommandById(widgetPartId(83, 1)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(foreground_only_tokens.colors.accent, fill.fill),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (foreground_only_builder.displayList().findCommandById(widgetPartId(83, 4)).?.command) {
+        .stroke_path => |stroke| try expectFillColor(disabled_foreground, stroke.stroke.fill),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "radio and switch shape overrides beat circular house fallbacks" {
+    const tokens = DesignTokens{
+        .controls = .{
+            .radio = .{ .radius = 5 },
+            .switch_control = .{ .radius = 4 },
+        },
+    };
+    const themed_radio = Widget{
+        .id = 70,
+        .kind = .radio,
+        .frame = geometry.RectF.init(0, 0, 80, 28),
+    };
+    var themed_radio_commands: [8]CanvasCommand = undefined;
+    var themed_radio_builder = Builder.init(&themed_radio_commands);
+    try emitWidgetTree(&themed_radio_builder, themed_radio, tokens);
+    switch (themed_radio_builder.displayList().findCommandById(widgetPartId(70, 1)).?.command) {
+        .fill_rounded_rect => |fill| try std.testing.expectEqualDeep(Radius.all(5), fill.radius),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const authored_radio = Widget{
+        .id = 72,
+        .kind = .radio,
+        .frame = geometry.RectF.init(0, 0, 80, 28),
+        .style = .{ .radius = 3 },
+    };
+    var authored_radio_commands: [8]CanvasCommand = undefined;
+    var authored_radio_builder = Builder.init(&authored_radio_commands);
+    try emitWidgetTree(&authored_radio_builder, authored_radio, tokens);
+    switch (authored_radio_builder.displayList().findCommandById(widgetPartId(72, 1)).?.command) {
+        .fill_rounded_rect => |fill| try std.testing.expectEqualDeep(Radius.all(3), fill.radius),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const toggle = Widget{
+        .id = 71,
+        .kind = .switch_control,
+        .frame = geometry.RectF.init(0, 0, 80, 28),
+    };
+    var toggle_commands: [8]CanvasCommand = undefined;
+    var toggle_builder = Builder.init(&toggle_commands);
+    try emitWidgetTree(&toggle_builder, toggle, tokens);
+    inline for (.{ @as(ObjectId, 1), @as(ObjectId, 3) }) |slot| {
+        switch (toggle_builder.displayList().findCommandById(widgetPartId(71, slot)).?.command) {
+            .fill_rounded_rect => |fill| try std.testing.expectEqualDeep(Radius.all(4), fill.radius),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+
+    var authored_toggle = toggle;
+    authored_toggle.id = 73;
+    authored_toggle.style.radius = 2;
+    var authored_toggle_commands: [8]CanvasCommand = undefined;
+    var authored_toggle_builder = Builder.init(&authored_toggle_commands);
+    try emitWidgetTree(&authored_toggle_builder, authored_toggle, tokens);
+    inline for (.{ @as(ObjectId, 1), @as(ObjectId, 3) }) |slot| {
+        switch (authored_toggle_builder.displayList().findCommandById(widgetPartId(73, slot)).?.command) {
+            .fill_rounded_rect => |fill| try std.testing.expectEqualDeep(Radius.all(2), fill.radius),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+}
+
+test "an off switch keeps authored track and thumb colors on separate channels" {
+    const track_color = Color.rgb8(12, 34, 56);
+    const thumb_color = Color.rgb8(240, 244, 248);
+    const toggle = Widget{
+        .id = 69,
+        .kind = .switch_control,
+        .frame = geometry.RectF.init(0, 0, 80, 32),
+        .style = .{
+            .background = track_color,
+            .accent_foreground = thumb_color,
+        },
+    };
+    var commands: [8]CanvasCommand = undefined;
+    var builder = Builder.init(&commands);
+    try emitWidgetTree(&builder, toggle, .{});
+    switch (builder.displayList().findCommandById(widgetPartId(69, 1)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(track_color, fill.fill),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (builder.displayList().findCommandById(widgetPartId(69, 3)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(thumb_color, fill.fill),
         else => return error.TestUnexpectedResult,
     }
 }
@@ -693,7 +932,7 @@ test "disabled filled buttons match their reference edge treatment" {
     // the fill and fallback edge are each washed to half strength, their
     // overlap becomes darker and invents an outline around the disabled
     // control. Destructive is already the quiet borderless chip, so its
-    // edge stays at width 0 in both states.
+    // edge emits no command in either state.
     const tokens = DesignTokens{};
     const button = Widget{
         .id = 71,
@@ -741,10 +980,7 @@ test "disabled filled buttons match their reference edge treatment" {
     var chip_commands: [8]CanvasCommand = undefined;
     var chip_builder = Builder.init(&chip_commands);
     try emitWidgetTree(&chip_builder, chip, tokens);
-    switch (chip_builder.displayList().findCommandById(widgetPartId(71, 2)).?.command) {
-        .stroke_rect => |stroke| try std.testing.expectEqual(@as(f32, 0), stroke.stroke.width),
-        else => return error.TestUnexpectedResult,
-    }
+    try std.testing.expect(chip_builder.displayList().findCommandById(widgetPartId(71, 2)) == null);
 }
 
 test "geist disabled buttons use the reference swap and tertiary registers" {
@@ -853,6 +1089,66 @@ test "button disabled border override does not require a disabled background" {
     };
 
     try expectFillColor(disabled_border, buttonBorderFill(button, tokens));
+}
+
+test "disabled colors wash resolved identity and secondary accents use the accent channel" {
+    const style_mod = @import("widget_render_style.zig");
+    const tokens = DesignTokens{};
+    const accent = Color.rgb8(180, 24, 48);
+    const accent_foreground = Color.rgb8(250, 226, 232);
+    const foreground = Color.rgb8(36, 92, 148);
+    const background = Color.rgb8(24, 56, 88);
+    const washed_accent = Color.rgba(accent.r, accent.g, accent.b, tokens.states.disabled_alpha);
+    const washed_accent_foreground = Color.rgba(accent_foreground.r, accent_foreground.g, accent_foreground.b, tokens.states.disabled_alpha);
+    const washed_foreground = Color.rgba(foreground.r, foreground.g, foreground.b, tokens.states.disabled_alpha);
+    const washed_background = Color.rgba(background.r, background.g, background.b, tokens.states.disabled_alpha);
+
+    const disabled = Widget{
+        .kind = .text,
+        .state = .{ .disabled = true },
+        .style = .{
+            .foreground = foreground,
+            .accent_foreground = accent_foreground,
+        },
+    };
+    try std.testing.expectEqualDeep(washed_foreground, style_mod.widgetForegroundColor(disabled, tokens, tokens.colors.text));
+    try std.testing.expectEqualDeep(washed_accent_foreground, style_mod.widgetAccentForegroundColor(disabled, tokens, tokens.colors.accent_text));
+
+    const secondary = Widget{
+        .kind = .button,
+        .variant = .secondary,
+        .style = .{ .accent = accent },
+    };
+    try std.testing.expectEqualDeep(accent, style_mod.buttonFillColor(secondary, tokens));
+    try expectFillColor(accent, style_mod.buttonBorderFill(secondary, tokens));
+
+    const disabled_input = Widget{
+        .kind = .text_field,
+        .state = .{ .disabled = true },
+        .style = .{ .background = background },
+    };
+    try expectFillColor(washed_background, style_mod.textInputFill(disabled_input, tokens, .{}));
+
+    const secondary_badge = Widget{
+        .kind = .badge,
+        .variant = .secondary,
+        .style = .{ .accent = accent },
+    };
+    try std.testing.expectEqualDeep(accent, style_mod.badgeBackgroundColor(secondary_badge, tokens, .{}));
+    try std.testing.expectEqualDeep(accent, style_mod.badgeBorderColor(secondary_badge, tokens, .{}));
+
+    const disabled_destructive_badge = Widget{
+        .kind = .badge,
+        .variant = .destructive,
+        .state = .{ .disabled = true },
+        .style = .{
+            .accent = accent,
+            .accent_foreground = accent_foreground,
+        },
+    };
+    try std.testing.expectEqualDeep(washed_accent, style_mod.badgeBackgroundColor(disabled_destructive_badge, tokens, .{}));
+    try std.testing.expectEqualDeep(washed_accent, style_mod.badgeBorderColor(disabled_destructive_badge, tokens, .{}));
+    try std.testing.expectEqualDeep(washed_accent_foreground, style_mod.badgeTextColor(disabled_destructive_badge, tokens, .{}));
 }
 
 /// The flush-group segment assertions, shared by the tree-walk and
@@ -984,11 +1280,8 @@ test "detached button groups render chip members with the group table and the me
     // No seam clips anywhere: a chip has no shared boundary.
     try std.testing.expect(list.findCommandById(widgetPartId(2, 0)) == null);
     try std.testing.expect(list.findCommandById(widgetPartId(3, 0)) == null);
-    // The chips are borderless: the border stroke carries zero width.
-    switch (list.findCommandById(widgetPartId(2, 2)).?.command) {
-        .stroke_rect => |stroke| try std.testing.expectEqual(@as(f32, 0), stroke.stroke.width),
-        else => return error.TestUnexpectedResult,
-    }
+    // The chips are borderless: no dead zero-width stroke command.
+    try std.testing.expect(list.findCommandById(widgetPartId(2, 2)) == null);
     // Knockout ink on the selected label, the stated rest ink elsewhere.
     switch (list.findCommandById(widgetPartId(2, 4)).?.command) {
         .draw_text => |text| try std.testing.expectEqualDeep(Color.rgb8(255, 255, 255), text.color),
@@ -1821,6 +2114,176 @@ test "the quiet-surface knob silences the hover wash and nothing else" {
     try std.testing.expect(focused_builder.displayList().findCommandById(widgetPartId(74, 2)) != null);
 }
 
+test "actionable layout containers paint the row hover and pressed ladder in both emit paths" {
+    const tokens = DesignTokens{};
+    inline for (.{ WidgetKind.row, WidgetKind.column, WidgetKind.stack }) |kind| {
+        const base = Widget{
+            .id = 75,
+            .kind = kind,
+            .frame = geometry.RectF.init(0, 0, 160, 40),
+            .semantics = .{ .actions = .{ .press = true } },
+        };
+
+        var hovered = base;
+        hovered.state.hovered = true;
+        var commands: [4]CanvasCommand = undefined;
+        var builder = Builder.init(&commands);
+        try emitWidgetTree(&builder, hovered, tokens);
+        switch (builder.displayList().findCommandById(widgetPartId(75, 1)).?.command) {
+            .fill_rounded_rect => |fill| try expectFillColor(tokens.colors.surface_subtle, fill.fill),
+            else => return error.TestUnexpectedResult,
+        }
+
+        // The laid-out/live emitter resolves the same state and part slot.
+        var nodes: [1]WidgetLayoutNode = undefined;
+        const layout = try layoutWidgetTree(hovered, hovered.frame, &nodes);
+        var layout_commands: [4]CanvasCommand = undefined;
+        var layout_builder = Builder.init(&layout_commands);
+        try layout.emitDisplayList(&layout_builder, tokens);
+        switch (layout_builder.displayList().findCommandById(widgetPartId(75, 1)).?.command) {
+            .fill_rounded_rect => |fill| try expectFillColor(tokens.colors.surface_subtle, fill.fill),
+            else => return error.TestUnexpectedResult,
+        }
+
+        var pressed = base;
+        pressed.state.pressed = true;
+        var pressed_commands: [4]CanvasCommand = undefined;
+        var pressed_builder = Builder.init(&pressed_commands);
+        try emitWidgetTree(&pressed_builder, pressed, tokens);
+        switch (pressed_builder.displayList().findCommandById(widgetPartId(75, 1)).?.command) {
+            .fill_rounded_rect => |fill| try expectFillColor(tokens.colors.surface_pressed, fill.fill),
+            else => return error.TestUnexpectedResult,
+        }
+
+        var quiet = hovered;
+        quiet.style.quiet_hover = true;
+        var quiet_commands: [4]CanvasCommand = undefined;
+        var quiet_builder = Builder.init(&quiet_commands);
+        try emitWidgetTree(&quiet_builder, quiet, tokens);
+        try std.testing.expect(quiet_builder.displayList().findCommandById(widgetPartId(75, 1)) == null);
+    }
+}
+
+test "drag-only layout containers own hover and pressed washes through child content" {
+    const tokens = DesignTokens{};
+    const label = [_]Widget{.{
+        .id = 79,
+        .kind = .text,
+        .text = "Drag me",
+    }};
+    const draggable = Widget{
+        .id = 78,
+        .kind = .row,
+        .frame = geometry.RectF.init(0, 0, 160, 40),
+        .semantics = .{ .actions = .{ .drag = true } },
+        .children = &label,
+    };
+    var nodes: [2]WidgetLayoutNode = undefined;
+    const layout = try layoutWidgetTree(draggable, draggable.frame, &nodes);
+    const label_node = layout.findById(79) orelse return error.TestUnexpectedResult;
+    const raw_hit = layout.hitTest(label_node.frame.center()) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(ObjectId, 79), raw_hit.id);
+    const hover_target = layout.hoverTargetForHit(raw_hit) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(ObjectId, 78), hover_target.id);
+    const press_target = canvas.widgetPressTargetForHit(layout, raw_hit) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(ObjectId, 78), press_target.id);
+
+    var hover_commands: [4]CanvasCommand = undefined;
+    var hover_builder = Builder.init(&hover_commands);
+    try layout.emitDisplayListWithState(&hover_builder, tokens, .{ .hovered_id = hover_target.id });
+    switch (hover_builder.displayList().findCommandById(widgetPartId(78, 1)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(tokens.colors.surface_subtle, fill.fill),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var press_commands: [4]CanvasCommand = undefined;
+    var press_builder = Builder.init(&press_commands);
+    try layout.emitDisplayListWithState(&press_builder, tokens, .{ .pressed_id = press_target.id });
+    switch (press_builder.displayList().findCommandById(widgetPartId(78, 1)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(tokens.colors.surface_pressed, fill.fill),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "an actionable container uses authored background only at rest" {
+    const authored = Color.rgb8(28, 52, 76);
+    const tokens = DesignTokens{};
+    const base = Widget{
+        .id = 77,
+        .kind = .row,
+        .frame = geometry.RectF.init(0, 0, 160, 40),
+        .style = .{ .background = authored },
+        .semantics = .{ .actions = .{ .press = true } },
+    };
+    var rest_commands: [4]CanvasCommand = undefined;
+    var rest_builder = Builder.init(&rest_commands);
+    try emitWidgetTree(&rest_builder, base, tokens);
+    switch (rest_builder.displayList().findCommandById(widgetPartId(77, 1)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(authored, fill.fill),
+        else => return error.TestUnexpectedResult,
+    }
+
+    var hovered = base;
+    hovered.state.hovered = true;
+    var hover_commands: [4]CanvasCommand = undefined;
+    var hover_builder = Builder.init(&hover_commands);
+    try emitWidgetTree(&hover_builder, hovered, tokens);
+    switch (hover_builder.displayList().findCommandById(widgetPartId(77, 1)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(tokens.colors.surface_subtle, fill.fill),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "house alert card and panel surfaces have visible hover and pressed fallbacks" {
+    const themed_rest = Color.rgb8(28, 52, 76);
+    const tokens = DesignTokens{ .controls = .{
+        .alert = .{ .background = themed_rest },
+        .card = .{ .background = themed_rest },
+        .panel = .{ .background = themed_rest },
+    } };
+    const cases = [_]struct { kind: WidgetKind, fill_slot: u4 }{
+        .{ .kind = .alert, .fill_slot = 1 },
+        .{ .kind = .card, .fill_slot = 1 },
+        .{ .kind = .panel, .fill_slot = 2 },
+    };
+    for (cases) |case| {
+        const base = Widget{
+            .id = 76,
+            .kind = case.kind,
+            .frame = geometry.RectF.init(0, 0, 160, 48),
+            .semantics = .{ .actions = .{ .press = true } },
+        };
+
+        var rest_commands: [8]CanvasCommand = undefined;
+        var rest_builder = Builder.init(&rest_commands);
+        try emitWidgetTree(&rest_builder, base, tokens);
+        switch (rest_builder.displayList().findCommandById(widgetPartId(76, case.fill_slot)).?.command) {
+            .fill_rounded_rect => |fill| try expectFillColor(themed_rest, fill.fill),
+            else => return error.TestUnexpectedResult,
+        }
+
+        var hovered = base;
+        hovered.state.hovered = true;
+        var hovered_commands: [8]CanvasCommand = undefined;
+        var hovered_builder = Builder.init(&hovered_commands);
+        try emitWidgetTree(&hovered_builder, hovered, tokens);
+        switch (hovered_builder.displayList().findCommandById(widgetPartId(76, case.fill_slot)).?.command) {
+            .fill_rounded_rect => |fill| try expectFillColor(tokens.colors.surface_subtle, fill.fill),
+            else => return error.TestUnexpectedResult,
+        }
+
+        var pressed = base;
+        pressed.state.pressed = true;
+        var pressed_commands: [8]CanvasCommand = undefined;
+        var pressed_builder = Builder.init(&pressed_commands);
+        try emitWidgetTree(&pressed_builder, pressed, tokens);
+        switch (pressed_builder.displayList().findCommandById(widgetPartId(76, case.fill_slot)).?.command) {
+            .fill_rounded_rect => |fill| try expectFillColor(tokens.colors.surface_pressed, fill.fill),
+            else => return error.TestUnexpectedResult,
+        }
+    }
+}
+
 test "icon buttons draw registry names as vector icons and keep the glyph fallback" {
     const tokens = DesignTokens{};
     const vector = Widget{
@@ -2524,6 +2987,85 @@ test "built-in alert renders house surface chrome and text" {
     }
 }
 
+test "destructive alerts tint every channel and compact defaults align chrome with content" {
+    const tokens = DesignTokens{
+        .controls = .{
+            // One shared alert table may state neutral defaults; the
+            // destructive variant still owns its hue.
+            .alert = .{
+                .background = Color.rgb8(12, 18, 24),
+                .foreground = Color.rgb8(235, 240, 245),
+                .border = Color.rgb8(54, 64, 74),
+            },
+        },
+    };
+    const destructive = Widget{
+        .id = 42,
+        .kind = .alert,
+        .frame = geometry.RectF.init(0, 0, 320, 68),
+        .text = "Session expired",
+        .variant = .destructive,
+        .state = .{ .disabled = true },
+        .style = .{ .accent = Color.rgb8(196, 32, 64) },
+    };
+    var destructive_commands: [12]CanvasCommand = undefined;
+    var destructive_builder = Builder.init(&destructive_commands);
+    try emitWidgetTree(&destructive_builder, destructive, tokens);
+    const destructive_hue = destructive.style.accent.?;
+    const destructive_fill = colorWithAlpha(destructive_hue, tokens.states.destructive_wash_alpha * tokens.states.disabled_alpha);
+    const destructive_border = colorWithAlpha(destructive_hue, 0.5 * tokens.states.disabled_alpha);
+    const destructive_ink = colorWithAlpha(destructive_hue, tokens.states.disabled_alpha);
+    switch (destructive_builder.displayList().findCommandById(widgetPartId(42, 1)).?.command) {
+        .fill_rounded_rect => |fill| try expectFillColor(destructive_fill, fill.fill),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (destructive_builder.displayList().findCommandById(widgetPartId(42, 2)).?.command) {
+        .stroke_rect => |stroke| try expectFillColor(destructive_border, stroke.stroke.fill),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (destructive_builder.displayList().findCommandById(widgetPartId(42, 4)).?.command) {
+        .stroke_path => |stroke| try expectFillColor(destructive_ink, stroke.stroke.fill),
+        else => return error.TestUnexpectedResult,
+    }
+    switch (destructive_builder.displayList().findCommandById(widgetPartId(42, 10)).?.command) {
+        .draw_text => |text| try std.testing.expectEqualDeep(destructive_ink, text.color),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const description = [_]Widget{.{
+        .id = 44,
+        .kind = .text,
+        .text = "Restart to update.",
+    }};
+    const compact = builtinComponentWidget(.alert, .{
+        .id = 43,
+        .frame = geometry.RectF.init(0, 0, 320, 80),
+        .text = "Update available",
+        .size = .sm,
+        .children = &description,
+    });
+    // Stored kind default and token-resolved chrome share the 14px compact
+    // inset; the 14px multiplicatively scaled icon plus 10px additive
+    // text gap put title and child at x=38. The semantic title gap stays
+    // 4px rather than shrinking with control chrome.
+    try std.testing.expectEqual(@as(f32, 14), compact.layout.padding.top);
+    try std.testing.expect(compact.layout.padding_is_kind_default);
+    var compact_nodes: [2]WidgetLayoutNode = undefined;
+    const compact_layout = try layoutWidgetTree(compact, compact.frame, &compact_nodes);
+    const child = compact_layout.findById(44) orelse return error.TestUnexpectedResult;
+    const text_size = widget_metrics.widgetBodyTextSize(compact, .{});
+    try std.testing.expectApproxEqAbs(@as(f32, 38), child.frame.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 14) + widget_metrics.widgetLineHeight(text_size) + 4, child.frame.y, 0.001);
+
+    var compact_commands: [16]CanvasCommand = undefined;
+    var compact_builder = Builder.init(&compact_commands);
+    try compact_layout.emitDisplayList(&compact_builder, .{});
+    switch (compact_builder.displayList().findCommandById(widgetPartId(43, 10)).?.command) {
+        .draw_text => |text| try std.testing.expectApproxEqAbs(child.frame.x, text.origin.x, 0.001),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "built-in card renders house surface chrome and title" {
     const card = builtinComponentWidget(.card, .{
         .id = 44,
@@ -3136,7 +3678,10 @@ test "built-in component primitive widgets render distinct house chrome" {
     try layout.emitDisplayList(&builder, .{});
 
     const display_list = builder.displayList();
-    try std.testing.expectEqual(@as(usize, 9), display_list.commandCount());
+    // Eight live commands: avatar fill/text/stroke, badge fill/text (its
+    // default zero-width edge emits nothing), separator, skeleton, and
+    // spinner. This count deliberately excludes dead rasterizer work.
+    try std.testing.expectEqual(@as(usize, 8), display_list.commandCount());
     try std.testing.expect(display_list.commands[0] == .fill_rounded_rect);
     switch (display_list.commands[1]) {
         .draw_text => |text| try std.testing.expectEqualStrings("NS", text.text),
@@ -3147,16 +3692,16 @@ test "built-in component primitive widgets render distinct house chrome" {
         .fill_rounded_rect => |fill| try expectFillColor(ColorTokens.light().accent, fill.fill),
         else => return error.TestUnexpectedResult,
     }
-    switch (display_list.commands[5]) {
+    switch (display_list.commands[4]) {
         .draw_text => |text| try std.testing.expectEqualStrings("Beta", text.text),
         else => return error.TestUnexpectedResult,
     }
-    try std.testing.expect(display_list.commands[6] == .fill_rect);
-    try std.testing.expect(display_list.commands[7] == .fill_rounded_rect);
+    try std.testing.expect(display_list.commands[5] == .fill_rect);
+    try std.testing.expect(display_list.commands[6] == .fill_rounded_rect);
     // The spinner (house arc register): ONE stroked arc in the page
     // ink — no track — with the stroke scaling at 1/12 of the box
     // (28px box -> 2.333px stroke).
-    switch (display_list.commands[8]) {
+    switch (display_list.commands[7]) {
         .stroke_path => |arc| {
             try expectFillColor(ColorTokens.light().text, arc.stroke.fill);
             try std.testing.expectApproxEqAbs(@as(f32, 28.0 * 2.0 / 24.0), arc.stroke.width, 0.001);

@@ -61,6 +61,11 @@ pub const RunOptions = struct {
         if (windows.len > 0) {
             info.main_window = windows[0];
             info.windows = windows;
+        } else {
+            info.main_window.default_frame = manifestShellStartupFrame(info.main_window.default_frame);
+            info.main_window.restore_state = manifestShellStartupRestoreState(info.main_window.restore_state);
+            info.main_window.restore_policy = manifestShellStartupRestorePolicy(info.main_window.restore_policy);
+            info.main_window.initial_placement = manifestShellStartupInitialPlacement(info.main_window.initial_placement);
         }
         return info;
     }
@@ -207,6 +212,7 @@ fn manifestWindow(comptime window: anytype, comptime index: usize) native_sdk.Wi
         .resizable = windowBool(window, "resizable", true),
         .restore_state = windowBool(window, "restore_state", true),
         .restore_policy = windowRestorePolicy(window),
+        .initial_placement = if (@hasField(@TypeOf(window), "x") or @hasField(@TypeOf(window), "y")) .explicit else .default,
     };
 }
 
@@ -238,6 +244,57 @@ fn windowRestorePolicy(comptime window: anytype) native_sdk.WindowRestorePolicy 
     if (comptime std.mem.eql(u8, value, "clamp_to_visible_screen")) return .clamp_to_visible_screen;
     if (comptime std.mem.eql(u8, value, "center_on_primary")) return .center_on_primary;
     @compileError("unknown app.zon window restore_policy");
+}
+
+fn windowHasExplicitOrigin(comptime window: anytype) bool {
+    return @hasField(@TypeOf(window), "x") or @hasField(@TypeOf(window), "y");
+}
+
+fn manifestShellStartupFrame(fallback: native_sdk.geometry.RectF) native_sdk.geometry.RectF {
+    if (comptime !@hasField(@TypeOf(app_manifest), "shell")) return fallback;
+    const shell = app_manifest.shell;
+    if (comptime !@hasField(@TypeOf(shell), "windows")) return fallback;
+    if (comptime shell.windows.len == 0) return fallback;
+    const window = shell.windows[0];
+    return native_sdk.geometry.RectF.init(
+        windowFloatFallback(window, "x", fallback.x),
+        windowFloatFallback(window, "y", fallback.y),
+        windowFloatFallback(window, "width", fallback.width),
+        windowFloatFallback(window, "height", fallback.height),
+    );
+}
+
+fn windowFloatFallback(comptime window: anytype, comptime field: []const u8, fallback: f32) f32 {
+    if (comptime @hasField(@TypeOf(window), field)) return @field(window, field);
+    return fallback;
+}
+
+fn manifestShellStartupRestoreState(fallback: bool) bool {
+    if (comptime !@hasField(@TypeOf(app_manifest), "shell")) return fallback;
+    const shell = app_manifest.shell;
+    if (comptime !@hasField(@TypeOf(shell), "windows")) return fallback;
+    if (comptime shell.windows.len == 0) return fallback;
+    const window = shell.windows[0];
+    if (comptime @hasField(@TypeOf(window), "restore_state")) return window.restore_state;
+    return fallback;
+}
+
+fn manifestShellStartupRestorePolicy(fallback: native_sdk.WindowRestorePolicy) native_sdk.WindowRestorePolicy {
+    if (comptime !@hasField(@TypeOf(app_manifest), "shell")) return fallback;
+    const shell = app_manifest.shell;
+    if (comptime !@hasField(@TypeOf(shell), "windows")) return fallback;
+    if (comptime shell.windows.len == 0) return fallback;
+    const window = shell.windows[0];
+    if (comptime !@hasField(@TypeOf(window), "restore_policy")) return fallback;
+    return windowRestorePolicy(window);
+}
+
+fn manifestShellStartupInitialPlacement(fallback: native_sdk.WindowInitialPlacement) native_sdk.WindowInitialPlacement {
+    if (comptime !@hasField(@TypeOf(app_manifest), "shell")) return fallback;
+    const shell = app_manifest.shell;
+    if (comptime !@hasField(@TypeOf(shell), "windows")) return fallback;
+    if (comptime shell.windows.len == 0) return fallback;
+    return if (windowHasExplicitOrigin(shell.windows[0])) .explicit else fallback;
 }
 
 fn menuItem(comptime item: anytype) native_sdk.MenuItem {
@@ -509,12 +566,17 @@ fn prepareStateStore(io: std.Io, env_map: *std.process.Environ.Map, app_info: *n
             if (!window.restore_state) continue;
             if (store.loadWindow(window.label, &buffers.read) catch null) |saved| {
                 window.default_frame = saved.frame;
-                if (index == 0) app_info.main_window.default_frame = saved.frame;
+                window.initial_placement = .restored;
+                if (index == 0) {
+                    app_info.main_window.default_frame = saved.frame;
+                    app_info.main_window.initial_placement = .restored;
+                }
             }
         }
     } else if (app_info.main_window.restore_state) {
         if (store.loadWindow(app_info.main_window.label, &buffers.read) catch null) |saved| {
             app_info.main_window.default_frame = saved.frame;
+            app_info.main_window.initial_placement = .restored;
         }
     }
     return store;

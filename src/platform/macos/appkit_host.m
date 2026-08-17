@@ -101,7 +101,11 @@ static void *NativeSdkAppKitVideoTimeControlContext = &NativeSdkAppKitVideoTimeC
 /* Render-thread ring state for the spectrum tap; defined with the rest
  * of the spectrum machinery in the audio section below. */
 typedef struct native_sdk_spectrum_tap_state native_sdk_spectrum_tap_state_t;
-static NSRect constrainFrame(NSRect frame);
+static NSScreen *NativeSdkPrimaryScreen(void);
+static NSScreen *NativeSdkScreenForFrame(NSRect frame);
+static NSRect NativeSdkConstrainFrameToScreen(NSRect frame, NSScreen *screen);
+static NSRect NativeSdkConstrainFrame(NSRect frame);
+static NSRect NativeSdkCenterFrameOnScreen(NSRect frame, NSScreen *screen);
 static NSString *NativeSdkAppKitBridgeScript(void);
 static NSString *NativeSdkMenuKeyEquivalent(NSString *key);
 static NSString *NativeSdkMimeTypeForPath(NSString *path);
@@ -1019,8 +1023,8 @@ static int NativeSdkCredentialStatus(OSStatus status, int missingCode) {
 @property(nonatomic, strong) NSArray<NSString *> *allowedNavigationOrigins;
 @property(nonatomic, strong) NSArray<NSString *> *allowedExternalURLs;
 @property(nonatomic, assign) NSInteger externalLinkAction;
-- (instancetype)initWithAppName:(NSString *)appName displayName:(NSString *)displayName version:(NSString *)version aboutDescription:(NSString *)aboutDescription hasWebContent:(BOOL)hasWebContent dockVisible:(BOOL)dockVisible windowTitle:(NSString *)windowTitle bundleIdentifier:(NSString *)bundleIdentifier iconPath:(NSString *)iconPath windowLabel:(NSString *)windowLabel x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame resizable:(BOOL)resizable titlebarStyle:(int)titlebarStyle showPolicy:(int)showPolicy windowFlags:(uint32_t)windowFlags;
-- (BOOL)createWindowWithId:(uint64_t)windowId title:(NSString *)title label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame resizable:(BOOL)resizable titlebarStyle:(int)titlebarStyle showPolicy:(int)showPolicy windowFlags:(uint32_t)windowFlags makeMain:(BOOL)makeMain;
+- (instancetype)initWithAppName:(NSString *)appName displayName:(NSString *)displayName version:(NSString *)version aboutDescription:(NSString *)aboutDescription hasWebContent:(BOOL)hasWebContent dockVisible:(BOOL)dockVisible windowTitle:(NSString *)windowTitle bundleIdentifier:(NSString *)bundleIdentifier iconPath:(NSString *)iconPath windowLabel:(NSString *)windowLabel x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame initialPlacement:(int)initialPlacement restorePolicy:(int)restorePolicy resizable:(BOOL)resizable titlebarStyle:(int)titlebarStyle showPolicy:(int)showPolicy windowFlags:(uint32_t)windowFlags;
+- (BOOL)createWindowWithId:(uint64_t)windowId title:(NSString *)title label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame initialPlacement:(int)initialPlacement restorePolicy:(int)restorePolicy resizable:(BOOL)resizable titlebarStyle:(int)titlebarStyle showPolicy:(int)showPolicy windowFlags:(uint32_t)windowFlags makeMain:(BOOL)makeMain;
 - (void)orderWindowForImplicitShow:(uint64_t)windowId;
 - (void)showDeferredWindowIfPending:(uint64_t)windowId reason:(const char *)reason;
 - (void)applyWindowClearColor:(uint64_t)windowId red:(uint8_t)red green:(uint8_t)green blue:(uint8_t)blue alpha:(uint8_t)alpha;
@@ -7748,7 +7752,7 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
 
 @implementation NativeSdkAppKitHost
 
-- (instancetype)initWithAppName:(NSString *)appName displayName:(NSString *)displayName version:(NSString *)version aboutDescription:(NSString *)aboutDescription hasWebContent:(BOOL)hasWebContent dockVisible:(BOOL)dockVisible windowTitle:(NSString *)windowTitle bundleIdentifier:(NSString *)bundleIdentifier iconPath:(NSString *)iconPath windowLabel:(NSString *)windowLabel x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame resizable:(BOOL)resizable titlebarStyle:(int)titlebarStyle showPolicy:(int)showPolicy windowFlags:(uint32_t)windowFlags {
+- (instancetype)initWithAppName:(NSString *)appName displayName:(NSString *)displayName version:(NSString *)version aboutDescription:(NSString *)aboutDescription hasWebContent:(BOOL)hasWebContent dockVisible:(BOOL)dockVisible windowTitle:(NSString *)windowTitle bundleIdentifier:(NSString *)bundleIdentifier iconPath:(NSString *)iconPath windowLabel:(NSString *)windowLabel x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame initialPlacement:(int)initialPlacement restorePolicy:(int)restorePolicy resizable:(BOOL)resizable titlebarStyle:(int)titlebarStyle showPolicy:(int)showPolicy windowFlags:(uint32_t)windowFlags {
     self = [super init];
     if (!self) {
         return nil;
@@ -7798,7 +7802,7 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
     [self configureApplication];
     NativeSdkLaunchLap("app_configured");
 
-    [self createWindowWithId:1 title:(windowTitle.length > 0 ? windowTitle : self.appName) label:self.windowLabel x:x y:y width:width height:height restoreFrame:restoreFrame resizable:resizable titlebarStyle:titlebarStyle showPolicy:showPolicy windowFlags:windowFlags makeMain:YES];
+    [self createWindowWithId:1 title:(windowTitle.length > 0 ? windowTitle : self.appName) label:self.windowLabel x:x y:y width:width height:height restoreFrame:restoreFrame initialPlacement:initialPlacement restorePolicy:restorePolicy resizable:resizable titlebarStyle:titlebarStyle showPolicy:showPolicy windowFlags:windowFlags makeMain:YES];
     self.didShutdown = NO;
     self.pendingPreRunStop = NO;
     self.observesApplicationActivation = NO;
@@ -7806,16 +7810,23 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
     return self;
 }
 
-- (BOOL)createWindowWithId:(uint64_t)windowId title:(NSString *)title label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame resizable:(BOOL)resizable titlebarStyle:(int)titlebarStyle showPolicy:(int)showPolicy windowFlags:(uint32_t)windowFlags makeMain:(BOOL)makeMain {
+- (BOOL)createWindowWithId:(uint64_t)windowId title:(NSString *)title label:(NSString *)label x:(double)x y:(double)y width:(double)width height:(double)height restoreFrame:(BOOL)restoreFrame initialPlacement:(int)initialPlacement restorePolicy:(int)restorePolicy resizable:(BOOL)resizable titlebarStyle:(int)titlebarStyle showPolicy:(int)showPolicy windowFlags:(uint32_t)windowFlags makeMain:(BOOL)makeMain {
     NSNumber *key = @(windowId);
     if (self.windows[key]) {
         return NO;
     }
 
-    NSRect rect = restoreFrame ? NSMakeRect(x, y, width, height) : NSMakeRect(0, 0, width, height);
-    if (restoreFrame) {
-        rect = constrainFrame(rect);
-    }
+    (void)restoreFrame; // Persistence opt-in; initialPlacement says whether a frame was found.
+    const BOOL restoredPlacement = initialPlacement == 0;
+    // A restored center policy deliberately discards only the saved origin;
+    // its saved OUTER size is reapplied after construction below. Fresh
+    // frames remain content rectangles, preserving the public width/height
+    // contract for authored windows.
+    const BOOL centerOnPrimary = initialPlacement == 2 || (restoredPlacement && restorePolicy == 1);
+    NSScreen *primaryScreen = NativeSdkPrimaryScreen();
+    NSRect rect = centerOnPrimary
+        ? NativeSdkConstrainFrameToScreen(NSMakeRect(0, 0, width, height), primaryScreen)
+        : NativeSdkConstrainFrame(NSMakeRect(x, y, width, height));
     NSWindowStyleMask styleMask = NSWindowStyleMaskTitled |
                                   NSWindowStyleMaskClosable |
                                   NSWindowStyleMaskMiniaturizable;
@@ -7897,14 +7908,30 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
         window.toolbarStyle = NSWindowToolbarStyleUnified;
         window.titlebarSeparatorStyle = NSTitlebarSeparatorStyleNone;
     }
-    if (!restoreFrame) {
-        [window center];
+    if (restoredPlacement) {
+        // Window-state events persist content geometry. Convert that saved
+        // rect through the window's FINAL chrome, then constrain/center the
+        // completed outer frame so the content rect round-trips without
+        // titlebar growth while the whole window stays visible.
+        NSRect restoredContentFrame = NSMakeRect(x, y, width, height);
+        NSRect restoredWindowFrame = [window frameRectForContentRect:restoredContentFrame];
+        restoredWindowFrame = restorePolicy == 1
+            ? NativeSdkCenterFrameOnScreen(restoredWindowFrame, primaryScreen)
+            : NativeSdkConstrainFrame(restoredWindowFrame);
+        [window setFrame:restoredWindowFrame display:NO];
+    } else if (initialPlacement == 1) {
+        // Fresh authored dimensions are content size, but visibility is an
+        // OUTER-frame guarantee. AppKit adds titlebar chrome during
+        // construction, so constrain the completed frame as the final step.
+        [window setFrame:NativeSdkConstrainFrame(window.frame) display:NO];
+    } else if (centerOnPrimary) {
+        [window setFrame:NativeSdkCenterFrameOnScreen(window.frame, primaryScreen) display:NO];
         // AppKit centers every new window by default, which leaves a
         // model-declared secondary window exactly covering the editor that
         // opened it. Cascade from the active window like Win32's default
         // placement so repeated Command+N windows stay visibly distinct.
         NSWindow *referenceWindow = NSApp.keyWindow ?: self.window;
-        if (!makeMain && referenceWindow) {
+        if (initialPlacement == 2 && restorePolicy == 0 && !makeMain && referenceWindow) {
             NSRect referenceFrame = referenceWindow.frame;
             NSRect cascadedFrame = window.frame;
             cascadedFrame.origin.x = NSMinX(referenceFrame) + 24.0;
@@ -7926,7 +7953,7 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
     }
     if (makeMain) NativeSdkLaunchLap("window_chrome_ready");
 
-    NSView *container = [[NSView alloc] initWithFrame:rect];
+    NSView *container = [[NSView alloc] initWithFrame:window.contentView.bounds];
     container.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     window.contentView = container;
     // The window's MAIN WebView is created lazily
@@ -9240,8 +9267,46 @@ static float NativeSdkCaptureReadRemixedSample(const AudioBufferList *buffers, c
     }
 }
 
-static NSRect constrainFrame(NSRect frame) {
-    NSScreen *screen = [NSScreen mainScreen];
+static NSScreen *NativeSdkPrimaryScreen(void) {
+    // AppKit's mainScreen follows the key window. The first screen is the
+    // menu-bar display: macOS's primary screen and the policy contract.
+    return [NSScreen screens].firstObject ?: [NSScreen mainScreen];
+}
+
+static NSScreen *NativeSdkScreenForFrame(NSRect frame) {
+    NSArray<NSScreen *> *screens = [NSScreen screens];
+    NSScreen *bestScreen = nil;
+    CGFloat bestArea = 0;
+    for (NSScreen *screen in screens) {
+        NSRect intersection = NSIntersectionRect(frame, screen.visibleFrame);
+        CGFloat area = NSWidth(intersection) * NSHeight(intersection);
+        if (area > bestArea) {
+            bestArea = area;
+            bestScreen = screen;
+        }
+    }
+    if (bestScreen) return bestScreen;
+
+    // A frame from a disconnected display has no intersection. Clamp it to
+    // the nearest remaining display instead of always teleporting to primary.
+    NSPoint center = NSMakePoint(NSMidX(frame), NSMidY(frame));
+    CGFloat bestDistance = CGFLOAT_MAX;
+    for (NSScreen *screen in screens) {
+        NSRect visible = screen.visibleFrame;
+        CGFloat nearestX = MIN(MAX(center.x, NSMinX(visible)), NSMaxX(visible));
+        CGFloat nearestY = MIN(MAX(center.y, NSMinY(visible)), NSMaxY(visible));
+        CGFloat dx = center.x - nearestX;
+        CGFloat dy = center.y - nearestY;
+        CGFloat distance = dx * dx + dy * dy;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestScreen = screen;
+        }
+    }
+    return bestScreen ?: [NSScreen mainScreen];
+}
+
+static NSRect NativeSdkConstrainFrameToScreen(NSRect frame, NSScreen *screen) {
     if (!screen) return frame;
     NSRect visible = screen.visibleFrame;
     if (frame.size.width > visible.size.width) frame.size.width = visible.size.width;
@@ -9251,6 +9316,19 @@ static NSRect constrainFrame(NSRect frame) {
     if (NSMaxX(frame) > NSMaxX(visible)) frame.origin.x = NSMaxX(visible) - frame.size.width;
     if (NSMaxY(frame) > NSMaxY(visible)) frame.origin.y = NSMaxY(visible) - frame.size.height;
     return frame;
+}
+
+static NSRect NativeSdkConstrainFrame(NSRect frame) {
+    return NativeSdkConstrainFrameToScreen(frame, NativeSdkScreenForFrame(frame));
+}
+
+static NSRect NativeSdkCenterFrameOnScreen(NSRect frame, NSScreen *screen) {
+    frame = NativeSdkConstrainFrameToScreen(frame, screen);
+    if (!screen) return frame;
+    NSRect visible = screen.visibleFrame;
+    frame.origin.x = NSMidX(visible) - NSWidth(frame) / 2.0;
+    frame.origin.y = NSMidY(visible) - NSHeight(frame) / 2.0;
+    return NativeSdkConstrainFrameToScreen(frame, screen);
 }
 
 static NSString *NativeSdkAppKitBridgeScript(void) {
@@ -12283,7 +12361,7 @@ static BOOL NativeSdkPolicyListMatches(NSArray<NSString *> *values, NSURL *url) 
     return NO;
 }
 
-native_sdk_appkit_host_t *native_sdk_appkit_create(const char *app_name, size_t app_name_len, const char *display_name, size_t display_name_len, const char *version, size_t version_len, const char *about_description, size_t about_description_len, int has_web_content, int dock_visible, const char *window_title, size_t window_title_len, const char *bundle_id, size_t bundle_id_len, const char *icon_path, size_t icon_path_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, int show_policy, uint32_t window_flags) {
+native_sdk_appkit_host_t *native_sdk_appkit_create(const char *app_name, size_t app_name_len, const char *display_name, size_t display_name_len, const char *version, size_t version_len, const char *about_description, size_t about_description_len, int has_web_content, int dock_visible, const char *window_title, size_t window_title_len, const char *bundle_id, size_t bundle_id_len, const char *icon_path, size_t icon_path_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int initial_placement, int restore_policy, int resizable, int titlebar_style, int show_policy, uint32_t window_flags) {
     @autoreleasepool {
         NSString *appNameString = [[NSString alloc] initWithBytes:app_name length:app_name_len encoding:NSUTF8StringEncoding] ?: @"native-sdk";
         NSString *displayNameString = [[NSString alloc] initWithBytes:display_name length:display_name_len encoding:NSUTF8StringEncoding] ?: @"";
@@ -12293,7 +12371,7 @@ native_sdk_appkit_host_t *native_sdk_appkit_create(const char *app_name, size_t 
         NSString *bundleIdString = [[NSString alloc] initWithBytes:bundle_id length:bundle_id_len encoding:NSUTF8StringEncoding] ?: @"dev.native_sdk.app";
         NSString *iconPathString = [[NSString alloc] initWithBytes:icon_path length:icon_path_len encoding:NSUTF8StringEncoding] ?: @"";
         NSString *windowLabelString = [[NSString alloc] initWithBytes:window_label length:window_label_len encoding:NSUTF8StringEncoding] ?: @"main";
-        NativeSdkAppKitHost *host = [[NativeSdkAppKitHost alloc] initWithAppName:appNameString displayName:displayNameString version:versionString aboutDescription:aboutDescriptionString hasWebContent:(has_web_content != 0) dockVisible:(dock_visible != 0) windowTitle:windowTitleString bundleIdentifier:bundleIdString iconPath:iconPathString windowLabel:windowLabelString x:x y:y width:width height:height restoreFrame:(restore_frame != 0) resizable:(resizable != 0) titlebarStyle:titlebar_style showPolicy:show_policy windowFlags:window_flags];
+        NativeSdkAppKitHost *host = [[NativeSdkAppKitHost alloc] initWithAppName:appNameString displayName:displayNameString version:versionString aboutDescription:aboutDescriptionString hasWebContent:(has_web_content != 0) dockVisible:(dock_visible != 0) windowTitle:windowTitleString bundleIdentifier:bundleIdString iconPath:iconPathString windowLabel:windowLabelString x:x y:y width:width height:height restoreFrame:(restore_frame != 0) initialPlacement:initial_placement restorePolicy:restore_policy resizable:(resizable != 0) titlebarStyle:titlebar_style showPolicy:show_policy windowFlags:window_flags];
         return (__bridge_retained native_sdk_appkit_host_t *)host;
     }
 }
@@ -12611,11 +12689,11 @@ void native_sdk_appkit_set_shortcuts(native_sdk_appkit_host_t *host, const char 
     [object setShortcutsWithIds:ids idLengths:id_lens keys:keys keyLengths:key_lens modifiers:modifiers count:count];
 }
 
-int native_sdk_appkit_create_window(native_sdk_appkit_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int resizable, int titlebar_style, int show_policy, uint32_t window_flags) {
+int native_sdk_appkit_create_window(native_sdk_appkit_host_t *host, uint64_t window_id, const char *window_title, size_t window_title_len, const char *window_label, size_t window_label_len, double x, double y, double width, double height, int restore_frame, int initial_placement, int restore_policy, int resizable, int titlebar_style, int show_policy, uint32_t window_flags) {
     NativeSdkAppKitHost *object = (__bridge NativeSdkAppKitHost *)host;
     NSString *titleString = window_title ? [[NSString alloc] initWithBytes:window_title length:window_title_len encoding:NSUTF8StringEncoding] : @"";
     NSString *labelString = window_label ? [[NSString alloc] initWithBytes:window_label length:window_label_len encoding:NSUTF8StringEncoding] : @"";
-    return [object createWindowWithId:window_id title:titleString ?: @"" label:labelString ?: @"" x:x y:y width:width height:height restoreFrame:(restore_frame != 0) resizable:(resizable != 0) titlebarStyle:titlebar_style showPolicy:show_policy windowFlags:window_flags makeMain:NO] ? 1 : 0;
+    return [object createWindowWithId:window_id title:titleString ?: @"" label:labelString ?: @"" x:x y:y width:width height:height restoreFrame:(restore_frame != 0) initialPlacement:initial_placement restorePolicy:restore_policy resizable:(resizable != 0) titlebarStyle:titlebar_style showPolicy:show_policy windowFlags:window_flags makeMain:NO] ? 1 : 0;
 }
 
 int native_sdk_appkit_set_window_content_min_size(native_sdk_appkit_host_t *host, uint64_t window_id, double min_width, double min_height) {

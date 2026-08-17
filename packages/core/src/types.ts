@@ -766,7 +766,7 @@ export class TypeTable {
 }
 
 /// The canvas text-input event vocabulary — a union carrying exactly these
-/// eleven tags is the declared mirror the markup engines resolve `on-input`
+/// thirteen tags is the declared mirror the markup engines resolve `on-input`
 /// through (matched structurally on the Zig side; see
 /// ui_markup_reflect.declaredTextInputUnion).
 const textInputMirrorTags = [
@@ -775,6 +775,8 @@ const textInputMirrorTags = [
   "delete_forward",
   "delete_word_backward",
   "delete_word_forward",
+  "delete_to_start",
+  "delete_to_line_start",
   "clear",
   "move_caret",
   "set_selection",

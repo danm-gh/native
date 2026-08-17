@@ -340,18 +340,20 @@ export class TypedAst {
 
   /// Properties of an object-literal type alias body, in declaration
   /// order — null unless every member is a plain record property (an
-  /// identifier-named, annotated, non-optional property signature), so
+  /// identifier-named, annotated property signature), so
   /// a shape this walk cannot carry whole refuses as an unsupported
-  /// alias instead of registering a struct with silently missing
-  /// fields.
-  propsOfTypeLiteral(node: tsImpl.TypeLiteralNode): PropInfo[] | null {
+  /// alias instead of registering a struct with silently missing fields.
+  /// The one omission-carrying value record is the SDK-owned ThemeState;
+  /// its caller opts in explicitly so authored/service records keep the
+  /// fixed-shape rule.
+  propsOfTypeLiteral(node: tsImpl.TypeLiteralNode, allowOptional = false): PropInfo[] | null {
     const out: PropInfo[] = [];
     for (const member of node.members) {
-      if (!tsImpl.isPropertySignature(member) || !member.name || !tsImpl.isIdentifier(member.name)) return null;
-      if (member.questionToken || !member.type) return null;
+      if (!tsImpl.isPropertySignature(member) || !member.name || !tsImpl.isIdentifier(member.name) || !member.type) return null;
+      if (member.questionToken && !allowOptional) return null;
       out.push({
         name: member.name.text,
-        optional: false,
+        optional: member.questionToken !== undefined,
         readonly: hasReadonlyModifier(member),
         typeNode: member.type,
         declaration: member,

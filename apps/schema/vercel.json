@@ -4,6 +4,13 @@
   "rewrites": [
     { "source": "/app.json", "destination": "/app/v1.json" }
   ],
+  "redirects": [
+    {
+      "source": "/((?!app(?:\\.json|/v1\\.json)$).*)",
+      "destination": "https://native-sdk.dev",
+      "statusCode": 302
+    }
+  ],
   "headers": [
     {
       "source": "/app/v1.json",

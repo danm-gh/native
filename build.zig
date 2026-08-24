@@ -119,6 +119,9 @@ pub fn build(b: *std.Build) void {
     _ = b.option(bool, "js-bridge", "Enable optional JavaScript bridge stubs") orelse false;
     const package_target = b.option(PackageTarget, "package-target", "Package target: macos, windows, linux, ios, android") orelse .macos;
     const signing_mode = b.option(SigningMode, "signing", "Signing mode: none, adhoc, identity") orelse .none;
+    const signing_identity = b.option([]const u8, "identity", "Code signing identity for distribution packages");
+    const signing_entitlements = b.option([]const u8, "entitlements", "Entitlements plist for identity signing");
+    const notary_profile = b.option([]const u8, "notary-profile", "notarytool Keychain profile for notarization");
     const package_version = packageVersion(b);
     const optimize_name = @tagName(optimize);
     // Resolve against THIS build's root: as a dependency of a user app the
@@ -2962,6 +2965,8 @@ pub fn build(b: *std.Build) void {
     });
     package_run.addFileArg(embed_lib.getEmittedBin());
     package_run.addArgs(&.{ "--manifest", "app.zon", "--assets", "assets", "--optimize", optimize_name, "--signing", @tagName(signing_mode), "--web-engine", @tagName(web_engine), "--cef-dir", cef_dir });
+    if (signing_identity) |identity| package_run.addArgs(&.{ "--identity", identity });
+    if (signing_entitlements) |entitlements| package_run.addArgs(&.{ "--entitlements", entitlements });
     if (cef_auto_install) package_run.addArg("--cef-auto-install");
     package_run.step.dependOn(&embed_lib.step);
     package_run.step.dependOn(&bundle_run.step);
@@ -2999,6 +3004,13 @@ pub fn build(b: *std.Build) void {
     const package_cef_smoke_step = b.step("test-package-cef-layout", "Verify macOS Chromium package layout");
     package_cef_smoke_step.dependOn(&package_cef_check.step);
 
+    // The repository's macOS distribution helpers need a real launchable
+    // executable inside the .app. Keep the notarization helper on the same
+    // emitted host CLI binary that the signed-package smoke executes below;
+    // the SDK embed artifact is a static `.a` library and is not a valid
+    // CFBundleExecutable even though codesign can seal a bundle around it.
+    const macos_distribution_executable = host_cli_exe.getEmittedBin();
+
     // Signed-package seal pin: package an ad-hoc signed bundle and prove
     // the signature survives packaging intact with codesign's own strict
     // verifier. This is the regression gate for the ordering bug where a
@@ -3015,7 +3027,7 @@ pub fn build(b: *std.Build) void {
     const package_signing_mode: []const u8 = if (b.graph.host.result.os.tag == .macos) "adhoc" else "none";
     const package_signing_run = b.addRunArtifact(host_cli_exe);
     package_signing_run.addArgs(&.{ "package", "--target", "macos", "--output", "zig-out/package/native-sdk-signing-verify.app", "--binary" });
-    package_signing_run.addFileArg(host_cli_exe.getEmittedBin());
+    package_signing_run.addFileArg(macos_distribution_executable);
     package_signing_run.addArgs(&.{ "--manifest", "app.zon", "--assets", "assets", "--optimize", optimize_name, "--signing", package_signing_mode });
     package_signing_run.has_side_effects = true;
     const package_signing_check = b.addSystemCommand(&.{
@@ -3027,6 +3039,7 @@ pub fn build(b: *std.Build) void {
         \\  exit 0
         \\fi
         \\codesign --verify --strict --deep "$app"
+        \\"$app/Contents/MacOS/native-sdk" version >/dev/null
         \\grep -q "ad-hoc signed" "$app/Contents/Resources/signing-plan.txt"
         \\echo "signed package verify ok"
         ,
@@ -3094,10 +3107,13 @@ pub fn build(b: *std.Build) void {
         b.fmt("zig-out/package/native-sdk-{s}-macos-{s}.app", .{ package_version, optimize_name }),
         "--binary",
     });
-    notarize_run.addFileArg(embed_lib.getEmittedBin());
-    notarize_run.addArgs(&.{ "--manifest", "app.zon", "--assets", "assets", "--optimize", optimize_name, "--signing", "identity", "--web-engine", @tagName(web_engine), "--cef-dir", cef_dir });
+    notarize_run.addFileArg(macos_distribution_executable);
+    notarize_run.addArgs(&.{ "--manifest", "app.zon", "--assets", "assets", "--optimize", optimize_name, "--signing", "identity", "--web-engine", @tagName(web_engine), "--cef-dir", cef_dir, "--archive", "--notarize" });
+    if (signing_identity) |identity| notarize_run.addArgs(&.{ "--identity", identity });
+    if (signing_entitlements) |entitlements| notarize_run.addArgs(&.{ "--entitlements", entitlements });
+    if (notary_profile) |profile| notarize_run.addArgs(&.{ "--notary-profile", profile });
     if (cef_auto_install) notarize_run.addArg("--cef-auto-install");
-    notarize_run.step.dependOn(&embed_lib.step);
+    notarize_run.step.dependOn(&host_cli_exe.step);
     notarize_run.step.dependOn(&bundle_run.step);
     const notarize_step = b.step("notarize", "Package, sign with identity, and notarize for macOS distribution");
     notarize_step.dependOn(&notarize_run.step);
@@ -3118,6 +3134,8 @@ pub fn build(b: *std.Build) void {
     });
     dmg_run.addFileArg(embed_lib.getEmittedBin());
     dmg_run.addArgs(&.{ "--manifest", "app.zon", "--assets", "assets", "--optimize", optimize_name, "--signing", @tagName(signing_mode), "--web-engine", @tagName(web_engine), "--cef-dir", cef_dir, "--archive" });
+    if (signing_identity) |identity| dmg_run.addArgs(&.{ "--identity", identity });
+    if (signing_entitlements) |entitlements| dmg_run.addArgs(&.{ "--entitlements", entitlements });
     if (cef_auto_install) dmg_run.addArg("--cef-auto-install");
     dmg_run.step.dependOn(&embed_lib.step);
     dmg_run.step.dependOn(&bundle_run.step);

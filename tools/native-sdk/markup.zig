@@ -36,7 +36,7 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8) !
         return error.MarkupCommandFailed;
     }
 
-    const outcome = try checkFiles(allocator, io, files.items);
+    const outcome = try checkFiles(allocator, io, files.items, .{});
     // Exit directly: the diagnostics above are the whole story, and a
     // returned error would bury them under the CLI's own return trace.
     if (outcome.failures > 0) std.process.exit(1);
@@ -55,16 +55,58 @@ pub const CheckOutcome = struct {
     contract_checked: bool = false,
 };
 
+pub const CheckOptions = struct {
+    /// Shared import boundary for every checked file. Callers that need one
+    /// common boundary can set this explicitly; the standalone markup
+    /// command leaves it null so each explicitly named file remains rooted
+    /// at its own directory.
+    import_root: ?[]const u8 = null,
+    /// Optional per-file import boundary. App-wide checks use this to keep
+    /// secondary-window markup rooted at `src/windows` while the main view
+    /// and ordinary components remain rooted at `src`.
+    import_root_for_file: ?*const fn (file_path: []const u8) []const u8 = null,
+};
+
+/// Match the generated TypeScript app resolvers: the main view uses the
+/// app-wide `src/` root, while every secondary-window file uses the narrower
+/// `src/windows/` root. Accept both host path separator spellings because
+/// app-wide checks receive paths from a filesystem walk. The first `src`
+/// segment is the app source root; looking for any later `src/windows`
+/// substring would misclassify e.g. `src/components/src/windows/card.native`.
+pub fn importRootForFile(file_path: []const u8) []const u8 {
+    var segment_start: usize = 0;
+    var index: usize = 0;
+    while (index <= file_path.len) : (index += 1) {
+        if (index != file_path.len and file_path[index] != '/' and file_path[index] != '\\') continue;
+
+        const segment = file_path[segment_start..index];
+        if (std.mem.eql(u8, segment, "src")) {
+            const src_end = index;
+            var next_start = index;
+            while (next_start < file_path.len and (file_path[next_start] == '/' or file_path[next_start] == '\\')) next_start += 1;
+            var next_end = next_start;
+            while (next_end < file_path.len and file_path[next_end] != '/' and file_path[next_end] != '\\') next_end += 1;
+            if (next_start < next_end and std.mem.eql(u8, file_path[next_start..next_end], "windows")) {
+                return file_path[0..next_end];
+            }
+            return file_path[0..src_end];
+        }
+        segment_start = index + 1;
+    }
+    return "src";
+}
+
 /// The `check` body shared by `native markup check` and `native check`:
 /// structural validation of every file, plus — when the working directory
 /// is an app with a FRESH model-contract artifact — the model-aware
 /// contract pass and the dead-state lint. A missing, stale, or unreadable
 /// artifact degrades to structural checking with a note, never a false
 /// pass.
-pub fn checkFiles(allocator: std.mem.Allocator, io: std.Io, files: []const []const u8) !CheckOutcome {
+pub fn checkFiles(allocator: std.mem.Allocator, io: std.Io, files: []const []const u8, options: CheckOptions) !CheckOutcome {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    std.debug.assert(options.import_root == null or options.import_root_for_file == null);
 
     var outcome = CheckOutcome{};
     var contract_value: ?ui_markup.contract.Contract = null;
@@ -100,10 +142,15 @@ pub fn checkFiles(allocator: std.mem.Allocator, io: std.Io, files: []const []con
     // for the scan).
     var embedded_basenames: ?[]const []const u8 = null;
     for (files) |file_path| {
+        const import_root = if (options.import_root_for_file) |root_for_file|
+            root_for_file(file_path)
+        else
+            options.import_root;
         const checked = checkFile(allocator, io, file_path, .{
             .contract = if (contract_value) |*parsed| parsed else null,
             .usage = if (usage_state) |*live_usage| live_usage else null,
             .arena = arena,
+            .import_root = import_root,
         }) catch {
             outcome.failures += 1;
             printOrphanHint(arena, io, file_path, &embedded_basenames);
@@ -192,6 +239,105 @@ test "orphanNote: Zig track hints only for unembedded files" {
     try std.testing.expectEqual(@as(?[]const u8, null), orphanNote(false, &embedded, "app.native"));
     const note = orphanNote(false, &embedded, "leftover.native") orelse return error.TestExpectedNote;
     try std.testing.expect(std.mem.indexOf(u8, note, "@embedFile") != null);
+}
+
+test "importRootForFile preserves the secondary-window boundary" {
+    try std.testing.expectEqualStrings("src", importRootForFile("src/app.native"));
+    try std.testing.expectEqualStrings("src", importRootForFile("src/components/card.native"));
+    try std.testing.expectEqualStrings("src/windows", importRootForFile("src/windows/settings.native"));
+    try std.testing.expectEqualStrings("src/windows", importRootForFile("src/windows/components/shared.native"));
+    try std.testing.expectEqualStrings("src/windows", importRootForFile("src/windows\\components\\shared.native"));
+    try std.testing.expectEqualStrings("src", importRootForFile("src/components/src/windows/card.native"));
+    try std.testing.expectEqualStrings("/project/src", importRootForFile("/project/src/components/src/windows/card.native"));
+}
+
+test "resolver paths normalize filesystem separators" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    try std.testing.expectEqualStrings(
+        "src/windows/settings.native",
+        try normalizeResolverPath(arena_state.allocator(), "src\\windows\\settings.native"),
+    );
+    try std.testing.expectEqualStrings(
+        "//server/share/src/windows/settings.native",
+        try normalizeResolverPath(arena_state.allocator(), "\\\\server\\share\\src\\windows\\settings.native"),
+    );
+}
+
+test "app-wide checking applies the secondary-window boundary per file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "src/windows/components");
+    try tmp.dir.createDirPath(io, "src/shared");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/windows/settings.native",
+        .data = "<import src=\"components/shared.native\"/>\n<column />",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/windows/components/shared.native",
+        .data = "<template name=\"shared\"><text>shared</text></template>\n",
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/shared/common.native",
+        .data = "<template name=\"common\"><text>common</text></template>\n",
+    });
+
+    var root_buffer: [256]u8 = undefined;
+    const root = try std.fmt.bufPrint(&root_buffer, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    var window_path_buffer: [320]u8 = undefined;
+    const window_path = try std.fmt.bufPrint(&window_path_buffer, "{s}/src/windows/settings.native", .{root});
+    var main_path_buffer: [320]u8 = undefined;
+    const main_path = try std.fmt.bufPrint(&main_path_buffer, "{s}/src/shared/common.native", .{root});
+    const files = [_][]const u8{ window_path, main_path };
+    const outcome = try checkFiles(std.testing.allocator, io, &files, .{
+        .import_root_for_file = importRootForFile,
+    });
+    try std.testing.expectEqual(@as(usize, 0), outcome.failures);
+
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/windows/settings.native",
+        .data = "<import src=\"../shared/common.native\"/>\n<column />",
+    });
+    const escaped = try checkFiles(std.testing.allocator, io, &files, .{
+        .import_root_for_file = importRootForFile,
+    });
+    try std.testing.expectEqual(@as(usize, 1), escaped.failures);
+}
+
+test "app-wide checking preserves src as the component import root" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDirPath(io, "src/components");
+    try tmp.dir.createDirPath(io, "src/shared");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/components/card.native",
+        .data =
+        \\<import src="../shared/base.native"/>
+        \\<template name="card"><column><use template="base" /></column></template>
+        ,
+    });
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "src/shared/base.native",
+        .data = "<template name=\"base\"><text>shared</text></template>\n",
+    });
+
+    var root_buffer: [256]u8 = undefined;
+    const root = try std.fmt.bufPrint(&root_buffer, ".zig-cache/tmp/{s}/src", .{tmp.sub_path[0..]});
+    var path_buffer: [320]u8 = undefined;
+    const component_path = try std.fmt.bufPrint(&path_buffer, "{s}/components/card.native", .{root});
+    const checked = try checkFile(std.testing.allocator, io, component_path, .{
+        .arena = std.testing.allocator,
+        .import_root = root,
+    });
+    try std.testing.expect(!checked.had_view);
+
+    // An explicitly named standalone component keeps its own directory as
+    // the root; reaching a sibling remains an escape in that narrower mode.
+    try std.testing.expectError(error.MarkupImport, checkFile(std.testing.allocator, io, component_path, .{
+        .arena = std.testing.allocator,
+    }));
 }
 
 /// The basename of every `@embedFile("...")` argument across the .zig
@@ -339,6 +485,7 @@ const FileCheckContext = struct {
     /// Session arena for contract-check messages, which outlive the
     /// per-file arena (the dead-state summary prints after all files).
     arena: std.mem.Allocator,
+    import_root: ?[]const u8 = null,
 };
 
 const FileCheckResult = struct {
@@ -356,14 +503,26 @@ fn checkFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, co
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
 
-    // Resolve the import closure from disk, rooted at the checked file's
-    // directory (the markup root): checking a view checks its imports, and
-    // a broken import reports at the importing file's position. A file
-    // that is all templates (no view root) is a valid component file —
-    // it checks standalone and as an import target.
+    // Filesystem walks use the host separator, while markup resolver paths
+    // are deliberately canonicalized with forward slashes. Keep the path
+    // used to read the root file above, but normalize the resolver inputs so
+    // Windows imports have the same dirname/root semantics as release builds.
+    const resolver_file_path = try normalizeResolverPath(arena_state.allocator(), file_path);
+    const resolver_import_root = if (context.import_root) |root|
+        try normalizeResolverPath(arena_state.allocator(), root)
+    else
+        null;
+
+    // Resolve the import closure from disk. Standalone checks root at the
+    // checked file's directory; app-wide `native check` supplies the app's
+    // shared `src/` root so independently checked component files preserve
+    // the same sibling-import boundary as src/app.native.
     var disk_loader = DiskLoader{ .io = io };
     var diagnostic: ui_markup.MarkupErrorInfo = .{};
-    const document = ui_markup.resolveImports(arena_state.allocator(), file_path, source, disk_loader.loader(), &diagnostic) catch |err| {
+    const document = (if (resolver_import_root) |root|
+        ui_markup.resolveImportsFromRoot(arena_state.allocator(), root, resolver_file_path, source, disk_loader.loader(), &diagnostic)
+    else
+        ui_markup.resolveImports(arena_state.allocator(), resolver_file_path, source, disk_loader.loader(), &diagnostic)) catch |err| {
         const path = if (diagnostic.path.len > 0) diagnostic.path else file_path;
         std.debug.print("{s}:{d}:{d}: error: {s}\n", .{ path, diagnostic.line, diagnostic.column, diagnostic.message });
         printStaleBinaryHint(diagnostic.message);
@@ -389,7 +548,7 @@ fn checkFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, co
         // The position-into-source refinements (tofu codepoint, vocabulary
         // suggestion) read the ROOT file's source; an error inside an
         // imported file still reports its own path:line:column.
-        const position_in_root = info.path.len == 0 or std.mem.eql(u8, info.path, file_path);
+        const position_in_root = info.path.len == 0 or std.mem.eql(u8, info.path, resolver_file_path);
         // The tofu guard's position points at the exact character; name
         // the codepoint so the fix is one glance.
         if (position_in_root and info.message.ptr == ui_markup.font_coverage_message.ptr) {
@@ -439,6 +598,15 @@ fn checkFile(allocator: std.mem.Allocator, io: std.Io, file_path: []const u8, co
     }
     std.debug.print("{s}: ok\n", .{file_path});
     return .{ .had_view = document.root != null, .warnings = a11y_warnings.len };
+}
+
+fn normalizeResolverPath(arena: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, path, '\\') == null) return path;
+    const normalized = try arena.dupe(u8, path);
+    for (normalized) |*character| {
+        if (character.* == '\\') character.* = '/';
+    }
+    return normalized;
 }
 
 /// True when a validation error is one of the a11y lint's error-class

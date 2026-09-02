@@ -1450,6 +1450,73 @@ test "an absolute root path resolves imports the same as a relative one" {
     try testing.expectEqualStrings(markup.import_src_escape_message, escaped.message);
 }
 
+test "a UNC root path preserves both leading slashes while resolving imports" {
+    var buffer: [markup.max_import_path_len]u8 = undefined;
+    const resolved = markup.resolveImportPath(
+        "//server/share/src",
+        "//server/share/src/view.native",
+        "components/card.native",
+        &buffer,
+    );
+    try testing.expectEqualStrings("//server/share/src/components/card.native", resolved.path);
+
+    const escaped = markup.resolveImportPath(
+        "//server/share/src",
+        "//server/share/src/view.native",
+        "../other.native",
+        &buffer,
+    );
+    try testing.expectEqualStrings(markup.import_src_escape_message, escaped.message);
+}
+
+test "a relative importer with a one-character directory is not treated as UNC" {
+    var buffer: [markup.max_import_path_len]u8 = undefined;
+    const resolved = markup.resolveImportPath(
+        "a",
+        "a/view.native",
+        "components/card.native",
+        &buffer,
+    );
+    try testing.expectEqualStrings("a/components/card.native", resolved.path);
+}
+
+test "an explicit app root lets an independently checked component import a sibling directory" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const set = [_]markup.SourceFile{
+        .{
+            .path = "src/components/card.native",
+            .source = "<import src=\"../shared/base.native\"/>\n<template name=\"card\"><use template=\"base\" /></template>",
+        },
+        .{
+            .path = "src/shared/base.native",
+            .source = "<template name=\"base\"><text>shared</text></template>",
+        },
+    };
+    var loader = markup.SourceSetLoader{ .set = &set };
+    var diagnostic: markup.MarkupErrorInfo = .{};
+    const document = try markup.resolveImportsFromRoot(
+        arena,
+        "src",
+        set[0].path,
+        set[0].source,
+        loader.loader(),
+        &diagnostic,
+    );
+    try testing.expectEqual(@as(usize, 2), document.templates.len);
+    try testing.expectEqualStrings("base", document.templates[0].attr("name").?);
+    try testing.expectEqualStrings("card", document.templates[1].attr("name").?);
+
+    // The direct-file resolver deliberately retains its narrower boundary.
+    try testing.expectError(
+        error.MarkupImport,
+        markup.resolveImports(arena, set[0].path, set[0].source, loader.loader(), &diagnostic),
+    );
+    try testing.expectEqualStrings(markup.import_src_escape_message, diagnostic.message);
+}
+
 test ".native is the one markup extension" {
     try testing.expect(markup.hasMarkupExtension("view.native"));
     try testing.expect(!markup.hasMarkupExtension("view.html"));

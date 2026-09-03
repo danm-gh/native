@@ -2,7 +2,7 @@
 //!
 //! `native eject component <name>` copies the canonical sources next to
 //! this file into an app. These tests are what keeps those copies
-//! honest: each builds the ejected form and the library form against
+//! precisely: each builds the ejected form and the library form against
 //! the same inputs and requires the two widget trees to be IDENTICAL —
 //! every id, every field, every handler — so ejecting is never a visual
 //! or behavioral change, only an ownership change. A library refactor
@@ -19,8 +19,8 @@ const testing = std.testing;
 const native_sdk = @import("native_sdk");
 const canvas = native_sdk.canvas;
 
-const stepper_component = @import("stepper.zig");
-const timeline_item_component = @import("timeline_item.zig");
+const stepper_template = @embedFile("stepper.native");
+const timeline_item_template = @embedFile("timeline-item.native");
 const timeline_template = @embedFile("timeline.native");
 
 /// A stand-in app model/message pair: the composites under test bind no
@@ -30,7 +30,7 @@ const Model = struct {};
 const Msg = union(enum) { open: u32 };
 const Ui = canvas.Ui(Msg);
 
-test "ejected stepper builds the library stepper's exact tree" {
+test "ejected stepper markup builds the library stepper's exact tree" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -44,58 +44,67 @@ test "ejected stepper builds the library stepper's exact tree" {
         const library_steps = [_]Ui.StepperStep{
             .{ .label = labels[0] }, .{ .label = labels[1] }, .{ .label = labels[2] },
         };
-        const library_tree = try library_ui.finalize(library_ui.stepper(.{ .active = active }, &library_steps));
+        const library_tree = try library_ui.finalize(library_ui.stepper(.{
+            .active = active,
+            .key = canvas.uiKey("pipeline"),
+            .global_key = canvas.uiKey("pipeline-global"),
+            .semantics = .{ .label = "Pipeline" },
+        }, &library_steps));
 
+        const active_text = if (active == 0) "0" else if (active == 1) "1" else "3";
+        const source = "<import src=\"components/stepper.native\"/>\n<use template=\"stepper\" active=\"" ++ active_text ++ "\" key=\"pipeline\" global_key=\"pipeline-global\" label=\"Pipeline\">" ++
+            "<step>Plan</step><step>Work</step><step>Ship</step></use>";
+        const files = [_]canvas.ui_markup.SourceFile{.{ .path = "components/stepper.native", .source = stepper_template }};
         var ejected_ui = Ui.init(arena);
-        const ejected_steps = [_]stepper_component.Step{
-            .{ .label = labels[0] }, .{ .label = labels[1] }, .{ .label = labels[2] },
-        };
-        const ejected_tree = try ejected_ui.finalize(stepper_component.build(&ejected_ui, .{ .active = active }, &ejected_steps));
+        const ejected_tree = try buildMarkupTree(arena, &ejected_ui, source, &files);
 
         try testing.expectEqualDeep(library_tree.root, ejected_tree.root);
         try testing.expectEqualDeep(library_tree.handlers, ejected_tree.handlers);
     }
 }
 
-test "ejected timeline item builds the library item's exact tree, press handler included" {
+test "ejected stepper defaults preserve the library's unkeyed identity" {
     var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const TimelineItem = timeline_item_component.TimelineItem(Msg);
+    const source = "<import src=\"components/stepper.native\"/>\n<use template=\"stepper\" active=\"1\"><step>Plan</step><step>Ship</step></use>";
+    const files = [_]canvas.ui_markup.SourceFile{.{ .path = "components/stepper.native", .source = stepper_template }};
+    var library_ui = Ui.init(arena);
+    const labels = [_]Ui.StepperStep{ .{ .label = "Plan" }, .{ .label = "Ship" } };
+    const library_tree = try library_ui.finalize(library_ui.stepper(.{ .active = 1 }, &labels));
+    var ejected_ui = Ui.init(arena);
+    const ejected_tree = try buildMarkupTree(arena, &ejected_ui, source, &files);
+    try testing.expectEqualDeep(library_tree.root, ejected_tree.root);
+}
 
-    // The full shape: indicator variant, description, meta, connector,
-    // selection, and a whole-item press (which grows the chevron and
-    // binds the handler on the item root).
+test "ejected timeline-item markup builds the library item's exact tree" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // The full visual shape: indicator variant, description, meta,
+    // connector, and selection. The built-in element remains the typed
+    // event boundary; template values do not invent callback values.
     var library_ui = Ui.init(arena);
     const library_tree = try library_ui.finalize(library_ui.timelineItem(.{
-        .key = .{ .int = 7 },
+        .key = canvas.uiKey("item"),
+        .global_key = canvas.uiKey("item-global"),
         .icon = "check",
         .variant = .primary,
         .title = "Build the release",
         .description = "Compile, test, and package the app",
         .meta = "2m 14s",
         .selected = true,
-        .on_press = .{ .open = 7 },
     }));
 
+    const source = "<import src=\"components/timeline-item.native\"/>\n<use template=\"timeline-item\" title=\"Build the release\" description=\"Compile, test, and package the app\" meta=\"2m 14s\" icon=\"check\" variant=\"primary\" selected=\"true\" key=\"item\" global_key=\"item-global\" />";
+    const files = [_]canvas.ui_markup.SourceFile{.{ .path = "components/timeline-item.native", .source = timeline_item_template }};
     var ejected_ui = Ui.init(arena);
-    const ejected_tree = try ejected_ui.finalize(TimelineItem.build(&ejected_ui, .{
-        .key = .{ .int = 7 },
-        .icon = "check",
-        .variant = .primary,
-        .title = "Build the release",
-        .description = "Compile, test, and package the app",
-        .meta = "2m 14s",
-        .selected = true,
-        .on_press = .{ .open = 7 },
-    }));
+    const ejected_tree = try buildMarkupTree(arena, &ejected_ui, source, &files);
 
     try testing.expectEqualDeep(library_tree.root, ejected_tree.root);
     try testing.expectEqualDeep(library_tree.handlers, ejected_tree.handlers);
-    // The press is real in both forms, not just structurally equal.
-    try testing.expectEqual(Msg{ .open = 7 }, ejected_tree.msgForPointer(ejected_tree.root.id, .up).?);
-
     // The minimal shape: dot indicator (no badge content), title only,
     // no connector, no press — the other half of every conditional.
     var minimal_library_ui = Ui.init(arena);
@@ -103,11 +112,10 @@ test "ejected timeline item builds the library item's exact tree, press handler 
         .title = "Queued",
         .connector = false,
     }));
+    const minimal_source = "<import src=\"components/timeline-item.native\"/>\n<use template=\"timeline-item\" title=\"Queued\" connector=\"false\" />";
+    const minimal_files = [_]canvas.ui_markup.SourceFile{.{ .path = "components/timeline-item.native", .source = timeline_item_template }};
     var minimal_ejected_ui = Ui.init(arena);
-    const minimal_ejected = try minimal_ejected_ui.finalize(TimelineItem.build(&minimal_ejected_ui, .{
-        .title = "Queued",
-        .connector = false,
-    }));
+    const minimal_ejected = try buildMarkupTree(arena, &minimal_ejected_ui, minimal_source, &minimal_files);
     try testing.expectEqualDeep(minimal_library.root, minimal_ejected.root);
     try testing.expectEqualDeep(minimal_library.handlers, minimal_ejected.handlers);
 }
@@ -140,9 +148,9 @@ test "the ejected timeline template builds the library <timeline> element's exac
         \\  <timeline-item title="Building" meta="just now" connector="false" />
         \\
     ;
-    const element_source = "<timeline gap=\"4\" label=\"Activity\">\n" ++ items ++ "</timeline>\n";
+    const element_source = "<timeline gap=\"4\" label=\"Activity\" key=\"ledger\" global-key=\"ledger-global\">\n" ++ items ++ "</timeline>\n";
     const template_source = "<import src=\"components/timeline.native\"/>\n" ++
-        "<use template=\"timeline\" gap=\"4\" label=\"Activity\">\n" ++ items ++ "</use>\n";
+        "<use template=\"timeline\" gap=\"4\" label=\"Activity\" key=\"ledger\" global_key=\"ledger-global\">\n" ++ items ++ "</use>\n";
     const files = [_]canvas.ui_markup.SourceFile{
         .{ .path = "components/timeline.native", .source = timeline_template },
     };

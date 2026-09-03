@@ -865,6 +865,41 @@ test "app: icon references check against the contract's registered icon list" {
     try testing.expectEqualStrings(markup.app_icon_prefix, contract.app_icon_prefix);
 }
 
+test "segmented-control bindings and messages check through the model contract" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const document = try parseFixture(arena,
+        \\<row>
+        \\  <segmented-control selected="{active}" icon="settings" on-press="add">Settings</segmented-control>
+        \\</row>
+    );
+    var usage = try contract.Usage.init(arena, &model_contract);
+    try testing.expectEqual(null, try contract.checkDocument(arena, document, &model_contract, &usage));
+}
+
+test "the contract checker validates stepper slot content in the consumer scope" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const document = try parseFixture(arena,
+        \\<template name="stepper" args="active">
+        \\  <stepper active="{active}">
+        \\    <slot/>
+        \\  </stepper>
+        \\</template>
+        \\<row>
+        \\  <use template="stepper" active="{count}">
+        \\    <step>{missing}</step>
+        \\  </use>
+        \\</row>
+    );
+    const message = (try contractMessage(arena, document, null)).?;
+    try testing.expect(std.mem.startsWith(u8, message, contract.binding_model_message));
+}
+
 // ------------------------------------------------------------ dead state
 
 test "dead state warns on unbound model state and undispatched Msg tags" {
